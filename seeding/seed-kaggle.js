@@ -48,12 +48,37 @@ const COLUMN_ALIASES = {
   location: ['location', 'job_location', 'job location', 'joblocation', 'city_state', 'place'],
   city:     ['city', 'employer city', 'employer_city', 'job_city'],
   state:    ['state', 'employer state', 'employer_state', 'job_state'],
-  salary:   ['salary', 'salary_range', 'salary range', 'type-salary', 'compensation'],
-  salaryMin:['min_salary', 'salary from', 'salary_from', 'salary_min', 'minimum_salary'],
-  salaryMax:['max_salary', 'salary to', 'salary_to', 'salary_max', 'maximum_salary'],
+  salary:   ['salary', 'salary_range', 'salary range', 'type-salary', 'compensation', 'salary_offered'],
+  salaryMin:['min_salary', 'salary from', 'salary_from', 'salary_min', 'minimum_salary', 'inferred_salary_from'],
+  salaryMax:['max_salary', 'salary to', 'salary_to', 'salary_max', 'maximum_salary', 'inferred_salary_to'],
   industry: ['industry', 'company_industry', 'categories', 'category', 'sector'],
   companySize: ['company_size', 'company size', 'employees', 'size'],
 };
+
+// --- LDJSON field mappings ---
+// Maps LDJSON field names to our canonical field names.
+const LDJSON_FIELD_MAP = {
+  company:     ['company_name', 'company', 'employer_name'],
+  title:       ['job_title', 'title', 'position'],
+  location:    ['location'],
+  city:        ['city', 'inferred_city'],
+  state:       ['state', 'inferred_state'],
+  salary:      ['salary_offered', 'salary'],
+  salaryMin:   ['inferred_salary_from', 'salary_from'],
+  salaryMax:   ['inferred_salary_to', 'salary_to'],
+  industry:    ['category', 'industry'],
+  companySize: ['company_size', 'employees'],
+};
+
+function resolveLdjsonField(obj, canonical) {
+  const aliases = LDJSON_FIELD_MAP[canonical] || [];
+  for (const alias of aliases) {
+    if (obj[alias] !== undefined && obj[alias] !== null && obj[alias] !== '') {
+      return String(obj[alias]).trim();
+    }
+  }
+  return '';
+}
 
 function resolveColumns(headers) {
   const headerLower = headers.map(h => h.trim().toLowerCase());
@@ -139,23 +164,24 @@ function hasSalaryValue(val) {
 
 // --- File discovery ---
 
-function findCSVFiles(dir) {
-  const csvFiles = [];
+function findDataFiles(dir) {
+  const dataFiles = [];
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
-      if (entry.isFile() && entry.name.toLowerCase().endsWith('.csv')) {
-        csvFiles.push(fullPath);
+      const lower = entry.name.toLowerCase();
+      if (entry.isFile() && (lower.endsWith('.csv') || lower.endsWith('.ldjson'))) {
+        dataFiles.push(fullPath);
       }
       if (entry.isDirectory()) {
-        csvFiles.push(...findCSVFiles(fullPath));
+        dataFiles.push(...findDataFiles(fullPath));
       }
     }
   } catch (err) {
     console.error(`  Warning: cannot read ${dir}: ${err.message}`);
   }
-  return csvFiles;
+  return dataFiles;
 }
 
 // --- Stream a single CSV and aggregate into employers map ---
@@ -241,30 +267,102 @@ async function streamCSV(filePath, employers) {
   return { lineCount, skipped };
 }
 
+// --- Stream a single LDJSON file and aggregate into employers map ---
+
+async function streamLDJSON(filePath, employers) {
+  console.log(`\nStreaming LDJSON: ${filePath}`);
+
+  let lineCount = 0;
+  let skipped = 0;
+  let parseErrors = 0;
+
+  const rl = readline.createInterface({
+    input: fs.createReadStream(filePath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
+
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch (e) {
+      parseErrors++;
+      continue;
+    }
+
+    lineCount++;
+    if (lineCount % 200000 === 0) {
+      console.log(`  ${(lineCount / 1000).toFixed(0)}K rows... ${employers.size} employers`);
+    }
+
+    const companyName = resolveLdjsonField(obj, 'company');
+    const title = resolveLdjsonField(obj, 'title');
+    const location = resolveLdjsonField(obj, 'location');
+    const city = resolveLdjsonField(obj, 'city');
+    const industry = resolveLdjsonField(obj, 'industry');
+
+    const salaryMin = resolveLdjsonField(obj, 'salaryMin');
+    const salaryMax = resolveLdjsonField(obj, 'salaryMax');
+    const salaryGeneric = resolveLdjsonField(obj, 'salary');
+    const hasSalary = hasSalaryValue(salaryMin) || hasSalaryValue(salaryMax) || hasSalaryValue(salaryGeneric);
+
+    if (!companyName) { skipped++; continue; }
+    const normalized = normalizeCompany(companyName);
+    if (!normalized) { skipped++; continue; }
+
+    if (!employers.has(normalized)) {
+      employers.set(normalized, {
+        nameRaw: companyName, industry: industry || null,
+        total: 0, roleCounts: {}, titleSet: {},
+        hasSalary: 0, noSalary: 0,
+      });
+    }
+
+    const emp = employers.get(normalized);
+    emp.total++;
+
+    const cityVal = city || extractCity(location);
+    const key = `${normalizeTitle(title)}|${cityVal}`;
+    emp.roleCounts[key] = (emp.roleCounts[key] || 0) + 1;
+    if (title) emp.titleSet[normalizeTitle(title)] = true;
+
+    if (hasSalary) emp.hasSalary++;
+    else emp.noSalary++;
+  }
+
+  console.log(`  Read ${lineCount.toLocaleString()} rows (${skipped} skipped, ${parseErrors} parse errors)`);
+  return { lineCount, skipped };
+}
+
 // --- Main ---
 
 async function main() {
   console.log('=== Skip This Job - Kaggle Seeder (multi-dataset, streaming) ===\n');
 
-  // Find all CSV files across archive folders
-  const csvFiles = findCSVFiles(dataDir);
-  if (csvFiles.length === 0) {
-    console.error('No CSV files found in', dataDir);
+  // Find all CSV and LDJSON files across archive folders
+  const dataFiles = findDataFiles(dataDir);
+  if (dataFiles.length === 0) {
+    console.error('No CSV or LDJSON files found in', dataDir);
     process.exit(1);
   }
-  console.log(`Found ${csvFiles.length} CSV file(s):`);
-  csvFiles.forEach(f => console.log(`  ${f}`));
+  console.log(`Found ${dataFiles.length} data file(s):`);
+  dataFiles.forEach(f => console.log(`  ${f}`));
 
-  // Aggregate all CSVs into a single employers map
+  // Aggregate all files into a single employers map
   const employers = new Map();
   let totalRows = 0;
 
-  for (const csvFile of csvFiles) {
-    const { lineCount } = await streamCSV(csvFile, employers);
+  for (const file of dataFiles) {
+    const isLdjson = file.toLowerCase().endsWith('.ldjson');
+    const { lineCount } = isLdjson
+      ? await streamLDJSON(file, employers)
+      : await streamCSV(file, employers);
     totalRows += lineCount;
   }
 
-  console.log(`\n=== Totals: ${totalRows.toLocaleString()} rows across ${csvFiles.length} files, ${employers.size.toLocaleString()} unique employers ===\n`);
+  console.log(`\n=== Totals: ${totalRows.toLocaleString()} rows across ${dataFiles.length} files, ${employers.size.toLocaleString()} unique employers ===\n`);
 
   // Score
   const scored = [];
