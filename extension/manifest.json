@@ -9,7 +9,7 @@
   ],
   "host_permissions": [
     "*://*.linkedin.com/*",
-    "*://*.indeed.com/*"
+    "*://*.indeed.com/*",
     "https://skipthisjob.com/*"
   ],
   "content_scripts": [
