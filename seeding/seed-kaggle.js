@@ -1,13 +1,18 @@
 /**
- * seed-kaggle.js (streaming version)
- * 
- * Streams the Kaggle CSV line-by-line instead of loading it all at once.
+ * seed-kaggle.js (streaming, multi-dataset version)
+ *
+ * Streams CSV files line-by-line from one or more Kaggle dataset folders.
+ * Auto-detects column names across different dataset schemas (LinkedIn, Indeed, etc).
  * Only stores per-employer aggregates in memory, not individual rows.
- * 
- * Usage (Windows):
+ * Upserts employers and increments total_listings_tracked for existing records.
+ *
+ * Usage:
  *   set SUPABASE_URL=https://xxx.supabase.co
  *   set SUPABASE_SERVICE_ROLE_KEY=xxx
- *   node seeding/seed-kaggle.js "C:\path\to\kaggle\folder"
+ *   node seeding/seed-kaggle.js /path/to/kaggle/folder
+ *
+ * Expects subfolders (archive, archive2, archive3, archive4) containing CSV files,
+ * or CSV files directly in the given folder.
  */
 
 const fs = require('fs');
@@ -22,7 +27,7 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('Missing env vars. Example:');
   console.error('  set SUPABASE_URL=https://xxx.supabase.co');
   console.error('  set SUPABASE_SERVICE_ROLE_KEY=xxx');
-  console.error('  node seeding/seed-kaggle.js ./data');
+  console.error('  node seeding/seed-kaggle.js ./kaggle');
   process.exit(1);
 }
 
@@ -34,10 +39,49 @@ if (!dataDir) {
   process.exit(1);
 }
 
+// --- Column name mappings ---
+// Maps various header names to our canonical field names.
+// Each canonical field has an array of known header variants (lowercased).
+const COLUMN_ALIASES = {
+  company:  ['company_name', 'company name', 'company', 'employer', 'employer_name', 'organization'],
+  title:    ['title', 'job_title', 'job title', 'jobtitle', 'position', 'role'],
+  location: ['location', 'job_location', 'job location', 'joblocation', 'city_state', 'place'],
+  city:     ['city', 'employer city', 'employer_city', 'job_city'],
+  state:    ['state', 'employer state', 'employer_state', 'job_state'],
+  salary:   ['salary', 'salary_range', 'salary range', 'type-salary', 'compensation'],
+  salaryMin:['min_salary', 'salary from', 'salary_from', 'salary_min', 'minimum_salary'],
+  salaryMax:['max_salary', 'salary to', 'salary_to', 'salary_max', 'maximum_salary'],
+  industry: ['industry', 'company_industry', 'categories', 'category', 'sector'],
+  companySize: ['company_size', 'company size', 'employees', 'size'],
+};
+
+function resolveColumns(headers) {
+  const headerLower = headers.map(h => h.trim().toLowerCase());
+  const resolved = {};
+  for (const [canonical, aliases] of Object.entries(COLUMN_ALIASES)) {
+    const idx = headerLower.findIndex(h => aliases.includes(h));
+    resolved[canonical] = idx >= 0 ? idx : -1;
+  }
+  return resolved;
+}
+
+function getField(values, colIdx) {
+  if (colIdx < 0 || colIdx >= values.length) return '';
+  return (values[colIdx] || '').trim();
+}
+
+// --- Normalization helpers ---
+
 function normalizeCompany(name) {
-  return (name || '').toLowerCase().trim()
-    .replace(/\s+(inc\.?|llc\.?|corp\.?|ltd\.?|co\.?|company|corporation|group|holdings)$/i, '')
-    .replace(/\s+/g, ' ').trim();
+  let n = (name || '').toLowerCase().trim().replace(/\.com$/i, '');
+  // Iterative suffix stripping (up to 4 passes per CLAUDE.md)
+  const suffixes = /\s+(inc\.?|llc\.?|llp\.?|corp\.?|ltd\.?|co\.?|company|corporation|group|holdings|services|consulting|solutions|enterprises|international|worldwide|global|associates|partners)$/i;
+  for (let i = 0; i < 4; i++) {
+    const cleaned = n.replace(suffixes, '');
+    if (cleaned === n) break;
+    n = cleaned;
+  }
+  return n.replace(/\s+/g, ' ').trim();
 }
 
 function normalizeTitle(title) {
@@ -87,33 +131,44 @@ function parseCSVLine(line) {
   return result;
 }
 
-function findFile(dir, name) {
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isFile() && entry.name.toLowerCase().includes(name.toLowerCase())) return fullPath;
-    if (entry.isDirectory()) { const f = findFile(fullPath, name); if (f) return f; }
-  }
-  return null;
+function hasSalaryValue(val) {
+  if (!val) return false;
+  const stripped = val.replace(/[^0-9.]/g, '');
+  return stripped.length > 0 && parseFloat(stripped) > 0;
 }
 
-async function main() {
-  console.log('=== Skip This Job - Kaggle Seeder (streaming) ===\n');
+// --- File discovery ---
 
-  const postingsFile = findFile(dataDir, 'postings.csv');
-  if (!postingsFile) {
-    console.error('Could not find postings.csv in', dataDir);
-    process.exit(1);
+function findCSVFiles(dir) {
+  const csvFiles = [];
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile() && entry.name.toLowerCase().endsWith('.csv')) {
+        csvFiles.push(fullPath);
+      }
+      if (entry.isDirectory()) {
+        csvFiles.push(...findCSVFiles(fullPath));
+      }
+    }
+  } catch (err) {
+    console.error(`  Warning: cannot read ${dir}: ${err.message}`);
   }
-  console.log('Streaming:', postingsFile, '\n');
+  return csvFiles;
+}
 
-  // Stream CSV and aggregate per employer
-  const employers = new Map();
-  let colMap = null;
+// --- Stream a single CSV and aggregate into employers map ---
+
+async function streamCSV(filePath, employers) {
+  console.log(`\nStreaming: ${filePath}`);
+
+  let colIdx = null;
   let lineCount = 0;
+  let skipped = 0;
 
   const rl = readline.createInterface({
-    input: fs.createReadStream(postingsFile, { encoding: 'utf-8' }),
+    input: fs.createReadStream(filePath, { encoding: 'utf-8' }),
     crlfDelay: Infinity,
   });
 
@@ -121,11 +176,20 @@ async function main() {
     if (!line.trim()) continue;
 
     // First line = headers
-    if (!colMap) {
-      const headers = parseCSVLine(line).map(h => h.trim().toLowerCase());
-      colMap = {};
-      headers.forEach((h, i) => { colMap[h] = i; });
-      console.log('Columns found:', Object.keys(colMap).join(', '), '\n');
+    if (!colIdx) {
+      const headers = parseCSVLine(line);
+      colIdx = resolveColumns(headers);
+      const mapped = Object.entries(colIdx)
+        .filter(([, v]) => v >= 0)
+        .map(([k, v]) => `${k}→col${v}`)
+        .join(', ');
+      console.log(`  Headers: ${headers.map(h => h.trim()).join(', ')}`);
+      console.log(`  Mapped:  ${mapped}`);
+
+      if (colIdx.company < 0) {
+        console.error(`  ERROR: No company name column found. Skipping file.`);
+        return { lineCount: 0, skipped: 0 };
+      }
       continue;
     }
 
@@ -136,15 +200,21 @@ async function main() {
 
     const v = parseCSVLine(line);
 
-    const companyName = (v[colMap['company_name']] || v[colMap['company']] || '').trim();
-    const title = (v[colMap['title']] || v[colMap['job_title']] || '').trim();
-    const location = (v[colMap['location']] || v[colMap['job_location']] || '').trim();
-    const salary = (v[colMap['min_salary']] || v[colMap['max_salary']] || v[colMap['salary']] || '').trim();
-    const industry = (v[colMap['company_industry']] || v[colMap['industry']] || '').trim();
+    const companyName = getField(v, colIdx.company);
+    const title = getField(v, colIdx.title);
+    const location = getField(v, colIdx.location);
+    const city = getField(v, colIdx.city);
+    const industry = getField(v, colIdx.industry);
 
-    if (!companyName) continue;
+    // Determine salary presence from whichever columns are available
+    const salaryMin = getField(v, colIdx.salaryMin);
+    const salaryMax = getField(v, colIdx.salaryMax);
+    const salaryGeneric = getField(v, colIdx.salary);
+    const hasSalary = hasSalaryValue(salaryMin) || hasSalaryValue(salaryMax) || hasSalaryValue(salaryGeneric);
+
+    if (!companyName) { skipped++; continue; }
     const normalized = normalizeCompany(companyName);
-    if (!normalized) continue;
+    if (!normalized) { skipped++; continue; }
 
     if (!employers.has(normalized)) {
       employers.set(normalized, {
@@ -157,15 +227,44 @@ async function main() {
     const emp = employers.get(normalized);
     emp.total++;
 
-    const key = `${normalizeTitle(title)}|${extractCity(location)}`;
+    // Use explicit city column if available, otherwise extract from location
+    const cityVal = city || extractCity(location);
+    const key = `${normalizeTitle(title)}|${cityVal}`;
     emp.roleCounts[key] = (emp.roleCounts[key] || 0) + 1;
-    emp.titleSet[normalizeTitle(title)] = true;
+    if (title) emp.titleSet[normalizeTitle(title)] = true;
 
-    if (salary && salary !== '0') emp.hasSalary++;
+    if (hasSalary) emp.hasSalary++;
     else emp.noSalary++;
   }
 
-  console.log(`\nRead ${lineCount.toLocaleString()} rows, ${employers.size.toLocaleString()} employers.\n`);
+  console.log(`  Read ${lineCount.toLocaleString()} rows (${skipped} skipped, no company name)`);
+  return { lineCount, skipped };
+}
+
+// --- Main ---
+
+async function main() {
+  console.log('=== Skip This Job - Kaggle Seeder (multi-dataset, streaming) ===\n');
+
+  // Find all CSV files across archive folders
+  const csvFiles = findCSVFiles(dataDir);
+  if (csvFiles.length === 0) {
+    console.error('No CSV files found in', dataDir);
+    process.exit(1);
+  }
+  console.log(`Found ${csvFiles.length} CSV file(s):`);
+  csvFiles.forEach(f => console.log(`  ${f}`));
+
+  // Aggregate all CSVs into a single employers map
+  const employers = new Map();
+  let totalRows = 0;
+
+  for (const csvFile of csvFiles) {
+    const { lineCount } = await streamCSV(csvFile, employers);
+    totalRows += lineCount;
+  }
+
+  console.log(`\n=== Totals: ${totalRows.toLocaleString()} rows across ${csvFiles.length} files, ${employers.size.toLocaleString()} unique employers ===\n`);
 
   // Score
   const scored = [];
@@ -201,7 +300,7 @@ async function main() {
         name_normalized: normalized,
         ghost_score: score,
         ghost_label: scoreToLabel(score),
-        total_listings_tracked: emp.total,
+        new_listings: emp.total,
         industry: emp.industry,
         is_high_turnover_industry: htRatio > 0.5,
       });
@@ -210,10 +309,10 @@ async function main() {
 
   scored.sort((a, b) => b.ghost_score - a.ghost_score);
 
-  console.log(`Scored ${scored.length.toLocaleString()} employers\n`);
+  console.log(`Scored ${scored.length.toLocaleString()} employers (with ghost_score >= 10)\n`);
   console.log('Top 20 worst offenders:');
   scored.slice(0, 20).forEach((e, i) => {
-    console.log(`  ${i + 1}. ${e.name_raw} — ${e.ghost_score}/100 (${e.total_listings_tracked} listings)`);
+    console.log(`  ${i + 1}. ${e.name_raw} — ${e.ghost_score}/100 (${e.new_listings} listings)`);
   });
 
   console.log(`\nDistribution:`);
@@ -222,20 +321,51 @@ async function main() {
   console.log(`  Moderate (25-49): ${scored.filter(e => e.ghost_score >= 25 && e.ghost_score < 50).length}`);
   console.log(`  Low (10-24):      ${scored.filter(e => e.ghost_score >= 10 && e.ghost_score < 25).length}`);
 
+  // Fetch existing employer listing counts so we can increment
+  console.log(`\nFetching existing employers from Supabase for merge...`);
+  const existingCounts = new Map();
+  let from = 0;
+  const PAGE = 1000;
+  while (true) {
+    const { data, error } = await supabase
+      .from('employers')
+      .select('name_normalized, total_listings_tracked')
+      .range(from, from + PAGE - 1);
+    if (error) { console.error('  Error fetching existing:', error.message); break; }
+    if (!data || data.length === 0) break;
+    for (const row of data) {
+      existingCounts.set(row.name_normalized, row.total_listings_tracked || 0);
+    }
+    from += data.length;
+    if (data.length < PAGE) break;
+  }
+  console.log(`  Found ${existingCounts.size.toLocaleString()} existing employers in DB.`);
+
+  // Build upsert rows with incremented counts
+  const upsertRows = scored.map(e => ({
+    name_raw: e.name_raw,
+    name_normalized: e.name_normalized,
+    ghost_score: e.ghost_score,
+    ghost_label: e.ghost_label,
+    total_listings_tracked: (existingCounts.get(e.name_normalized) || 0) + e.new_listings,
+    industry: e.industry,
+    is_high_turnover_industry: e.is_high_turnover_industry,
+  }));
+
   // Upload
-  console.log(`\nUploading to Supabase...`);
+  console.log(`\nUploading ${upsertRows.length.toLocaleString()} employers to Supabase...`);
   let uploaded = 0, errs = 0;
 
-  for (let i = 0; i < scored.length; i += 100) {
-    const batch = scored.slice(i, i + 100);
+  for (let i = 0; i < upsertRows.length; i += 100) {
+    const batch = upsertRows.slice(i, i + 100);
     const { error } = await supabase
       .from('employers')
       .upsert(batch, { onConflict: 'name_normalized', ignoreDuplicates: false });
 
-    if (error) { console.error(`  Error at ${i}:`, error.message); errs++; }
+    if (error) { console.error(`  Error at batch ${i}:`, error.message); errs++; }
     else uploaded += batch.length;
 
-    if (i % 1000 === 0 && i > 0) console.log(`  ${uploaded} / ${scored.length}`);
+    if (i % 1000 === 0 && i > 0) console.log(`  ${uploaded} / ${upsertRows.length}`);
   }
 
   console.log(`\n=== Done === Uploaded: ${uploaded} | Errors: ${errs}`);
