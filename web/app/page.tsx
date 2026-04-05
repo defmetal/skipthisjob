@@ -255,7 +255,7 @@ export default function Home() {
             <div>
               <h4 className="font-semibold text-sm mb-3">Company</h4>
               <ul className="space-y-2 text-sm text-gray-500">
-                <li><a href="https://vibedigitalmarketing.com" target="_blank" rel="noopener" className="hover:text-gray-900 transition">Vibe Digital Marketing</a></li>
+                <li><a href="https://vibelabsmarketing.com" target="_blank" rel="noopener" className="hover:text-gray-900 transition">Vibe Labs Marketing</a></li>
                 <li><a href="https://postmimic.app" target="_blank" rel="noopener" className="hover:text-gray-900 transition">PostMimic</a></li>
                 <li><a href="https://x.com/defmetal" target="_blank" rel="noopener" className="hover:text-gray-900 transition">@defmetal</a></li>
               </ul>
@@ -264,7 +264,7 @@ export default function Home() {
 
           <div className="border-t border-gray-100 pt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
             <p className="text-xs text-gray-400">
-              &copy; {new Date().getFullYear()} Vibe Digital Marketing. All rights reserved. San Antonio, TX.
+              &copy; {new Date().getFullYear()} Vibe Labs Marketing. All rights reserved. San Antonio, TX.
             </p>
             <div className="flex gap-4 text-xs text-gray-400">
               <a href="/privacy" className="hover:text-gray-600 transition">Privacy</a>

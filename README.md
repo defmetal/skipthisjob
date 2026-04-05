@@ -4,7 +4,7 @@
 
 A Chrome extension + web platform that scores job listings for ghost risk using real-time heuristics, historical repost tracking, community reports, and Glassdoor enrichment.
 
-Built by [Vibe Digital Marketing](https://vibelabsdigital.com) 
+Built by [Vibe Labs Marketing](https://vibelabsmarketing.com) 
 
 ---
 

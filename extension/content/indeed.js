@@ -511,7 +511,7 @@ function injectOverlay(localScore, backendData, listing) {
         </div>
       </div>
       <div class="ghost-detector-footer">
-        <span>Skip This Job by <a href="https://vibedigitalmarketing.com" target="_blank" rel="noopener">Vibe Digital Marketing</a> · <a href="https://skipthisjob.com" target="_blank" rel="noopener">skipthisjob.com</a></span>
+        <span>Skip This Job by <a href="https://vibelabsmarketing.com" target="_blank" rel="noopener">Vibe Labs Marketing</a> · <a href="https://skipthisjob.com" target="_blank" rel="noopener">skipthisjob.com</a></span>
       </div>
     </div>
   `;

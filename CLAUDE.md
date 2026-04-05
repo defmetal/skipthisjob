@@ -3,7 +3,7 @@
 ## Project Overview
 **Skip This Job** (skipthisjob.com) is a Chrome extension + website that detects ghost job listings on LinkedIn and Indeed. It scores listings for ghost risk using real-time heuristics, historical repost tracking, community reports, and Glassdoor enrichment.
 
-**Owner:** Austin (@defmetal), Vibe Digital Marketing, San Antonio TX
+**Owner:** Austin (@defmetal), Vibe Labs Marketing, San Antonio TX
 **Repo:** github.com/defmetal/skipthisjob
 **Live site:** https://skipthisjob.com
 **Domain:** Cloudflare DNS → Vercel
@@ -136,5 +136,5 @@ SUPABASE_SERVICE_ROLE_KEY=xxx
 - Emoji: ⏭️
 - Colors: purple accent (#7c3aed), ghost score colors (green/orange/red/purple)
 - Font: DM Sans
-- Company: Vibe Digital Marketing / vibedigitalmarketing.com
+- Company: Vibe Labs Marketing / vibelabsmarketing.com
 - Twitter: @defmetal

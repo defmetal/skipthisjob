@@ -15,7 +15,7 @@ export default function Privacy() {
         <div className="prose prose-gray max-w-none space-y-6 text-gray-600 leading-relaxed">
           <p>
             Skip This Job (&quot;we,&quot; &quot;our,&quot; or &quot;the extension&quot;) is a Chrome extension
-            and website operated by Vibe Digital Marketing, based in San Antonio, TX.
+            and website operated by Vibe Labs Marketing, based in San Antonio, TX.
             We are committed to protecting your privacy. This policy explains what data
             the extension collects, how it is used, and your rights.
           </p>
@@ -116,12 +116,12 @@ export default function Privacy() {
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Contact</h2>
           <p>
             If you have questions about this privacy policy, contact us at:<br />
-            <a href="mailto:support@vibedigitalmarketing.com" className="text-purple-600 hover:underline">
-              support@vibedigitalmarketing.com
+            <a href="mailto:support@vibelabsmarketing.com" className="text-purple-600 hover:underline">
+              support@vibelabsmarketing.com
             </a>
           </p>
           <p className="text-sm text-gray-400 mt-8">
-            Vibe Digital Marketing · San Antonio, TX
+            Vibe Labs Marketing · San Antonio, TX
           </p>
         </div>
       </article>

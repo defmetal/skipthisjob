@@ -16,7 +16,7 @@ export default function Terms() {
           <p>
             These Terms of Service (&quot;Terms&quot;) govern your use of the Skip This Job
             Chrome extension and the skipthisjob.com website (collectively, the &quot;Service&quot;),
-            operated by Vibe Digital Marketing (&quot;we,&quot; &quot;us,&quot; or &quot;our&quot;).
+            operated by Vibe Labs Marketing (&quot;we,&quot; &quot;us,&quot; or &quot;our&quot;).
           </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Use of the Service</h2>
@@ -47,7 +47,7 @@ export default function Terms() {
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Intellectual Property</h2>
           <p>
             The Skip This Job name, logo, scoring algorithms, and website content are
-            owned by Vibe Digital Marketing. You may not copy, modify, or redistribute
+            owned by Vibe Labs Marketing. You may not copy, modify, or redistribute
             the extension or its code without permission.
           </p>
 
@@ -61,7 +61,7 @@ export default function Terms() {
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Limitation of Liability</h2>
           <p>
-            To the maximum extent permitted by law, Vibe Digital Marketing shall not
+            To the maximum extent permitted by law, Vibe Labs Marketing shall not
             be liable for any damages arising from your use of the Service, including
             but not limited to missed job opportunities, reliance on ghost scores,
             or decisions made based on the information provided.
@@ -82,12 +82,12 @@ export default function Terms() {
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Contact</h2>
           <p>
             Questions about these Terms? Contact us at:<br />
-            <a href="mailto:support@vibedigitalmarketing.com" className="text-purple-600 hover:underline">
-              support@vibedigitalmarketing.com
+            <a href="mailto:support@vibelabsmarketing.com" className="text-purple-600 hover:underline">
+              support@vibelabsmarketing.com
             </a>
           </p>
           <p className="text-sm text-gray-400 mt-8">
-            Vibe Digital Marketing · San Antonio, TX
+            Vibe Labs Marketing · San Antonio, TX
           </p>
         </div>
       </article>
