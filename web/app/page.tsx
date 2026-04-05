@@ -14,7 +14,7 @@ export default function Home() {
           <a href="#signals" className="hover:text-gray-900 transition">Signals</a>
           <a href="#lookup" className="hover:text-gray-900 transition">Employer Lookup</a>
           <a
-            href="https://chromewebstore.google.com"
+            href="https://chromewebstore.google.com/detail/nodldfdkjomniknohmejdimjlejfongd"
             target="_blank"
             rel="noopener"
             className="bg-gray-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 transition"
@@ -40,7 +40,7 @@ export default function Home() {
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
           <a
-            href="https://chromewebstore.google.com"
+            href="https://chromewebstore.google.com/detail/nodldfdkjomniknohmejdimjlejfongd"
             target="_blank"
             rel="noopener"
             className="bg-gray-900 text-white px-8 py-3 rounded-lg font-medium hover:bg-gray-800 transition text-base"
@@ -217,7 +217,7 @@ export default function Home() {
             Free. No account. No data collected. Just install and browse.
           </p>
           <a
-            href="https://chromewebstore.google.com"
+            href="https://chromewebstore.google.com/detail/nodldfdkjomniknohmejdimjlejfongd"
             target="_blank"
             rel="noopener"
             className="inline-block bg-white text-gray-900 px-8 py-3 rounded-lg font-medium hover:bg-gray-100 transition"
@@ -248,7 +248,7 @@ export default function Home() {
                 <li><a href="#how-it-works" className="hover:text-gray-900 transition">How It Works</a></li>
                 <li><a href="#signals" className="hover:text-gray-900 transition">Signals</a></li>
                 <li><a href="#lookup" className="hover:text-gray-900 transition">Employer Lookup</a></li>
-                <li><a href="https://chromewebstore.google.com" className="hover:text-gray-900 transition">Chrome Web Store</a></li>
+                <li><a href="https://chromewebstore.google.com/detail/nodldfdkjomniknohmejdimjlejfongd" className="hover:text-gray-900 transition">Chrome Web Store</a></li>
               </ul>
             </div>
 
