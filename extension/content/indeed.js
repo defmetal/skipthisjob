@@ -483,7 +483,9 @@ function injectOverlay(localScore, backendData, listing) {
         </div>
       ` : ''}
       ${backendData && backendData.totalReports > 0 ? `
-        <div class="ghost-detector-community">📊 ${backendData.totalReports} community reports</div>
+        <div class="ghost-detector-community" style="background: #fff3e0; padding: 6px 10px; border-radius: 6px; border-left: 3px solid #ff9800;">
+          📊 ${backendData.totalReports} other users have flagged this employer
+        </div>
       ` : ''}
       ${backendData && backendData.found && backendData.totalListings ? `
         <div class="ghost-detector-community">📋 Based on ${backendData.totalListings} tracked listings for this employer</div>
@@ -510,8 +512,9 @@ function injectOverlay(localScore, backendData, listing) {
           <button class="ghost-detector-option" data-outcome="offered">🎉 Got Offer</button>
         </div>
       </div>
+      <div id="ghost-thanks" class="ghost-detector-community" style="display: none; color: #2e7d32; background: #e8f5e9; padding: 8px 10px; border-radius: 6px; margin-top: 8px; font-size: 12px;"></div>
       <div class="ghost-detector-footer">
-        <span>Skip This Job by <a href="https://vibelabsmarketing.com" target="_blank" rel="noopener">Vibe Labs Marketing</a> · <a href="https://skipthisjob.com" target="_blank" rel="noopener">skipthisjob.com</a></span>
+        <span>Skip This Job by <a href="https://vibedigitalmarketing.com" target="_blank" rel="noopener">Vibe Digital Marketing</a> · <a href="https://skipthisjob.com" target="_blank" rel="noopener">skipthisjob.com</a></span>
       </div>
     </div>
   `;
@@ -545,6 +548,8 @@ function injectOverlay(localScore, backendData, listing) {
   document.querySelectorAll('[data-flag]').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       const flag = e.target.dataset.flag;
+      btn.textContent = '⏳ Submitting...';
+      btn.disabled = true;
       const success = await submitReport({
         reportType: 'ghost_flag',
         companyName: listing.companyName,
@@ -553,13 +558,30 @@ function injectOverlay(localScore, backendData, listing) {
         listingUrl: listing.listingUrl,
         flagReasons: [flag],
       });
-      if (success) { btn.textContent = '✓ Reported'; btn.disabled = true; }
+      if (success) {
+        btn.textContent = '✓ Reported';
+        btn.style.background = '#e8f5e9';
+        btn.style.borderColor = '#4caf50';
+        btn.style.color = '#2e7d32';
+        // Show thank you message
+        const thanks = document.getElementById('ghost-thanks');
+        if (thanks) {
+          thanks.textContent = '🙏 Thanks for helping the community! Your anonymous report helps other job seekers.';
+          thanks.style.display = 'block';
+        }
+      } else {
+        btn.textContent = '✗ Failed — try again';
+        btn.disabled = false;
+        btn.style.color = '#c62828';
+      }
     });
   });
 
   document.querySelectorAll('[data-outcome]').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       const outcome = e.target.dataset.outcome;
+      btn.textContent = '⏳ Submitting...';
+      btn.disabled = true;
       const success = await submitReport({
         reportType: 'outcome',
         companyName: listing.companyName,
@@ -568,7 +590,21 @@ function injectOverlay(localScore, backendData, listing) {
         listingUrl: listing.listingUrl,
         outcome: outcome,
       });
-      if (success) { btn.textContent = '✓ Submitted'; btn.disabled = true; }
+      if (success) {
+        btn.textContent = '✓ Submitted';
+        btn.style.background = '#e8f5e9';
+        btn.style.borderColor = '#4caf50';
+        btn.style.color = '#2e7d32';
+        const thanks = document.getElementById('ghost-thanks');
+        if (thanks) {
+          thanks.textContent = '🙏 Thanks! Your experience helps other job seekers avoid dead ends.';
+          thanks.style.display = 'block';
+        }
+      } else {
+        btn.textContent = '✗ Failed — try again';
+        btn.disabled = false;
+        btn.style.color = '#c62828';
+      }
     });
   });
 }
