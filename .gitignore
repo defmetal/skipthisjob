@@ -14,10 +14,12 @@ build/
 .env
 .env.local
 .env.production
+.env.*.local
 
 # misc
 .DS_Store
 *.pem
+Thumbs.db
 
 # debug
 npm-debug.log*
@@ -30,4 +32,9 @@ next-env.d.ts
 
 # vercel
 .vercel
-kaggle/ 
+
+# kaggle dataset files (large CSVs, not committed)
+kaggle/
+
+# extension build artifacts
+extension.zip

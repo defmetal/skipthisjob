@@ -68,13 +68,14 @@ skipthisjob/
 │
 ├── seeding/
 │   ├── seed-kaggle.js       # Kaggle LinkedIn data → Supabase (22K+ employers)
-│   └── seed-glassdoor.js    # Glassdoor rating enrichment (~100 employers)
+│   ├── seed-glassdoor.js    # Glassdoor rating enrichment (~90 employers)
+│   └── clean-corrupted-employers.js  # Cleanup corrupted employer records
 │
 ├── scoring/
 │   └── ghostScore.js        # Scoring engine (reference implementation)
 │
 └── .github/workflows/
-    └── chrome-web-store.yml # Auto-publish extension on push to main
+    └── deploy-extension.yml # Publish extension to Chrome Web Store on v* tag
 ```
 
 ## Scoring Model
@@ -122,7 +123,7 @@ Combined = (Listing heuristic x 0.4) + (Employer score x 0.6). If no employer da
 
 ### Extension
 1. Load unpacked from `extension/` in `chrome://extensions` for development
-2. Auto-published to Chrome Web Store via GitHub Actions on push to `main`
+2. Auto-published to Chrome Web Store via GitHub Actions on `v*` tag push
 
 ### Seeding
 ```bash
