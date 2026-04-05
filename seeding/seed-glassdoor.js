@@ -7,10 +7,16 @@
 
 const { createClient } = require('@supabase/supabase-js');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.error('Missing env vars. Example:');
+  console.error('  SUPABASE_URL=https://xxx.supabase.co SUPABASE_SERVICE_ROLE_KEY=xxx node seeding/seed-glassdoor.js');
+  process.exit(1);
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Glassdoor data compiled from glassdoor.com reviews pages
 // Format: [name_normalized, rating, review_count, glassdoor_url, company_size, industry]
@@ -106,7 +112,7 @@ const GLASSDOOR_DATA = [
   ['kforce', 3.5, 3000, 'https://www.glassdoor.com/Reviews/Kforce-Reviews-E1734.htm', '5001-10000', 'Staffing & Outsourcing'],
   ['teksystems', 3.5, 8000, 'https://www.glassdoor.com/Reviews/TEKsystems-Reviews-E12352.htm', '10001+', 'Staffing & Outsourcing'],
   ['randstad usa', 3.6, 20000, 'https://www.glassdoor.com/Reviews/Randstad-Reviews-E2636.htm', '10001+', 'Staffing & Outsourcing'],
-  ['manpower', 3.3, 10000, 'https://www.glassdoor.com/Reviews/Manpower-Reviews-E607.htm', '10001+', 'Staffing & Outsourcing'],
+  ['manpowergroup', 3.3, 10000, 'https://www.glassdoor.com/Reviews/Manpower-Reviews-E607.htm', '10001+', 'Staffing & Outsourcing'],
   ['adecco', 3.4, 15000, 'https://www.glassdoor.com/Reviews/Adecco-Reviews-E4116.htm', '10001+', 'Staffing & Outsourcing'],
   ['kelly services', 3.5, 5000, 'https://www.glassdoor.com/Reviews/Kelly-Services-Reviews-E2826.htm', '10001+', 'Staffing & Outsourcing'],
   ['apex systems', 3.3, 5000, 'https://www.glassdoor.com/Reviews/Apex-Systems-Reviews-E69810.htm', '5001-10000', 'Staffing & Outsourcing'],
@@ -142,7 +148,7 @@ async function seedGlassdoor() {
   console.log(`Enriching ${GLASSDOOR_DATA.length} employers with Glassdoor data...\n`);
 
   let updated = 0;
-  let notFound = 0;
+  let created = 0;
   let errors = 0;
 
   for (const [name, rating, reviewCount, url, size, industry] of GLASSDOOR_DATA) {
@@ -174,9 +180,38 @@ async function seedGlassdoor() {
       }
     }
 
+    const glassdoorFields = {
+      glassdoor_rating: rating,
+      glassdoor_review_count: reviewCount,
+      glassdoor_url: url,
+      company_size: size,
+      industry: industry,
+      is_high_turnover_industry: [
+        'Staffing & Outsourcing',
+        'Call Center / Customer Service',
+        'Retail & Wholesale',
+        'Transportation & Logistics',
+      ].includes(industry),
+    };
+
     if (!employer) {
-      console.log(`  ✗ Not found: "${name}"`);
-      notFound++;
+      // Create new employer record with Glassdoor data
+      const displayName = name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      const { error: insertError } = await supabase
+        .from('employers')
+        .insert({
+          name_raw: displayName,
+          name_normalized: name,
+          ...glassdoorFields,
+        });
+
+      if (insertError) {
+        console.log(`  ✗ Error creating "${name}": ${insertError.message}`);
+        errors++;
+      } else {
+        console.log(`  + Created: ${displayName} → ${rating}/5 (${reviewCount.toLocaleString()} reviews)`);
+        created++;
+      }
       continue;
     }
 
@@ -185,22 +220,10 @@ async function seedGlassdoor() {
       console.log(`  ℹ Mapped "${name}" → DB name: "${employer.name_normalized}" (${employer.name_raw})`);
     }
 
-    // Update with Glassdoor data
+    // Update existing employer with Glassdoor data
     const { error: updateError } = await supabase
       .from('employers')
-      .update({
-        glassdoor_rating: rating,
-        glassdoor_review_count: reviewCount,
-        glassdoor_url: url,
-        company_size: size,
-        industry: industry,
-        is_high_turnover_industry: [
-          'Staffing & Outsourcing',
-          'Call Center / Customer Service',
-          'Retail & Wholesale',
-          'Transportation & Logistics',
-        ].includes(industry),
-      })
+      .update(glassdoorFields)
       .eq('id', employer.id);
 
     if (updateError) {
@@ -213,7 +236,7 @@ async function seedGlassdoor() {
     }
   }
 
-  console.log(`\nDone: ${updated} updated, ${notFound} not found, ${errors} errors`);
+  console.log(`\nDone: ${updated} updated, ${created} created, ${errors} errors`);
 }
 
 seedGlassdoor().catch(console.error);
