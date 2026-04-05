@@ -15,7 +15,7 @@ jobs:
       - name: Zip extension
         run: |
           cd extension
-          zip -r ../extension.zip ./*
+            zip -r ../extension.zip * -x "*.DS_Store"
 
       - name: Upload to Chrome Web Store
         uses: mnao305/chrome-extension-upload@v5.0.0
