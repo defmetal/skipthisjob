@@ -58,7 +58,7 @@ All API calls from the extension go through the background service worker to avo
 
 ### Seeding (`seeding/`)
 - `seed-kaggle.js` — Streaming CSV parser for Kaggle LinkedIn data → Supabase
-- `seed-glassdoor.js` — Glassdoor rating enrichment for top employers
+- `seed-glassdoor.js` — Glassdoor rating enrichment (~100 major employers). Uses exact match → starts-with fuzzy matching against DB `name_normalized`.
 
 ## Database Schema (Supabase)
 Tables: `employers`, `listings`, `repost_patterns`, `community_reports`, `high_turnover_roles`, `high_turnover_industries`, `employer_score_log`
@@ -113,14 +113,13 @@ SUPABASE_SERVICE_ROLE_KEY=xxx
 
 ## Deployment
 - Push to `main` → Vercel auto-deploys (root directory: `web/`)
-- Extension: load unpacked from `extension/` folder in chrome://extensions
+- Push to `main` → GitHub Actions auto-publishes extension to Chrome Web Store (`.github/workflows/chrome-web-store.yml`)
+- Extension: load unpacked from `extension/` folder in chrome://extensions for development
 
 ## Known Issues / TODO
 - Indeed overlay uses fixed positioning (top-right) because Indeed destroys DOM on job click
 - LinkedIn date detection can sometimes read sidebar listing ages instead of the viewed listing
 - Live employer scan on Indeed disabled — raw HTML fetch doesn't include JS-rendered job counts
-- Glassdoor enrichment: seed script created, needs to be run with Supabase credentials
-- Chrome Web Store submission pending (needs privacy policy live first)
 - Website employer lookup search is a placeholder (not functional yet)
 - Leaderboard page not built yet
 

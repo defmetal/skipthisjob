@@ -4,7 +4,7 @@
 
 A Chrome extension + web platform that scores job listings for ghost risk using real-time heuristics, historical repost tracking, community reports, and Glassdoor enrichment.
 
-Built by [Vibe Labs Marketing](https://vibelabsmarketing.com) 
+Built by [Vibe Labs Marketing](https://vibelabsmarketing.com)
 
 ---
 
@@ -29,17 +29,15 @@ Built by [Vibe Labs Marketing](https://vibelabsmarketing.com)
                          │ (Vercel)   │
                          │            │
                          │ • Landing  │
-                         │ • Employer │
-                         │   lookup   │
-                         │ • Leader-  │
-                         │   board    │
+                         │ • Privacy  │
+                         │ • Terms    │
                          └────────────┘
 ```
 
 ## Project Structure
 
 ```
-ghost-job-detector/
+skipthisjob/
 ├── extension/               # Chrome Extension (Manifest V3)
 │   ├── manifest.json
 │   ├── content/
@@ -49,31 +47,39 @@ ghost-job-detector/
 │   ├── background/
 │   │   └── service-worker.js
 │   ├── popup/
-│   │   └── popup.html       # Extension popup (TODO)
-│   └── icons/               # Extension icons (TODO)
+│   │   └── popup.html       # Extension popup
+│   └── icons/               # Extension icons
 │
-├── web/                     # Next.js website (TODO)
+├── web/                     # Next.js 14 website (App Router)
 │   ├── app/
 │   │   ├── page.tsx         # Landing page
-│   │   ├── employer/
-│   │   │   └── [slug]/      # Employer ghost score pages
-│   │   └── leaderboard/     # Worst offenders
-│   └── api/
-│       ├── employer/
-│       │   └── score/       # GET - lookup employer ghost score
-│       ├── report/          # POST - submit community report
-│       └── leaderboard/     # GET - top ghost employers
+│   │   ├── privacy/page.tsx # Privacy policy
+│   │   ├── terms/page.tsx   # Terms of service
+│   │   └── api/
+│   │       ├── employer/score/route.ts  # GET employer ghost score
+│   │       ├── report/route.ts          # POST community report
+│   │       └── leaderboard/route.ts     # GET top ghost employers
+│   └── lib/
+│       ├── supabase.ts      # Supabase client
+│       └── cors.ts          # CORS helpers
 │
 ├── database/
 │   └── schema.sql           # Supabase Postgres schema
 │
-└── scoring/
-    └── ghostScore.js        # Scoring engine (shared)
+├── seeding/
+│   ├── seed-kaggle.js       # Kaggle LinkedIn data → Supabase (22K+ employers)
+│   └── seed-glassdoor.js    # Glassdoor rating enrichment (~100 employers)
+│
+├── scoring/
+│   └── ghostScore.js        # Scoring engine (reference implementation)
+│
+└── .github/workflows/
+    └── chrome-web-store.yml # Auto-publish extension on push to main
 ```
 
 ## Scoring Model
 
-### Listing-Level (runs locally in extension, zero backend needed)
+### Listing-Level (runs locally in extension)
 
 | Signal                  | Weight | Notes                                    |
 |-------------------------|--------|------------------------------------------|
@@ -97,53 +103,32 @@ ghost-job-detector/
 | Glassdoor low rating    | 5      | Employer rating < 3.0                    |
 | Glassdoor low offer rate| 8      | <20% of interviewees got offers          |
 
-### Modifiers (reduce score for legitimate patterns)
-
-| Modifier                | Factor | Notes                                    |
-|-------------------------|--------|------------------------------------------|
-| High-turnover role      | 0.40x  | barista, warehouse associate, etc.       |
-| High-turnover industry  | 0.35-0.60x | food service, retail, healthcare     |
-| Large company (10k+)    | 0.80x  | Expected higher posting volume           |
-| Entry-level role        | 0.70x  | Normal higher turnover                   |
-
 ### Final Score
 
-Combined = (Listing heuristic × 0.4) + (Employer score × 0.6)
-
-If no employer data exists → 100% heuristic score.
-
-## Data Seeding Strategy
-
-1. **Kaggle LinkedIn datasets** (free) — 1.3M+ job postings from 2023-2024.
-   Batch-analyze for repost patterns per employer + title + location.
-
-2. **TheirStack API** (free tier: 200 credits/mo) — Historical + expired
-   listings going back to 2021. Verify worst offenders from Kaggle.
-
-3. **Glassdoor** (Apify scraper, one-time seed) — Interview outcome rates
-   and employer ratings for top employers in the dataset.
+Combined = (Listing heuristic x 0.4) + (Employer score x 0.6). If no employer data: 100% heuristic.
 
 ## Setup
 
 ### Supabase
 1. Create a Supabase project
 2. Run `database/schema.sql` in the SQL editor
-3. Copy the project URL and anon key
+3. Copy the project URL and keys
 
 ### Vercel
 1. Create Next.js app, connect to GitHub
-2. Add environment variables:
-   - `SUPABASE_URL`
-   - `SUPABASE_ANON_KEY`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-3. Deploy
+2. Set root directory to `web/`
+3. Add environment variables: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
+4. Deploy — auto-deploys on push to `main`
 
 ### Extension
-1. `API_BASE` in content scripts is already set to `https://skipthisjob.com/api`
-2. Load unpacked in `chrome://extensions` for development
-3. Publish to Chrome Web Store when ready
+1. Load unpacked from `extension/` in `chrome://extensions` for development
+2. Auto-published to Chrome Web Store via GitHub Actions on push to `main`
 
-### Cloudflare
-1. Point `skipthisjob.com` DNS to Vercel (CNAME)
-2. Same workflow as postmimic.app
-"# skipthisjob" 
+### Seeding
+```bash
+# Seed employers from Kaggle LinkedIn dataset
+SUPABASE_URL=xxx SUPABASE_SERVICE_ROLE_KEY=xxx node seeding/seed-kaggle.js /path/to/kaggle/data
+
+# Enrich with Glassdoor ratings
+SUPABASE_URL=xxx SUPABASE_SERVICE_ROLE_KEY=xxx node seeding/seed-glassdoor.js
+```
