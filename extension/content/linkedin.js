@@ -282,6 +282,22 @@ function scoreLocally(listing) {
     signals.push('Responses managed off LinkedIn');
   }
 
+  // High turnover role detection
+  const HIGH_TURNOVER_PATTERNS = [
+    /barista/i, /crew\s*member/i, /team\s*member/i, /cashier/i,
+    /sales\s*associate/i, /retail\s*associate/i, /warehouse/i,
+    /delivery\s*driver/i, /package\s*handler/i, /registered\s*nurse/i,
+    /\b(lpn|lvn|cna)\b/i, /nursing\s*assistant/i, /home\s*health/i,
+    /caregiver/i, /security\s*(officer|guard)/i, /janitor|custodian/i,
+    /housekeeper/i, /front\s*desk/i, /dishwasher|line\s*cook|server|bartender/i,
+    /call\s*center/i, /customer\s*service\s*rep/i, /truck\s*driver/i,
+    /forklift/i, /picker|packer|stocker/i, /medical\s*assistant/i,
+  ];
+  const isHighTurnover = listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title));
+  if (isHighTurnover) {
+    signals.push('⚡ High turnover role — expect frequent reposting');
+  }
+
   score = Math.min(100, Math.max(0, score));
 
   let label = 'low';
@@ -289,7 +305,7 @@ function scoreLocally(listing) {
   else if (score >= 50) label = 'high';
   else if (score >= 25) label = 'moderate';
 
-  return { score, label, signals };
+  return { score, label, signals, isHighTurnover };
 }
 
 
@@ -377,6 +393,9 @@ function injectOverlay(localScore, backendData, listing) {
       ` : ''}
       ${backendData && backendData.totalReports > 0 ? `
         <div class="ghost-detector-community">📊 ${backendData.totalReports} community reports</div>
+      ` : ''}
+      ${backendData && backendData.found && backendData.totalListings ? `
+        <div class="ghost-detector-community">📋 Based on ${backendData.totalListings} tracked listings for this employer</div>
       ` : ''}
       <div class="ghost-detector-actions">
         <button class="ghost-detector-btn ghost-detector-btn-flag" id="ghost-btn-flag">👎 Flag Ghost Job</button>

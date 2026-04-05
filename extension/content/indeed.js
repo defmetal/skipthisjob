@@ -155,6 +155,53 @@ function parseIndeedListing() {
     data.hiringMultiple = true;
   }
 
+  // Engagement signals — Indeed shows these when the employer is actively reviewing
+  data.activelyReviewing = pageText.includes('reviewing applicants') || 
+                           pageText.includes('actively reviewing') ||
+                           pageText.includes('recently active');
+  if (data.activelyReviewing) {
+    console.log('[SkipThisJob] Employer actively reviewing');
+  }
+
+  // "Urgently hiring" — can be legitimate or evergreen bait
+  data.urgentlyHiring = pageText.includes('urgently hiring');
+
+  // "Apply on company site" — redirects off Indeed, less trackable
+  const applyBtn = document.querySelector('[data-testid="apply-button-container"]') ||
+                   document.querySelector('.jobsearch-IndeedApplyButton-newDesign') ||
+                   document.querySelector('button[id*="apply"], a[id*="apply"]');
+  const applyText = applyBtn ? applyBtn.textContent.toLowerCase() : '';
+  data.appliesOffsite = applyText.includes('company site') || applyText.includes('apply on') || 
+                        pageText.includes('apply on company site');
+
+  // Indeed employer rating (shown on the page like "3.5 ⭐")
+  const ratingEl = document.querySelector('[data-testid="inlineHeader-companyRating"]') ||
+                   document.querySelector('.jobsearch-CompanyInfoContainer .ratingsDisplay');
+  if (!ratingEl) {
+    const ratingMatch = pageText.match(/(\d\.\d)\s*(?:out of 5|★|star)/);
+    if (ratingMatch) data.indeedRating = parseFloat(ratingMatch[1]);
+  } else {
+    const ratingText = ratingEl.textContent.match(/(\d\.\d)/);
+    if (ratingText) data.indeedRating = parseFloat(ratingText[1]);
+  }
+  if (data.indeedRating) console.log('[SkipThisJob] Indeed rating:', data.indeedRating);
+
+  // Description length
+  data.descriptionLength = data.description ? data.description.length : 0;
+
+  // Seniority mismatch — "entry level" title but requires 5+ years
+  data.seniorityMismatch = false;
+  if (data.description) {
+    const descLower = data.description.toLowerCase();
+    const titleLower = (data.title || '').toLowerCase();
+    const entrySignals = /entry[- ]level|junior|associate|intern|graduate/i;
+    const seniorReqs = /(?:5|6|7|8|9|10)\+?\s*(?:years?|yrs?)\s*(?:of\s+)?(?:experience|exp)/i;
+    if ((entrySignals.test(titleLower) || entrySignals.test(descLower.slice(0, 200))) && seniorReqs.test(descLower)) {
+      data.seniorityMismatch = true;
+      console.log('[SkipThisJob] Seniority mismatch detected');
+    }
+  }
+
   // Check for "active X days ago" which is different from "posted X days ago"
   if (data.daysOpen == null) {
     const activeMatch = pageText.match(/active\s+(\d+)\s*days?\s*ago/);
@@ -186,11 +233,14 @@ function scoreLocally(listing) {
   let score = 0;
   const signals = [];
 
-  // Indeed shows less metadata than LinkedIn, so we start with a 
-  // baseline uncertainty score when key data is missing
-  let missingDataPoints = 0;
+  // === INDEED PLATFORM BASELINE ===
+  // Indeed provides less transparency than LinkedIn — no applicant counts,
+  // no repost labels, no hiring contact info, no response insights on most
+  // listings. The absence of this data IS a signal. Start with a baseline
+  // that reflects the platform's opacity.
+  score += 10;
 
-  // Posting age
+  // === POSTING AGE ===
   if (listing.daysOpen != null) {
     if (listing.daysOpen >= 60) {
       score += 15;
@@ -200,67 +250,143 @@ function scoreLocally(listing) {
       signals.push(`Open ${listing.daysOpen} days`);
     } else if (listing.daysOpen >= 14) {
       score += 3;
+    } else if (listing.daysOpen <= 3) {
+      score -= 5; // freshly posted is a good sign
     }
   } else {
-    missingDataPoints++;
+    score += 5;
+    signals.push('Posting age unknown');
   }
 
-  // Repost
+  // === REPOST ===
   if (listing.isRepost) {
     score += 20;
     signals.push('Marked as reposted');
   }
 
-  // Applicants
-  if (listing.applicantCount != null) {
-    if (listing.applicantCount >= 500) {
-      score += 12;
-      signals.push(`${listing.applicantCount}+ applicants`);
-    } else if (listing.applicantCount >= 200) {
-      score += 6;
-      signals.push(`${listing.applicantCount}+ applicants`);
-    }
-  }
-
-  // No salary
+  // === SALARY ===
   if (!listing.salaryListed) {
     score += 5;
     signals.push('No salary listed');
   }
 
-  // Third-party
+  // === THIRD PARTY ===
   if (listing.isThirdParty) {
     score += 15;
     signals.push('Posted by staffing agency or job board');
   }
 
-  // Indeed-specific: employer responsiveness
-  // "Often replies in 1 day" is a GOOD signal — reduce score
+  // === EMPLOYER RESPONSIVENESS ===
   if (listing.employerResponsive) {
-    score -= 5;
-    signals.push('Employer responds quickly');
+    score -= 5; // positive signal but shouldn't cancel red flags
+    signals.push('✓ Employer responds quickly');
   } else {
-    // No responsiveness data — slight bump
-    score += 5;
+    score += 8;
     signals.push('No employer response data');
   }
 
-  // Vague description check
+  // === APPLY METHOD ===
+  if (listing.appliesOffsite) {
+    score += 5;
+    signals.push('Applies redirect off Indeed');
+  }
+
+  // === INDEED EMPLOYER RATING ===
+  if (listing.indeedRating != null) {
+    if (listing.indeedRating < 2.5) {
+      score += 10;
+      signals.push(`Indeed rating: ${listing.indeedRating}/5`);
+    } else if (listing.indeedRating < 3.0) {
+      score += 5;
+      signals.push(`Indeed rating: ${listing.indeedRating}/5`);
+    } else if (listing.indeedRating >= 4.0) {
+      score -= 3; // well-rated employer
+    }
+  }
+
+  // === DESCRIPTION QUALITY ===
   if (listing.description) {
+    // Very short description
+    if (listing.descriptionLength < 300) {
+      score += 8;
+      signals.push('Very short job description');
+    }
+
+    // Vague buzzwords
     const vagueCount = [
       /fast[- ]paced environment/i,
       /wear many hats/i,
       /self[- ]starter/i,
-      /rockstar|ninja|guru/i,
-      /competitive (salary|compensation)/i,
+      /rockstar|ninja|guru|wizard/i,
+      /competitive (salary|compensation|pay)/i,
       /exciting opportunity/i,
       /other duties as assigned/i,
+      /great (benefits|culture|team)/i,
+      /must be able to multitask/i,
+      /detail[- ]oriented/i,
+      /results[- ]driven/i,
     ].filter(p => p.test(listing.description)).length;
 
-    if (vagueCount >= 3) {
-      score += 8;
+    if (vagueCount >= 4) {
+      score += 10;
       signals.push('Vague or generic description');
+    } else if (vagueCount >= 2) {
+      score += 5;
+      signals.push('Some generic language in description');
     }
+  } else {
+    score += 5;
+    signals.push('No description available');
+  }
+
+  // === HIRING MULTIPLE ===
+  if (listing.hiringMultiple) {
+    score += 3;
+    signals.push('Hiring multiple candidates');
+  }
+
+  // === ENGAGEMENT SIGNALS ===
+  // Indeed's own advice: listings older than 30 days with no 
+  // "Reviewing Applicants" or "Recently Active" badge are highly suspicious
+  if (listing.activelyReviewing) {
+    score -= 8; // strong positive signal
+    signals.push('✓ Employer actively reviewing applications');
+  } else if (listing.daysOpen != null && listing.daysOpen >= 14) {
+    // Old listing with NO engagement signals = stale/ghost
+    score += 10;
+    signals.push('No active review signals on older listing');
+  }
+
+  // === SENIORITY MISMATCH ===
+  // Indeed flags this: "entry-level" with "5+ years required"
+  if (listing.seniorityMismatch) {
+    score += 12;
+    signals.push('⚠️ Seniority mismatch — entry role requires senior experience');
+  }
+
+  // === STALE LISTING COMBO ===
+  // The worst signal: old + no engagement + no response data + no salary
+  // This is the classic ghost job pattern
+  if (listing.daysOpen >= 30 && !listing.activelyReviewing && 
+      !listing.employerResponsive && !listing.salaryListed) {
+    score += 10;
+    signals.push('🚩 Stale listing pattern: old, no engagement, no salary');
+  }
+
+  // === HIGH TURNOVER ROLE ===
+  const HIGH_TURNOVER_PATTERNS = [
+    /barista/i, /crew\s*member/i, /team\s*member/i, /cashier/i,
+    /sales\s*associate/i, /retail\s*associate/i, /warehouse/i,
+    /delivery\s*driver/i, /package\s*handler/i, /registered\s*nurse/i,
+    /\b(lpn|lvn|cna)\b/i, /nursing\s*assistant/i, /home\s*health/i,
+    /caregiver/i, /security\s*(officer|guard)/i, /janitor|custodian/i,
+    /housekeeper/i, /front\s*desk/i, /dishwasher|line\s*cook|server|bartender/i,
+    /call\s*center/i, /customer\s*service\s*rep/i, /truck\s*driver/i,
+    /forklift/i, /picker|packer|stocker/i, /medical\s*assistant/i,
+  ];
+  const isHighTurnover = listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title));
+  if (isHighTurnover) {
+    signals.push('⚡ High turnover role — expect frequent reposting');
   }
 
   score = Math.min(100, Math.max(0, score));
@@ -270,7 +396,7 @@ function scoreLocally(listing) {
   else if (score >= 50) label = 'high';
   else if (score >= 25) label = 'moderate';
 
-  return { score, label, signals };
+  return { score, label, signals, isHighTurnover };
 }
 
 
@@ -359,6 +485,9 @@ function injectOverlay(localScore, backendData, listing) {
       ${backendData && backendData.totalReports > 0 ? `
         <div class="ghost-detector-community">📊 ${backendData.totalReports} community reports</div>
       ` : ''}
+      ${backendData && backendData.found && backendData.totalListings ? `
+        <div class="ghost-detector-community">📋 Based on ${backendData.totalListings} tracked listings for this employer</div>
+      ` : ''}
       <div class="ghost-detector-actions">
         <button class="ghost-detector-btn ghost-detector-btn-flag" id="ghost-btn-flag">👎 Flag Ghost Job</button>
         <button class="ghost-detector-btn ghost-detector-btn-outcome" id="ghost-btn-outcome">📝 Report Outcome</button>
@@ -387,22 +516,16 @@ function injectOverlay(localScore, backendData, listing) {
     </div>
   `;
 
-  // Find insertion point — Indeed job detail areas
-  const targetContainer =
-    document.querySelector('.jobsearch-JobInfoHeader-title-container') ||
-    document.querySelector('.jobsearch-ViewJobLayout--embedded') ||
-    document.querySelector('#viewJobSSRRoot') ||
-    document.querySelector('#jobDescriptionText')?.parentElement ||
-    document.querySelector('.jobsearch-JobComponent');
-
-  if (targetContainer) {
-    targetContainer.insertBefore(overlay, targetContainer.firstChild);
-  } else {
-    // Fallback: insert at top of body
-    overlay.style.margin = '12px auto';
-    overlay.style.maxWidth = '800px';
-    document.body.insertBefore(overlay, document.body.firstChild);
-  }
+  // Fixed-position overlay — Indeed constantly destroys and recreates
+  // the right pane content, so we float independently of their DOM.
+  overlay.style.position = 'fixed';
+  overlay.style.top = '80px';
+  overlay.style.right = '20px';
+  overlay.style.zIndex = '99999';
+  overlay.style.maxWidth = '340px';
+  overlay.style.boxShadow = '0 4px 20px rgba(0,0,0,0.15)';
+  overlay.style.borderRadius = '10px';
+  document.body.appendChild(overlay);
 
   // --- Event listeners ---
   document.getElementById('ghost-btn-flag')?.addEventListener('click', () => {
@@ -484,10 +607,17 @@ async function processCurrentListing() {
   const localScore = scoreLocally(listing);
   injectOverlay(localScore, null, listing);
 
+  // Fetch backend employer score
   const backendData = await fetchEmployerScore(listing.companyName);
-  if (backendData && backendData.found) {
-    injectOverlay(localScore, backendData, listing);
-  }
+
+  // TODO: Live employer scan disabled — Indeed's raw HTML doesn't include
+  // the actual job count (it's loaded via JavaScript). Needs a different
+  // approach like parsing Indeed's JSON API or embedded page data.
+  // For now, rely on the backend's tracked listings from Kaggle seed data.
+
+  // Re-inject with backend data
+  const mergedBackend = backendData && backendData.found ? backendData : null;
+  injectOverlay(localScore, mergedBackend, listing);
 
   isProcessing = false;
 }
@@ -495,10 +625,35 @@ async function processCurrentListing() {
 // Initial run
 processCurrentListing();
 
-// Poll for vjk changes (Indeed sometimes uses inline job switching)
+// Poll for vjk changes
 setInterval(() => {
   const vjk = getCurrentVjk();
   if (vjk !== lastVjk && !isProcessing) {
     processCurrentListing();
   }
 }, 1500);
+
+// Listen for clicks on job cards in the left pane
+document.addEventListener('click', (e) => {
+  const jobCard = e.target.closest('.jobsearch-LeftPane a, .job_seen_beacon, .jobTitle, [data-jk]');
+  if (jobCard) {
+    // Reset lastVjk so the next poll triggers a reprocess
+    setTimeout(() => {
+      lastVjk = null;
+      processCurrentListing();
+    }, 1500);
+  }
+}, true);
+
+// Watch for right pane content changes
+const rightPane = document.querySelector('.jobsearch-RightPane') || 
+                  document.querySelector('#jobsearch-ViewjobPaneWrapper');
+if (rightPane) {
+  const observer = new MutationObserver(() => {
+    const vjk = getCurrentVjk();
+    if (vjk !== lastVjk && !isProcessing) {
+      processCurrentListing();
+    }
+  });
+  observer.observe(rightPane, { childList: true, subtree: true });
+}
