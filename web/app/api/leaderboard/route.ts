@@ -41,7 +41,7 @@ export async function GET(request: NextRequest) {
 
   if (error) {
     console.error('Leaderboard query error:', error);
-    return corsResponse({ error: 'Query failed' }, { status: 500 });
+	return corsResponse({ error: 'Query failed' }, 500);
   }
 
   return corsResponse({
