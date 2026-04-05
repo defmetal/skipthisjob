@@ -294,47 +294,34 @@ function scoreLocally(listing) {
 
 
 // ============================================================
-// BACKEND API
+// BACKEND API (via background service worker to avoid CORS)
 // ============================================================
 
 async function fetchEmployerScore(companyName) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-
-    const res = await fetch(`${API_BASE}/employer/score?` + new URLSearchParams({
-      name: companyName,
-    }), { signal: controller.signal });
-
-    clearTimeout(timeout);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (e) {
-    return null;
-  }
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(
+      { type: 'FETCH_EMPLOYER_SCORE', name: companyName },
+      response => resolve(response?.data || null)
+    );
+  });
 }
 
 async function submitReport(reportData) {
-  try {
-    let { userHash } = await chrome.storage.local.get('userHash');
-    if (!userHash) {
-      userHash = crypto.randomUUID();
-      await chrome.storage.local.set({ userHash });
-    }
-
-    const res = await fetch(`${API_BASE}/report`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...reportData,
-        anonymousUserHash: userHash,
-        platform: 'linkedin',
-      }),
-    });
-    return res.ok;
-  } catch (e) {
-    return false;
+  let { userHash } = await chrome.storage.local.get('userHash');
+  if (!userHash) {
+    userHash = crypto.randomUUID();
+    await chrome.storage.local.set({ userHash });
   }
+
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(
+      {
+        type: 'SUBMIT_REPORT',
+        reportData: { ...reportData, anonymousUserHash: userHash, platform: 'linkedin' },
+      },
+      response => resolve(response?.success || false)
+    );
+  });
 }
 
 

@@ -146,9 +146,22 @@ function parseIndeedListing() {
   }
 
   // --- Hiring insights ---
-  if (pageText.includes('hiring multiple candidates') || pageText.includes('urgently hiring')) {
-    // These can be either legitimate urgency or evergreen churn signals
-    // Not penalizing but noting
+  // Indeed shows employer responsiveness signals in the sidebar cards
+  if (pageText.includes('often replies in')) {
+    data.employerResponsive = true;
+    console.log('[SkipThisJob] Employer responsive');
+  }
+  if (pageText.includes('hiring multiple candidates')) {
+    data.hiringMultiple = true;
+  }
+
+  // Check for "active X days ago" which is different from "posted X days ago"
+  if (data.daysOpen == null) {
+    const activeMatch = pageText.match(/active\s+(\d+)\s*days?\s*ago/);
+    if (activeMatch) {
+      data.daysOpen = parseInt(activeMatch[1]);
+      console.log('[SkipThisJob] Active days ago:', data.daysOpen);
+    }
   }
 
   // --- Job ID from URL ---
@@ -173,6 +186,10 @@ function scoreLocally(listing) {
   let score = 0;
   const signals = [];
 
+  // Indeed shows less metadata than LinkedIn, so we start with a 
+  // baseline uncertainty score when key data is missing
+  let missingDataPoints = 0;
+
   // Posting age
   if (listing.daysOpen != null) {
     if (listing.daysOpen >= 60) {
@@ -181,7 +198,11 @@ function scoreLocally(listing) {
     } else if (listing.daysOpen >= 30) {
       score += 9;
       signals.push(`Open ${listing.daysOpen} days`);
+    } else if (listing.daysOpen >= 14) {
+      score += 3;
     }
+  } else {
+    missingDataPoints++;
   }
 
   // Repost
@@ -190,7 +211,7 @@ function scoreLocally(listing) {
     signals.push('Marked as reposted');
   }
 
-  // Applicants (Indeed doesn't always show this)
+  // Applicants
   if (listing.applicantCount != null) {
     if (listing.applicantCount >= 500) {
       score += 12;
@@ -207,16 +228,39 @@ function scoreLocally(listing) {
     signals.push('No salary listed');
   }
 
-  // No hiring contact (Indeed rarely shows this)
-  if (!listing.hiringContactVisible) {
-    // Don't penalize on Indeed since they rarely show contacts
-    // score += 5;
-  }
-
   // Third-party
   if (listing.isThirdParty) {
     score += 15;
     signals.push('Posted by staffing agency or job board');
+  }
+
+  // Indeed-specific: employer responsiveness
+  // "Often replies in 1 day" is a GOOD signal — reduce score
+  if (listing.employerResponsive) {
+    score -= 5;
+    signals.push('Employer responds quickly');
+  } else {
+    // No responsiveness data — slight bump
+    score += 5;
+    signals.push('No employer response data');
+  }
+
+  // Vague description check
+  if (listing.description) {
+    const vagueCount = [
+      /fast[- ]paced environment/i,
+      /wear many hats/i,
+      /self[- ]starter/i,
+      /rockstar|ninja|guru/i,
+      /competitive (salary|compensation)/i,
+      /exciting opportunity/i,
+      /other duties as assigned/i,
+    ].filter(p => p.test(listing.description)).length;
+
+    if (vagueCount >= 3) {
+      score += 8;
+      signals.push('Vague or generic description');
+    }
   }
 
   score = Math.min(100, Math.max(0, score));
@@ -231,38 +275,34 @@ function scoreLocally(listing) {
 
 
 // ============================================================
-// BACKEND API
+// BACKEND API (via background service worker to avoid CORS)
 // ============================================================
 
 async function fetchEmployerScore(companyName) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(`${API_BASE}/employer/score?` + new URLSearchParams({ name: companyName }), { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (e) {
-    return null;
-  }
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(
+      { type: 'FETCH_EMPLOYER_SCORE', name: companyName },
+      response => resolve(response?.data || null)
+    );
+  });
 }
 
 async function submitReport(reportData) {
-  try {
-    let { userHash } = await chrome.storage.local.get('userHash');
-    if (!userHash) {
-      userHash = crypto.randomUUID();
-      await chrome.storage.local.set({ userHash });
-    }
-    const res = await fetch(`${API_BASE}/report`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...reportData, anonymousUserHash: userHash, platform: 'indeed' }),
-    });
-    return res.ok;
-  } catch (e) {
-    return false;
+  let { userHash } = await chrome.storage.local.get('userHash');
+  if (!userHash) {
+    userHash = crypto.randomUUID();
+    await chrome.storage.local.set({ userHash });
   }
+
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(
+      {
+        type: 'SUBMIT_REPORT',
+        reportData: { ...reportData, anonymousUserHash: userHash, platform: 'indeed' },
+      },
+      response => resolve(response?.success || false)
+    );
+  });
 }
 
 

@@ -12,63 +12,65 @@ export async function GET(request: NextRequest) {
     return corsResponse({ error: 'Missing name parameter' }, 400);
   }
 
-  // Normalize: lowercase, trim, strip common suffixes
-  const normalized = name
-    .toLowerCase()
-    .trim()
-    .replace(/\s+(inc\.?|llc\.?|corp\.?|ltd\.?|co\.?|company|corporation|group|holdings)$/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const selectFields = `
+    ghost_score,
+    ghost_label,
+    total_reports,
+    total_listings_tracked,
+    glassdoor_rating,
+    glassdoor_offer_rate,
+    glassdoor_positive_rate,
+    glassdoor_url,
+    is_high_turnover_industry,
+    company_size,
+    industry
+  `;
 
-  // Look up employer
-  const { data: employer, error } = await supabaseAdmin
+  // Normalize: lowercase, trim, strip common suffixes iteratively
+  let normalized = name.toLowerCase().trim().replace(/\.com\b/gi, '');
+  const suffixes = /\s+(inc\.?|llc\.?|llp\.?|corp\.?|ltd\.?|co\.?|company|corporation|group|holdings|services|consulting|solutions|enterprises|technologies|international|worldwide|global|north america|usa|us)$/i;
+  // Strip suffixes repeatedly (handles "Services LLC", "Consulting Group Inc", etc.)
+  for (let i = 0; i < 4; i++) {
+    const before = normalized;
+    normalized = normalized.replace(suffixes, '').trim();
+    if (normalized === before) break;
+  }
+  normalized = normalized.replace(/\s+/g, ' ').trim();
+
+  // 1. Exact match
+  const { data: employer } = await supabaseAdmin
     .from('employers')
-    .select(`
-      ghost_score,
-      ghost_label,
-      total_reports,
-      total_listings_tracked,
-      glassdoor_rating,
-      glassdoor_offer_rate,
-      glassdoor_positive_rate,
-      glassdoor_url,
-      is_high_turnover_industry,
-      company_size,
-      industry
-    `)
+    .select(selectFields)
     .eq('name_normalized', normalized)
     .single();
 
-  if (error || !employer) {
-    // Try fuzzy match (contains)
-    const { data: fuzzyResults } = await supabaseAdmin
+  if (employer) return buildResponse(employer);
+
+  // 2. Fuzzy: database entry contains our search term
+  const { data: fuzzy1 } = await supabaseAdmin
+    .from('employers')
+    .select(selectFields)
+    .ilike('name_normalized', `%${normalized}%`)
+    .order('total_listings_tracked', { ascending: false })
+    .limit(1);
+
+  if (fuzzy1 && fuzzy1.length > 0) return buildResponse(fuzzy1[0]);
+
+  // 3. Reverse fuzzy: our search term contains the database entry
+  //    Extract the first word as the core brand name and try that
+  const coreName = normalized.split(' ')[0];
+  if (coreName && coreName.length >= 3) {
+    const { data: fuzzy2 } = await supabaseAdmin
       .from('employers')
-      .select(`
-        ghost_score,
-        ghost_label,
-        total_reports,
-        total_listings_tracked,
-        glassdoor_rating,
-        glassdoor_offer_rate,
-        glassdoor_positive_rate,
-        glassdoor_url,
-        is_high_turnover_industry,
-        company_size,
-        industry
-      `)
-      .ilike('name_normalized', `%${normalized}%`)
-      .order('total_reports', { ascending: false })
-      .limit(1);
+      .select(selectFields)
+      .eq('name_normalized', coreName)
+      .single();
 
-    if (!fuzzyResults || fuzzyResults.length === 0) {
-      // No data — extension will use heuristic-only scoring
-      return corsResponse({ score: null, found: false });
-    }
-
-    return buildResponse(fuzzyResults[0]);
+    if (fuzzy2) return buildResponse(fuzzy2);
   }
 
-  return buildResponse(employer);
+  // No match found
+  return corsResponse({ score: null, found: false });
 }
 
 function buildResponse(employer: any) {
