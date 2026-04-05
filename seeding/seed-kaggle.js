@@ -135,6 +135,73 @@ function isHighTurnover(title) {
   return HIGH_TURNOVER.some(p => p.test(title));
 }
 
+// Reject garbage that bled into the company_name column from other CSV fields
+function isValidCompanyName(normalized) {
+  const words = normalized.split(' ');
+
+  // Too long — real company names rarely exceed 60 chars
+  if (normalized.length > 60) return false;
+
+  // Starts with non-alphanumeric (quotes, dashes, special chars)
+  if (/^[^a-zA-Z0-9]/.test(normalized)) return false;
+
+  // Pure numbers / prices / salary fragments
+  if (/^[\d$.,\-\s%+]+$/.test(normalized)) return false;
+
+  // Contains URLs
+  if (/https?:|www\.|\.com\//.test(normalized)) return false;
+
+  // Sentence fragments: high ratio of common English function words
+  if (words.length >= 4) {
+    const filler = new Set(['a','an','the','and','or','of','to','in','on','at','by',
+      'for','with','is','are','was','were','be','been','being','has','have','had',
+      'do','does','did','will','would','shall','should','may','might','can','could',
+      'must','not','but','if','so','as','it','its','no','than','then','also','just',
+      'very','too','only','even','still','about','into','from','up','out','off',
+      'over','down','through','after','before','between','under','we','you','they',
+      'our','your','their','us','them','him','her','who','what','which','where',
+      'when','while','that','this','these','those','each','every','all','any','some',
+      'both','more','most','much','many','such','own','other','how','why']);
+    const fillerCount = words.filter(w => filler.has(w)).length;
+    if (fillerCount / words.length >= 0.5) return false;
+  }
+
+  // Single common English words that are not company names
+  if (words.length === 1) {
+    const notCompanies = new Set(['color','race','religion','ancestry','sex','age',
+      'disability','skills','knowledge','training','excel','weekends','evenings',
+      'days','nights','holidays','competitive','friendly','safe','integrity','equity',
+      'write','discussed','customers','market','state','trade','finance','planning',
+      'word','javascript','python','java','business','engineering','nursing',
+      'accounting','marketing','operations','sales','pharmacy','construction',
+      'manufacturing','logistics','testing','programming','procedures','licenses',
+      'technology','emotional','health','policies','regulations','benefits',
+      'maintenance','processes','electrical','clean','employees','service','support',
+      'written','verbal','standing','sitting','walking','lifting','bending',
+      'reaching','pushing','pulling','climbing','hiring','staff','empathy',
+      'interpersonal','certifications','respect','compassionate','perspectives',
+      'energy','interviewing','dressing','hire','tools','develop','analyze',
+      'deliver','monitor','copy','administer','personally','perform']);
+    if (notCompanies.has(normalized)) return false;
+  }
+
+  // Starts with common sentence/description openers
+  const badStarts = ['including ','such as ','ability to ','required to ',
+    'expected to ','responsible for ','looking for ','seeking ','based in ',
+    'located in ','knowledge of ','experience in ','experience with ',
+    'must be ','must have ','will be ','we are ','we offer ','you will ',
+    'please ','click ','visit ','apply ','about us ','join us ','come join ',
+    'recognized as ','committed to ','dedicated to ','focused on '];
+  if (badStarts.some(p => normalized.startsWith(p))) return false;
+
+  // EEO / legal boilerplate
+  if (/equal opportunity|affirmative action|discrimination|reasonable accommodation|background check|drug (test|screen)|pre-employment|criminal history|fair chance|protected class/.test(normalized)) {
+    return false;
+  }
+
+  return true;
+}
+
 function scoreToLabel(s) {
   if (s >= 75) return 'very_high';
   if (s >= 50) return 'high';
@@ -240,7 +307,7 @@ async function streamCSV(filePath, employers) {
 
     if (!companyName) { skipped++; continue; }
     const normalized = normalizeCompany(companyName);
-    if (!normalized) { skipped++; continue; }
+    if (!normalized || !isValidCompanyName(normalized)) { skipped++; continue; }
 
     if (!employers.has(normalized)) {
       employers.set(normalized, {
@@ -310,7 +377,7 @@ async function streamLDJSON(filePath, employers) {
 
     if (!companyName) { skipped++; continue; }
     const normalized = normalizeCompany(companyName);
-    if (!normalized) { skipped++; continue; }
+    if (!normalized || !isValidCompanyName(normalized)) { skipped++; continue; }
 
     if (!employers.has(normalized)) {
       employers.set(normalized, {
