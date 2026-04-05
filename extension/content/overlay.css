@@ -1,0 +1,197 @@
+/* ============================================================
+   Ghost Job Detector - Overlay Styles
+   Injected into LinkedIn and Indeed pages
+   ============================================================ */
+
+#ghost-detector-overlay {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  margin: 12px 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #1a1a1a;
+}
+
+.ghost-detector-card {
+  border-radius: 8px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+/* --- Header --- */
+.ghost-detector-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ghost-detector-icon {
+  font-size: 18px;
+}
+
+.ghost-detector-title {
+  font-size: 14px;
+  flex-grow: 1;
+}
+
+.ghost-detector-score {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* --- Signals --- */
+.ghost-detector-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.ghost-detector-signal {
+  display: inline-block;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.05);
+  color: #555;
+  white-space: nowrap;
+}
+
+/* --- Glassdoor section --- */
+.ghost-detector-glassdoor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  color: #555;
+}
+
+.ghost-detector-glassdoor a {
+  color: #0073b1;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.ghost-detector-glassdoor a:hover {
+  text-decoration: underline;
+}
+
+.ghost-detector-glassdoor-label {
+  font-weight: 600;
+  color: #333;
+}
+
+/* --- Community --- */
+.ghost-detector-community {
+  font-size: 12px;
+  color: #555;
+  padding: 4px 0;
+}
+
+/* --- Action buttons --- */
+.ghost-detector-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.ghost-detector-btn {
+  flex: 1;
+  padding: 7px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: white;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: #333;
+}
+
+.ghost-detector-btn:hover {
+  background: #f5f5f5;
+  border-color: #bbb;
+}
+
+.ghost-detector-btn-flag:hover {
+  border-color: #f44336;
+  color: #c62828;
+  background: #fef2f2;
+}
+
+.ghost-detector-btn-outcome:hover {
+  border-color: #2196f3;
+  color: #1565c0;
+  background: #eff6ff;
+}
+
+/* --- Report forms --- */
+.ghost-detector-report-form,
+.ghost-detector-flag-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.ghost-detector-form-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.ghost-detector-form-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ghost-detector-option {
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: white;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: #444;
+  white-space: nowrap;
+}
+
+.ghost-detector-option:hover {
+  background: #f0f0f0;
+  border-color: #aaa;
+}
+
+.ghost-detector-option--done {
+  background: #e8f5e9 !important;
+  border-color: #4caf50 !important;
+  color: #2e7d32 !important;
+  cursor: default;
+}
+
+/* --- Footer --- */
+.ghost-detector-footer {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+  font-size: 10px;
+  color: #999;
+}
+
+.ghost-detector-footer a {
+  color: #999;
+  text-decoration: none;
+}
+
+.ghost-detector-footer a:hover {
+  color: #666;
+  text-decoration: underline;
+}

@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #fafafa;
+  --color-surface: #ffffff;
+  --color-text: #111111;
+  --color-text-muted: #666666;
+  --color-text-faint: #999999;
+  --color-border: #e5e5e5;
+  --color-accent: #7c3aed;
+  --color-accent-soft: #f3f0ff;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
