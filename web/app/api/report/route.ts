@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { corsResponse, corsOptions } from '@/lib/cors';
 import { supabaseAdmin } from '@/lib/supabase';
 
 /**
@@ -19,12 +20,16 @@ import { supabaseAdmin } from '@/lib/supabase';
  *   outcome?: string,             // for outcome: 'no_response' | 'rejected' | 'interviewed' | 'offered'
  * }
  */
+export async function OPTIONS() {
+  return corsOptions();
+}
+
 export async function POST(request: NextRequest) {
   let body: any;
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+    return corsResponse({ error: 'Invalid JSON' }, 400);
   }
 
   const {
@@ -41,11 +46,11 @@ export async function POST(request: NextRequest) {
 
   // Validate required fields
   if (!reportType || !companyName || !anonymousUserHash || !platform) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    return corsResponse({ error: 'Missing required fields' }, 400);
   }
 
   if (reportType !== 'ghost_flag' && reportType !== 'outcome') {
-    return NextResponse.json({ error: 'Invalid reportType' }, { status: 400 });
+    return corsResponse({ error: 'Invalid reportType' }, 400);
   }
 
   const normalizedCompany = companyName
@@ -90,7 +95,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!employer) {
-    return NextResponse.json({ error: 'Failed to resolve employer' }, { status: 500 });
+    return corsResponse({ error: 'Failed to resolve employer' }, 500);
   }
 
   // --- Upsert listing if platformJobId exists ---
@@ -146,10 +151,10 @@ export async function POST(request: NextRequest) {
   if (reportError) {
     // If it's a unique constraint violation, user already reported
     if (reportError.code === '23505') {
-      return NextResponse.json({ error: 'Already reported', duplicate: true }, { status: 409 });
+      return corsResponse({ error: 'Already reported', duplicate: true }, 409);
     }
     console.error('Report insert error:', reportError);
-    return NextResponse.json({ error: 'Failed to save report' }, { status: 500 });
+    return corsResponse({ error: 'Failed to save report' }, 500);
   }
 
   // --- Increment employer report count ---
@@ -170,5 +175,5 @@ export async function POST(request: NextRequest) {
     })
     .eq('id', employer.id);
 
-  return NextResponse.json({ success: true });
+  return corsResponse({ success: true });
 }

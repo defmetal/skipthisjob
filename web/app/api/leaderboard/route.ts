@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { corsResponse, corsOptions } from '@/lib/cors';
 import { supabaseAdmin } from '@/lib/supabase';
 
 /**
@@ -7,6 +8,10 @@ import { supabaseAdmin } from '@/lib/supabase';
  * Returns the worst ghost job offenders, ranked by ghost score.
  * Powers the public leaderboard on the website.
  */
+export async function OPTIONS() {
+  return corsOptions();
+}
+
 export async function GET(request: NextRequest) {
   const limit = Math.min(
     parseInt(request.nextUrl.searchParams.get('limit') || '20'),
@@ -36,10 +41,10 @@ export async function GET(request: NextRequest) {
 
   if (error) {
     console.error('Leaderboard query error:', error);
-    return NextResponse.json({ error: 'Query failed' }, { status: 500 });
+    return corsResponse({ error: 'Query failed' }, { status: 500 });
   }
 
-  return NextResponse.json({
+  return corsResponse({
     employers: data || [],
     total: count || 0,
     limit,

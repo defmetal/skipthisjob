@@ -1,26 +1,15 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
+import { corsResponse, corsOptions } from '@/lib/cors';
 
-/**
- * GET /api/employer/score?name=CompanyName
- *
- * Returns the ghost score and metadata for an employer.
- * Called by the Chrome extension on every job listing view.
- *
- * Response shape:
- * {
- *   score: number,
- *   label: 'low' | 'moderate' | 'high' | 'very_high',
- *   signals: string[],
- *   totalReports: number,
- *   totalListings: number,
- *   glassdoor?: { rating, offerRate, url } | null
- * }
- */
+export async function OPTIONS() {
+  return corsOptions();
+}
+
 export async function GET(request: NextRequest) {
   const name = request.nextUrl.searchParams.get('name');
   if (!name) {
-    return NextResponse.json({ error: 'Missing name parameter' }, { status: 400 });
+    return corsResponse({ error: 'Missing name parameter' }, 400);
   }
 
   // Normalize: lowercase, trim, strip common suffixes
@@ -73,7 +62,7 @@ export async function GET(request: NextRequest) {
 
     if (!fuzzyResults || fuzzyResults.length === 0) {
       // No data — extension will use heuristic-only scoring
-      return NextResponse.json({ score: null, found: false });
+      return corsResponse({ score: null, found: false });
     }
 
     return buildResponse(fuzzyResults[0]);
@@ -110,7 +99,7 @@ function buildResponse(employer: any) {
     };
   }
 
-  return NextResponse.json({
+  return corsResponse({
     score: employer.ghost_score,
     label: employer.ghost_label,
     signals,
