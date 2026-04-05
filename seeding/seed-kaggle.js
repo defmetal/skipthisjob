@@ -136,7 +136,7 @@ function isHighTurnover(title) {
 }
 
 // Reject garbage that bled into the company_name column from other CSV fields
-function isValidCompanyName(normalized) {
+function isValidCompanyName(normalized, rawName) {
   const words = normalized.split(' ');
 
   // Too long — real company names rarely exceed 60 chars
@@ -151,38 +151,91 @@ function isValidCompanyName(normalized) {
   // Contains URLs
   if (/https?:|www\.|\.com\//.test(normalized)) return false;
 
+  // State + zip code patterns ("ca 95814", "fl 33132")
+  if (/^[a-z]{2}\s+\d{4,5}/.test(normalized)) return false;
+
+  // Contains zip codes anywhere
+  if (/\b\d{5}(-\d{4})?\b/.test(normalized)) return false;
+
+  // Marketing / mission statement phrases
+  if (/proudly (offers|provides|serves)|is proud to|is pleased|is committed|is dedicated/.test(normalized)) return false;
+
+  // Ends with location qualifiers
+  if (/- *(onsite|remote|hybrid)$/i.test(normalized)) return false;
+
   // Sentence fragments: high ratio of common English function words
-  if (words.length >= 4) {
-    const filler = new Set(['a','an','the','and','or','of','to','in','on','at','by',
-      'for','with','is','are','was','were','be','been','being','has','have','had',
-      'do','does','did','will','would','shall','should','may','might','can','could',
-      'must','not','but','if','so','as','it','its','no','than','then','also','just',
-      'very','too','only','even','still','about','into','from','up','out','off',
-      'over','down','through','after','before','between','under','we','you','they',
-      'our','your','their','us','them','him','her','who','what','which','where',
-      'when','while','that','this','these','those','each','every','all','any','some',
-      'both','more','most','much','many','such','own','other','how','why']);
+  const filler = new Set(['a','an','the','and','or','of','to','in','on','at','by',
+    'for','with','is','are','was','were','be','been','being','has','have','had',
+    'do','does','did','will','would','shall','should','may','might','can','could',
+    'must','not','but','if','so','as','it','its','no','than','then','also','just',
+    'very','too','only','even','still','about','into','from','up','out','off',
+    'over','down','through','after','before','between','under','we','you','they',
+    'our','your','their','us','them','him','her','who','what','which','where',
+    'when','while','that','this','these','those','each','every','all','any','some',
+    'both','more','most','much','many','such','own','other','how','why','without',
+    'regard','upon','during','until','after','before','against','across','along',
+    'around','within','beyond','toward','per','via']);
+
+  if (words.length >= 3) {
     const fillerCount = words.filter(w => filler.has(w)).length;
-    if (fillerCount / words.length >= 0.5) return false;
+    if (fillerCount / words.length >= 0.4) return false;
   }
 
   // Single common English words that are not company names
   if (words.length === 1) {
-    const notCompanies = new Set(['color','race','religion','ancestry','sex','age',
-      'disability','skills','knowledge','training','excel','weekends','evenings',
-      'days','nights','holidays','competitive','friendly','safe','integrity','equity',
-      'write','discussed','customers','market','state','trade','finance','planning',
-      'word','javascript','python','java','business','engineering','nursing',
-      'accounting','marketing','operations','sales','pharmacy','construction',
-      'manufacturing','logistics','testing','programming','procedures','licenses',
-      'technology','emotional','health','policies','regulations','benefits',
-      'maintenance','processes','electrical','clean','employees','service','support',
-      'written','verbal','standing','sitting','walking','lifting','bending',
-      'reaching','pushing','pulling','climbing','hiring','staff','empathy',
+    const notCompanies = new Set([
+      // EEO/demographic
+      'color','race','religion','ancestry','sex','age','disability','ethnicity',
+      // Skills / tech / tools (not companies)
+      'skills','knowledge','training','excel','word','javascript','python','java',
+      'kotlin','swift','rust','react','angular','terraform','kubernetes','docker',
+      'agile','scrum','mongodb','redis','linux','html','typescript','golang',
+      'ruby','perl','scala','matlab','fortran','figma','jenkins','ansible',
+      // Job desc vocabulary
+      'business','engineering','nursing','accounting','marketing','operations',
+      'sales','pharmacy','construction','manufacturing','logistics','testing',
+      'programming','procedures','licenses','technology','finance','planning',
+      'emotional','health','policies','regulations','benefits','maintenance',
+      'processes','electrical','clean','employees','service','support',
+      'written','verbal','oral','competitive','friendly','safe','integrity',
+      'equity','discussed','customers','market','state','trade',
+      'standing','sitting','walking','lifting','bending','reaching',
+      'pushing','pulling','climbing','hiring','staff','empathy',
       'interpersonal','certifications','respect','compassionate','perspectives',
       'energy','interviewing','dressing','hire','tools','develop','analyze',
-      'deliver','monitor','copy','administer','personally','perform']);
+      'deliver','monitor','copy','administer','personally','perform',
+      'care','body','data','lift','pull','push','walk','bend','stand',
+      'modify','predict','floating','classification','generation','incidents',
+      'screen','prepped','switchgear','biotech','industrial','medical',
+      'dental','clinical','surgical','mechanical','chemical','documentation',
+    ]);
     if (notCompanies.has(normalized)) return false;
+
+    // Lowercase single word in the raw name = almost certainly not a company
+    if (rawName && rawName === rawName.toLowerCase() && normalized.length > 3) return false;
+  }
+
+  // Two-word generic phrases (not companies)
+  if (words.length === 2) {
+    const notCompanyPairs = new Set([
+      'supply chain','human resources','data science','machine learning',
+      'quality assurance','business development','project management',
+      'graphic design','web development','critical thinking','critical illness',
+      'paid holidays','sick days','sick time','paid time','base salary',
+      'hourly rate','background check','drug screen','drug test',
+      'cover letter','phone screen','working remotely','fine manipulation',
+      'kids clothes','cross domain','knowledge &','information systems',
+      'national origin','gender identity','sexual orientation',
+      'veteran status','marital status','genetic information',
+      'computer science','business administration','information technology',
+    ]);
+    if (notCompanyPairs.has(normalized)) return false;
+
+    // Both words lowercase in raw = probably not a company
+    const rawWords = (rawName || '').split(/\s+/);
+    if (rawWords.length >= 2 && /^[a-z]/.test(rawWords[0]) && /^[a-z]/.test(rawWords[1])) {
+      return false;
+    }
   }
 
   // Starts with common sentence/description openers
@@ -191,11 +244,18 @@ function isValidCompanyName(normalized) {
     'located in ','knowledge of ','experience in ','experience with ',
     'must be ','must have ','will be ','we are ','we offer ','you will ',
     'please ','click ','visit ','apply ','about us ','join us ','come join ',
-    'recognized as ','committed to ','dedicated to ','focused on '];
+    'recognized as ','committed to ','dedicated to ','focused on ',
+    'according to ','subject to ','provides for ','among other ',
+    'starting at ','log into ','published '];
   if (badStarts.some(p => normalized.startsWith(p))) return false;
 
+  // Job listing content keywords (in multi-word entries)
+  if (words.length >= 2 && /paid |tuition |reimbursement|401k|salary|compensation |insurance |per hour|per year|usd |applicant|candidate|lawful |permanent resident|state and local|regard to|date of hire|job-related|manipulation|professionally/.test(normalized)) {
+    return false;
+  }
+
   // EEO / legal boilerplate
-  if (/equal opportunity|affirmative action|discrimination|reasonable accommodation|background check|drug (test|screen)|pre-employment|criminal history|fair chance|protected class/.test(normalized)) {
+  if (/equal opportunity|affirmative action|discrimination|reasonable accommodation|drug (test|screen)|pre-employment|criminal history|fair chance|protected class/.test(normalized)) {
     return false;
   }
 
@@ -307,7 +367,7 @@ async function streamCSV(filePath, employers) {
 
     if (!companyName) { skipped++; continue; }
     const normalized = normalizeCompany(companyName);
-    if (!normalized || !isValidCompanyName(normalized)) { skipped++; continue; }
+    if (!normalized || !isValidCompanyName(normalized, companyName)) { skipped++; continue; }
 
     if (!employers.has(normalized)) {
       employers.set(normalized, {
@@ -377,7 +437,7 @@ async function streamLDJSON(filePath, employers) {
 
     if (!companyName) { skipped++; continue; }
     const normalized = normalizeCompany(companyName);
-    if (!normalized || !isValidCompanyName(normalized)) { skipped++; continue; }
+    if (!normalized || !isValidCompanyName(normalized, companyName)) { skipped++; continue; }
 
     if (!employers.has(normalized)) {
       employers.set(normalized, {
