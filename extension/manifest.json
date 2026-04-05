@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Skip This Job — Ghost Job Detector",
   "version": "0.1.0",
-  "description": "Detect ghost job listings on LinkedIn and Indeed before you waste time applying. Community-powered ghost scores, repost tracking, and employer transparency.",
+  "description": "Detect ghost job listings on LinkedIn and Indeed. Get ghost risk scores, repost tracking, and employer transparency.",
   "permissions": [
     "storage",
     "activeTab"
