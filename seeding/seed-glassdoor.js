@@ -118,17 +118,55 @@ async function seedGlassdoor() {
   let errors = 0;
 
   for (const [name, rating, reviewCount, url, size, industry] of GLASSDOOR_DATA) {
-    // Find employer by normalized name
-    const { data: employer, error } = await supabase
+    // Find employer using same strategy as API: exact → fuzzy contains → first-word exact
+    let employer = null;
+
+    // 1. Exact match on name_normalized
+    const { data: exact } = await supabase
       .from('employers')
-      .select('id, name_raw, glassdoor_rating')
+      .select('id, name_raw, name_normalized, glassdoor_rating')
       .eq('name_normalized', name)
       .single();
 
-    if (error || !employer) {
+    if (exact) {
+      employer = exact;
+    } else {
+      // 2. Fuzzy: DB name contains our search term
+      const { data: fuzzy1 } = await supabase
+        .from('employers')
+        .select('id, name_raw, name_normalized, glassdoor_rating')
+        .ilike('name_normalized', `%${name}%`)
+        .order('total_listings_tracked', { ascending: false })
+        .limit(1);
+
+      if (fuzzy1 && fuzzy1.length > 0) {
+        employer = fuzzy1[0];
+      } else {
+        // 3. First-word exact match (core brand name)
+        const coreName = name.split(' ')[0];
+        if (coreName && coreName.length >= 3) {
+          const { data: fuzzy2 } = await supabase
+            .from('employers')
+            .select('id, name_raw, name_normalized, glassdoor_rating')
+            .eq('name_normalized', coreName)
+            .single();
+
+          if (fuzzy2) {
+            employer = fuzzy2;
+          }
+        }
+      }
+    }
+
+    if (!employer) {
       console.log(`  ✗ Not found: "${name}"`);
       notFound++;
       continue;
+    }
+
+    // Log name mapping when fuzzy match found a different normalized name
+    if (employer.name_normalized !== name) {
+      console.log(`  ℹ Mapped "${name}" → DB name: "${employer.name_normalized}" (${employer.name_raw})`);
     }
 
     // Update with Glassdoor data
