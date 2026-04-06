@@ -169,6 +169,37 @@ const GLASSDOOR_DATA = [
   ['epsilon', 3.3, 2000, 'https://www.glassdoor.com/Reviews/Epsilon-Reviews-E7890.htm', '5001-10000', 'Marketing & Advertising'],
   ['lhh', 3.5, 2000, 'https://www.glassdoor.com/Reviews/LHH-Reviews-E11621.htm', '10001+', 'Staffing & Outsourcing'],
   ['solomon page', 3.5, 500, 'https://www.glassdoor.com/Reviews/Solomon-Page-Reviews-E27534.htm', '201-500', 'Staffing & Outsourcing'],
+
+  // Retail — more
+  ['chico\'s fas', 3.2, 3000, 'https://www.glassdoor.com/Reviews/Chico-s-FAS-Reviews-E3199.htm', '10001+', 'Retail & Wholesale'],
+  ['h&r block', 3.5, 8000, 'https://www.glassdoor.com/Reviews/H-R-Block-Reviews-E3529.htm', '10001+', 'Financial Services'],
+  ['jos. a. bank', 3.1, 1500, 'https://www.glassdoor.com/Reviews/Jos-A-Bank-Clothiers-Reviews-E7186.htm', '1001-5000', 'Retail & Wholesale'],
+  ['aldi', 3.3, 12000, 'https://www.glassdoor.com/Reviews/ALDI-Reviews-E10809.htm', '10001+', 'Retail & Wholesale'],
+  ['ulta beauty', 3.2, 10000, 'https://www.glassdoor.com/Reviews/Ulta-Beauty-Reviews-E18498.htm', '10001+', 'Retail & Wholesale'],
+
+  // Healthcare — more
+  ['ciena healthcare', 3.0, 500, 'https://www.glassdoor.com/Reviews/Ciena-Healthcare-Reviews-E460221.htm', '5001-10000', 'Healthcare'],
+  ['nyc health + hospitals', 3.3, 3000, 'https://www.glassdoor.com/Reviews/NYC-Health-Hospitals-Reviews-E34498.htm', '10001+', 'Healthcare'],
+  ['north shore healthcare', 2.8, 200, 'https://www.glassdoor.com/Reviews/North-Shore-Healthcare-Reviews-E1157893.htm', '1001-5000', 'Healthcare'],
+  ['pointclickcare', 3.5, 500, 'https://www.glassdoor.com/Reviews/PointClickCare-Reviews-E332592.htm', '1001-5000', 'Information Technology'],
+  ['wellnow urgent care', 3.0, 500, 'https://www.glassdoor.com/Reviews/WellNow-Urgent-Care-Reviews-E2415498.htm', '1001-5000', 'Healthcare'],
+  ['innovative renal care', 3.2, 200, 'https://www.glassdoor.com/Reviews/Innovative-Renal-Care-Reviews-E1072887.htm', '1001-5000', 'Healthcare'],
+
+  // Logistics — more
+  ['fedex logistics', 3.3, 50000, 'https://www.glassdoor.com/Reviews/FedEx-Reviews-E544.htm', '10001+', 'Transportation & Logistics'],
+
+  // Financial Services — more
+  ['edward jones', 3.8, 10000, 'https://www.glassdoor.com/Reviews/Edward-Jones-Reviews-E3389.htm', '10001+', 'Financial Services'],
+
+  // Staffing — more
+  ['national staffing solutions', 3.3, 200, 'https://www.glassdoor.com/Reviews/National-Staffing-Solutions-Reviews-E854978.htm', '501-1000', 'Staffing & Outsourcing'],
+  ['brightpath associates', 3.0, 50, 'https://www.glassdoor.com/Reviews/BrightPath-Associates-Reviews-E5149066.htm', '51-200', 'Staffing & Outsourcing'],
+  ['rightworks', 3.2, 100, 'https://www.glassdoor.com/Reviews/Rightworks-Reviews-E1332741.htm', '501-1000', 'Staffing & Outsourcing'],
+
+  // Other
+  ['dnv', 3.8, 3000, 'https://www.glassdoor.com/Reviews/DNV-Reviews-E10297.htm', '10001+', 'Management & Consulting'],
+  ['optima bio supply', 3.0, 50, 'https://www.glassdoor.com/Reviews/Optima-Bio-Reviews-E9178058.htm', '51-200', 'Healthcare'],
+
 ];
 
 async function seedGlassdoor() {
