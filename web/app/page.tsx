@@ -63,7 +63,7 @@ export default function Home() {
           {[
             { number: '40-60%', label: 'of listings may be ghost jobs' },
             { number: '6', label: 'heuristic signals analyzed' },
-            { number: '0', label: 'data collected about you' },
+            { number: '0', label: 'personal data collected' },
             { number: '100%', label: 'free, no account needed' },
           ].map((stat, i) => (
             <div key={i}>

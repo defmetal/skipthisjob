@@ -640,6 +640,21 @@ async function processCurrentListing() {
     return;
   }
 
+  // Passively track listing metadata (no user data)
+  chrome.runtime.sendMessage({
+    type: 'TRACK_LISTING',
+    listingData: {
+      companyName: listing.companyName,
+      jobTitle: listing.title,
+      platform: 'indeed',
+      platformJobId: listing.platformJobId,
+      location: listing.location,
+      salaryListed: listing.salaryListed,
+      isRepost: listing.isRepost,
+      daysOpen: listing.daysOpen,
+    },
+  });
+
   const localScore = scoreLocally(listing);
   injectOverlay(localScore, null, listing);
 

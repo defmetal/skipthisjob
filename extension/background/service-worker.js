@@ -64,6 +64,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // --- Track listing (passive, no user data) ---
+  if (message.type === 'TRACK_LISTING') {
+    fetch(`${API_BASE}/track`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message.listingData),
+    })
+      .then(res => sendResponse({ success: res.ok }))
+      .catch(() => sendResponse({ success: false }));
+    return true;
+  }
+
   // --- Update badge ---
   if (message.type === 'UPDATE_BADGE') {
     const { score, label } = message;

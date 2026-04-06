@@ -40,6 +40,14 @@ export default function Privacy() {
             sends the employer name to our API to retrieve their ghost score. No information
             about you is sent with this request — only the company name.
           </p>
+          <p>
+            <strong>Passive listing metadata.</strong> When you view a job listing, the extension
+            sends publicly visible listing information to our server: company name, job title,
+            platform, location, whether a salary is listed, whether it is a repost, and how
+            long the listing has been open. This data comes from the job listing itself —
+            no information about you or your device is included. This helps us track
+            employer posting patterns and improve ghost scores for the community.
+          </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">What We Do NOT Collect</h2>
           <p>
