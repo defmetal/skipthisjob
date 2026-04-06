@@ -13,6 +13,7 @@ export default function Home() {
           <a href="#how-it-works" className="hover:text-gray-900 transition">How It Works</a>
           <a href="#signals" className="hover:text-gray-900 transition">Signals</a>
           <a href="#lookup" className="hover:text-gray-900 transition">Employer Lookup</a>
+          <Link href="/leaderboard" className="hover:text-gray-900 transition">Leaderboard</Link>
           <a
             href="https://chromewebstore.google.com/detail/nodldfdkjomniknohmejdimjlejfongd"
             target="_blank"
@@ -248,6 +249,7 @@ export default function Home() {
                 <li><a href="#how-it-works" className="hover:text-gray-900 transition">How It Works</a></li>
                 <li><a href="#signals" className="hover:text-gray-900 transition">Signals</a></li>
                 <li><a href="#lookup" className="hover:text-gray-900 transition">Employer Lookup</a></li>
+                <li><Link href="/leaderboard" className="hover:text-gray-900 transition">Leaderboard</Link></li>
                 <li><a href="https://chromewebstore.google.com/detail/nodldfdkjomniknohmejdimjlejfongd" className="hover:text-gray-900 transition">Chrome Web Store</a></li>
               </ul>
             </div>
