@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
       let city = null;
       let state = null;
       if (location) {
-        const parts = location.split(',').map(p => p.trim());
+        const parts = location.split(',').map((p: string) => p.trim());
         city = parts[0]?.toLowerCase() || null;
         state = parts[1]?.trim() || null;
       }
