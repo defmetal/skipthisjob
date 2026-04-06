@@ -115,6 +115,17 @@ async function main() {
   }
   console.log(`Loaded community reports for ${reportMap.size.toLocaleString()} employers.\n`);
 
+  // Build percentile lookup for listing volume
+  const allListings = employers.map(e => e.total_listings_tracked || 0).sort((a, b) => a - b);
+  function listingPercentile(n) {
+    let pos = 0;
+    for (const v of allListings) {
+      if (v <= n) pos++;
+      else break;
+    }
+    return pos / allListings.length;
+  }
+
   // Recompute scores
   let changed = 0;
   const updates = [];
@@ -143,31 +154,37 @@ async function main() {
 
     if (hasIdenticalDesc) score += 8;
 
-    // === 2. Listing volume signals (0-15 pts) ===
-    // Companies with a very high number of tracked listings relative to
-    // their apparent size are more likely to be churning/ghost posting.
+    // === 2. Listing volume signals (0-45 pts) ===
+    // Uses percentile ranking for smooth variation + absolute tiers +
+    // listings-to-company-size ratio.
     const listings = emp.total_listings_tracked || 0;
     const empSize = parseCompanySize(emp.company_size);
+    const pct = listingPercentile(listings);
 
+    // Percentile-based score (0-25): creates smooth variation
+    if (pct >= 0.99) score += 25;
+    else if (pct >= 0.97) score += 22;
+    else if (pct >= 0.95) score += 19;
+    else if (pct >= 0.90) score += 16;
+    else if (pct >= 0.80) score += 12;
+    else if (pct >= 0.70) score += 9;
+    else if (pct >= 0.50) score += 6;
+    else if (pct >= 0.30) score += 3;
+    else score += 1;
+
+    // Listings-to-size ratio (0-12): penalizes disproportionate posting
     if (empSize > 0 && listings > 0) {
-      // Listings-to-size ratio: a 1000-person company with 500 tracked listings
-      // is posting ~0.5 listings per employee — that's suspicious
       const ratio = listings / empSize;
-      if (ratio >= 0.10) score += 10;
-      else if (ratio >= 0.05) score += 6;
-      else if (ratio >= 0.02) score += 3;
-    } else if (listings >= 300) {
-      // No size data — use absolute volume
-      score += 8;
-    } else if (listings >= 100) {
-      score += 4;
-    } else if (listings >= 50) {
-      score += 2;
+      if (ratio >= 0.10) score += 12;
+      else if (ratio >= 0.05) score += 8;
+      else if (ratio >= 0.03) score += 5;
+      else if (ratio >= 0.01) score += 2;
     }
 
-    // Diversity penalty: few unique roles but many listings = evergreen churn
-    // We don't have unique role counts in the employer table, but high listings
-    // with reposts is already captured above.
+    // Absolute volume bonus (0-8)
+    if (listings >= 400) score += 8;
+    else if (listings >= 200) score += 5;
+    else if (listings >= 100) score += 3;
 
     // === 3. Community reports (0-27 pts) ===
     const reports = reportMap.get(emp.id);
@@ -208,7 +225,7 @@ async function main() {
 
     // === 6. Apply modifiers ===
     if (emp.is_high_turnover_industry) {
-      score *= 0.55;
+      score *= 0.60;
     }
 
     if (empSize >= 10000) {
