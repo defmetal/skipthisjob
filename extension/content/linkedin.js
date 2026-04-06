@@ -225,6 +225,23 @@ function parseLinkedInListing() {
 // SCORING (local heuristic)
 // ============================================================
 
+// Score ranges (heuristic only, before backend blend):
+//   0–24  Low Risk      — 0-3 minor flags, likely legitimate
+//   25–49 Moderate Risk  — 4+ flags, proceed with caution
+//   50–74 High Risk      — multiple strong signals, likely a waste of time
+//   75–100 Ghost Alert   — overwhelming evidence, almost certainly not real
+//
+// Design intent: reaching Moderate requires 4-5 significant signals.
+// Reaching 75+ on heuristics alone is very hard — it should take a
+// repost (+20) plus several other strong flags, or backend employer
+// data confirming the pattern via the 40/60 blend.
+//
+// Max possible heuristic-only score (all flags firing):
+//   20 (60d age) + 20 (repost) + 12 (500+ applicants) + 5 (no salary)
+//   + 8 (no contact) + 15 (third-party) + 8 (no response data)
+//   + 8 (responses offsite) + 5 (100+ apps no engagement) = 101 → capped 100
+// Realistic worst case without repost or third-party:
+//   20 + 12 + 5 + 8 + 8 + 8 + 5 = 66 (High Risk, not Ghost Alert)
 function scoreLocally(listing) {
   let score = 0;
   const signals = [];
