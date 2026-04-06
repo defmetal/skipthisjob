@@ -231,10 +231,13 @@ function scoreLocally(listing) {
 
   if (listing.daysOpen != null) {
     if (listing.daysOpen >= 60) {
-      score += 15;
+      score += 20;
       signals.push(`Open ${listing.daysOpen} days`);
     } else if (listing.daysOpen >= 30) {
-      score += 9;
+      score += 15;
+      signals.push(`Open ${listing.daysOpen} days`);
+    } else if (listing.daysOpen >= 14) {
+      score += 5;
       signals.push(`Open ${listing.daysOpen} days`);
     }
   }
@@ -260,7 +263,7 @@ function scoreLocally(listing) {
   }
 
   if (!listing.hiringContactVisible) {
-    score += 5;
+    score += 8;
     signals.push('No hiring contact shown');
   }
 
@@ -278,8 +281,14 @@ function scoreLocally(listing) {
 
   // Responses managed off-platform
   if (listing.responseManagedOffsite) {
-    score += 5;
+    score += 8;
     signals.push('Responses managed off LinkedIn');
+  }
+
+  // High applicant count with no employer engagement
+  if (listing.applicantCount != null && listing.applicantCount >= 100 && listing.noResponseData) {
+    score += 5;
+    signals.push('100+ applicants with no employer engagement');
   }
 
   // High turnover role detection

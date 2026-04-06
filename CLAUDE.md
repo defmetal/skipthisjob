@@ -78,13 +78,14 @@ Example: "Amazon.com Services LLC" → "amazon" (matches database)
 ## Scoring Model
 
 ### LinkedIn Signals
-- Posting age (14d/30d/60d escalation, 0-15 pts)
+- Posting age (14d: +5, 30d: +15, 60d: +20)
 - "Reposted" label (+20)
 - Applicant count (200+/500+, 0-12 pts)
-- No salary (+5), No hiring contact (+5)
+- No salary (+5), No hiring contact (+8)
 - Third-party/staffing agency (+15)
 - No response insights (+8)
-- Responses managed off LinkedIn (+5)
+- Responses managed off LinkedIn (+8)
+- 100+ applicants with no employer engagement (+5)
 - High turnover role detection (informational, not score-affecting)
 
 ### Indeed Signals
