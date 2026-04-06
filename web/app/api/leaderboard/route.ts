@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
     `,
       { count: 'exact' }
     )
-    .gte('ghost_score', 40)
+    .gte('ghost_score', 25)
     .order('ghost_score', { ascending: false })
     .range(offset, offset + limit - 1);
 
