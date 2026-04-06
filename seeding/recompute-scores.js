@@ -189,9 +189,11 @@ async function main() {
     // === 3. Community reports (0-27 pts) ===
     const reports = reportMap.get(emp.id);
     if (reports) {
-      if (reports.ghostFlags >= 20) score += 15;
-      else if (reports.ghostFlags >= 10) score += 9;
-      else if (reports.ghostFlags >= 3) score += 3;
+      if (reports.ghostFlags >= 20) score += 20;
+      else if (reports.ghostFlags >= 10) score += 15;
+      else if (reports.ghostFlags >= 5) score += 10;
+      else if (reports.ghostFlags >= 3) score += 7;
+      else if (reports.ghostFlags >= 1) score += 5;
 
       if (reports.outcomes >= 5) {
         const noResponseRate = reports.noResponse / reports.outcomes;

@@ -54,7 +54,7 @@ export async function GET(request: NextRequest) {
     `,
       { count: 'exact' }
     )
-    .gte('ghost_score', 25)
+    .or('ghost_score.gte.25,total_reports.gt.0')
     .order(sortBy, { ascending, nullsFirst: false })
     .range(offset, offset + limit - 1);
 
