@@ -22,6 +22,9 @@ interface LeaderboardResponse {
   offset: number;
 }
 
+type SortColumn = 'ghost_score' | 'name_raw' | 'total_listings_tracked' | 'total_reports' | 'glassdoor_rating' | 'industry';
+type SortDir = 'asc' | 'desc';
+
 const LIMIT = 20;
 
 function ghostScoreColor(label: string): string {
@@ -40,16 +43,23 @@ function ghostScoreColor(label: string): string {
   }
 }
 
+function SortArrow({ column, sortBy, sortDir }: { column: SortColumn; sortBy: SortColumn; sortDir: SortDir }) {
+  if (sortBy !== column) return <span className="text-gray-300 ml-1">↕</span>;
+  return <span className="ml-1">{sortDir === 'asc' ? '↑' : '↓'}</span>;
+}
+
 export default function LeaderboardPage() {
   const [data, setData] = useState<LeaderboardResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [sortBy, setSortBy] = useState<SortColumn>('ghost_score');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    fetch(`/api/leaderboard?limit=${LIMIT}&offset=${page * LIMIT}`)
+    fetch(`/api/leaderboard?limit=${LIMIT}&offset=${page * LIMIT}&sort_by=${sortBy}&sort_dir=${sortDir}`)
       .then((res) => {
         if (!res.ok) throw new Error('Failed to fetch leaderboard');
         return res.json();
@@ -57,9 +67,21 @@ export default function LeaderboardPage() {
       .then((json) => setData(json))
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [page]);
+  }, [page, sortBy, sortDir]);
 
   const totalPages = data ? Math.ceil(data.total / LIMIT) : 0;
+
+  function handleSort(column: SortColumn) {
+    if (sortBy === column) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(column);
+      setSortDir(column === 'name_raw' ? 'asc' : 'desc');
+    }
+    setPage(0);
+  }
+
+  const thClass = 'px-4 py-3 font-semibold text-gray-600 cursor-pointer hover:text-gray-900 transition select-none';
 
   return (
     <main className="min-h-screen">
@@ -118,13 +140,25 @@ export default function LeaderboardPage() {
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
                     <th className="px-4 py-3 font-semibold text-gray-600 w-12">#</th>
-                    <th className="px-4 py-3 font-semibold text-gray-600">Employer</th>
-                    <th className="px-4 py-3 font-semibold text-gray-600">Ghost Score</th>
+                    <th className={thClass} onClick={() => handleSort('name_raw')}>
+                      Employer<SortArrow column="name_raw" sortBy={sortBy} sortDir={sortDir} />
+                    </th>
+                    <th className={thClass} onClick={() => handleSort('ghost_score')}>
+                      Ghost Score<SortArrow column="ghost_score" sortBy={sortBy} sortDir={sortDir} />
+                    </th>
                     <th className="px-4 py-3 font-semibold text-gray-600">Label</th>
-                    <th className="px-4 py-3 font-semibold text-gray-600 hidden md:table-cell">Industry</th>
-                    <th className="px-4 py-3 font-semibold text-gray-600 hidden sm:table-cell">Listings</th>
-                    <th className="px-4 py-3 font-semibold text-gray-600 hidden sm:table-cell">Reports</th>
-                    <th className="px-4 py-3 font-semibold text-gray-600 hidden lg:table-cell">Glassdoor</th>
+                    <th className={`${thClass} hidden md:table-cell`} onClick={() => handleSort('industry')}>
+                      Industry<SortArrow column="industry" sortBy={sortBy} sortDir={sortDir} />
+                    </th>
+                    <th className={`${thClass} hidden sm:table-cell`} onClick={() => handleSort('total_listings_tracked')}>
+                      Listings<SortArrow column="total_listings_tracked" sortBy={sortBy} sortDir={sortDir} />
+                    </th>
+                    <th className={`${thClass} hidden sm:table-cell`} onClick={() => handleSort('total_reports')}>
+                      Reports<SortArrow column="total_reports" sortBy={sortBy} sortDir={sortDir} />
+                    </th>
+                    <th className={`${thClass} hidden lg:table-cell`} onClick={() => handleSort('glassdoor_rating')}>
+                      Glassdoor<SortArrow column="glassdoor_rating" sortBy={sortBy} sortDir={sortDir} />
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">

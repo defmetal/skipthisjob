@@ -2,8 +2,19 @@ import { NextRequest } from 'next/server';
 import { corsResponse, corsOptions } from '@/lib/cors';
 import { supabaseAdmin } from '@/lib/supabase';
 
+const SORTABLE_COLUMNS = [
+  'ghost_score',
+  'name_raw',
+  'total_listings_tracked',
+  'total_reports',
+  'glassdoor_rating',
+  'industry',
+] as const;
+
+type SortColumn = (typeof SORTABLE_COLUMNS)[number];
+
 /**
- * GET /api/leaderboard?limit=20&offset=0
+ * GET /api/leaderboard?limit=20&offset=0&sort_by=ghost_score&sort_dir=desc
  *
  * Returns the worst ghost job offenders, ranked by ghost score.
  * Powers the public leaderboard on the website.
@@ -18,6 +29,14 @@ export async function GET(request: NextRequest) {
     100
   );
   const offset = parseInt(request.nextUrl.searchParams.get('offset') || '0');
+
+  const sortByParam = request.nextUrl.searchParams.get('sort_by') || 'ghost_score';
+  const sortBy: SortColumn = SORTABLE_COLUMNS.includes(sortByParam as SortColumn)
+    ? (sortByParam as SortColumn)
+    : 'ghost_score';
+
+  const sortDirParam = request.nextUrl.searchParams.get('sort_dir') || 'desc';
+  const ascending = sortDirParam === 'asc';
 
   const { data, error, count } = await supabaseAdmin
     .from('employers')
@@ -36,7 +55,7 @@ export async function GET(request: NextRequest) {
       { count: 'exact' }
     )
     .gte('ghost_score', 25)
-    .order('ghost_score', { ascending: false })
+    .order(sortBy, { ascending, nullsFirst: false })
     .range(offset, offset + limit - 1);
 
   if (error) {

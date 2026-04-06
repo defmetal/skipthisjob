@@ -142,6 +142,33 @@ const GLASSDOOR_DATA = [
   ['verizon', 3.6, 25000, 'https://www.glassdoor.com/Reviews/Verizon-Reviews-E2173.htm', '10001+', 'Telecommunications'],
   ['t-mobile', 3.8, 15000, 'https://www.glassdoor.com/Reviews/T-Mobile-Reviews-E9302.htm', '10001+', 'Telecommunications'],
   ['comcast', 3.2, 15000, 'https://www.glassdoor.com/Reviews/Comcast-Reviews-E419.htm', '10001+', 'Telecommunications'],
+
+  // Retail — additional
+  ['dick\'s sporting goods', 3.3, 12000, 'https://www.glassdoor.com/Reviews/DICK-S-Sporting-Goods-Reviews-E556.htm', '10001+', 'Retail & Wholesale'],
+  ['staples', 3.2, 10000, 'https://www.glassdoor.com/Reviews/Staples-Reviews-E422.htm', '10001+', 'Retail & Wholesale'],
+  ['petco', 3.3, 8000, 'https://www.glassdoor.com/Reviews/Petco-Reviews-E478.htm', '10001+', 'Retail & Wholesale'],
+  ['advance auto parts', 3.1, 6000, 'https://www.glassdoor.com/Reviews/Advance-Auto-Parts-Reviews-E2tried.htm', '10001+', 'Retail & Wholesale'],
+  ['napa auto parts', 3.5, 3000, 'https://www.glassdoor.com/Reviews/NAPA-Auto-Parts-Reviews-E7549.htm', '10001+', 'Retail & Wholesale'],
+  ['papa johns', 3.1, 8000, 'https://www.glassdoor.com/Reviews/Papa-John-s-Reviews-E455.htm', '10001+', 'Food & Beverage'],
+  ['penske', 3.4, 5000, 'https://www.glassdoor.com/Reviews/Penske-Truck-Leasing-Reviews-E4611.htm', '10001+', 'Transportation & Logistics'],
+  ['republic services', 3.3, 5000, 'https://www.glassdoor.com/Reviews/Republic-Services-Reviews-E6094.htm', '10001+', 'Transportation & Logistics'],
+  ['white cap', 3.5, 1500, 'https://www.glassdoor.com/Reviews/White-Cap-Reviews-E798653.htm', '5001-10000', 'Retail & Wholesale'],
+
+  // Healthcare — additional
+  ['aya healthcare', 3.4, 3000, 'https://www.glassdoor.com/Reviews/Aya-Healthcare-Reviews-E505498.htm', '5001-10000', 'Healthcare'],
+  ['lincare', 2.9, 2000, 'https://www.glassdoor.com/Reviews/Lincare-Reviews-E8729.htm', '10001+', 'Healthcare'],
+  ['thermo fisher scientific', 3.8, 10000, 'https://www.glassdoor.com/Reviews/Thermo-Fisher-Scientific-Reviews-E21142.htm', '10001+', 'Healthcare'],
+
+  // Industrial / Manufacturing
+  ['skf', 3.7, 2000, 'https://www.glassdoor.com/Reviews/SKF-Reviews-E3756.htm', '10001+', 'Manufacturing'],
+  ['ingersoll rand', 3.7, 3000, 'https://www.glassdoor.com/Reviews/Ingersoll-Rand-Reviews-E1045.htm', '10001+', 'Manufacturing'],
+  ['sargent & lundy', 3.5, 500, 'https://www.glassdoor.com/Reviews/Sargent-and-Lundy-Reviews-E12162.htm', '1001-5000', 'Construction & Engineering'],
+  ['allied universal', 2.9, 15000, 'https://www.glassdoor.com/Reviews/Allied-Universal-Reviews-E18498.htm', '10001+', 'Security & Investigations'],
+
+  // Marketing / Data / BPO
+  ['epsilon', 3.3, 2000, 'https://www.glassdoor.com/Reviews/Epsilon-Reviews-E7890.htm', '5001-10000', 'Marketing & Advertising'],
+  ['lhh', 3.5, 2000, 'https://www.glassdoor.com/Reviews/LHH-Reviews-E11621.htm', '10001+', 'Staffing & Outsourcing'],
+  ['solomon page', 3.5, 500, 'https://www.glassdoor.com/Reviews/Solomon-Page-Reviews-E27534.htm', '201-500', 'Staffing & Outsourcing'],
 ];
 
 async function seedGlassdoor() {
@@ -177,6 +204,37 @@ async function seedGlassdoor() {
       // Only accept if the matched name looks like a real company name (not a sentence)
       if (startsWith && startsWith.length > 0 && startsWith[0].name_normalized.length <= 60) {
         employer = startsWith[0];
+      }
+    }
+
+    if (!employer) {
+      // 3. Contains match: DB name contains our search term as a word
+      const { data: contains } = await supabase
+        .from('employers')
+        .select('id, name_raw, name_normalized, glassdoor_rating')
+        .ilike('name_normalized', `%${name}%`)
+        .order('total_listings_tracked', { ascending: false })
+        .limit(1);
+
+      if (contains && contains.length > 0 && contains[0].name_normalized.length <= 60) {
+        employer = contains[0];
+      }
+    }
+
+    if (!employer && name.includes(' ')) {
+      // 4. First word exact match: for multi-word names, try matching just the first word
+      //    Only for longer first words (4+ chars) to avoid false positives
+      const firstWord = name.split(' ')[0];
+      if (firstWord.length >= 4) {
+        const { data: firstWordMatch } = await supabase
+          .from('employers')
+          .select('id, name_raw, name_normalized, glassdoor_rating')
+          .eq('name_normalized', firstWord)
+          .limit(1);
+
+        if (firstWordMatch && firstWordMatch.length > 0) {
+          employer = firstWordMatch[0];
+        }
       }
     }
 
