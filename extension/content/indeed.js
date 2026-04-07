@@ -229,6 +229,16 @@ function parseIndeedListing() {
 // SCORING
 // ============================================================
 
+// Philosophy: "How likely is applying to this job a waste of my time?"
+// A listing doesn't have to be fake to be a waste of time. A real job
+// open 30 days with no engagement signals has almost zero chance of
+// resulting in an interview. We score for futility, not just fraud.
+//
+// Score ranges (heuristic only, before backend blend):
+//   0–24  Worth Applying        — fresh listing, few red flags
+//   25–49 Proceed with Caution  — some warning signs, manage expectations
+//   50–74 Likely a Waste of Time — stale, opaque, or showing ghost patterns
+//   75–100 Skip This Job        — overwhelming evidence this won't lead anywhere
 function scoreLocally(listing) {
   let score = 0;
   const signals = [];
@@ -243,13 +253,14 @@ function scoreLocally(listing) {
   // === POSTING AGE ===
   if (listing.daysOpen != null) {
     if (listing.daysOpen >= 60) {
-      score += 15;
-      signals.push(`Open ${listing.daysOpen}+ days`);
+      score += 25;
+      signals.push(`Open ${listing.daysOpen}+ days — why is this still up?`);
     } else if (listing.daysOpen >= 30) {
-      score += 9;
-      signals.push(`Open ${listing.daysOpen} days`);
+      score += 18;
+      signals.push(`Open ${listing.daysOpen} days — almost certainly filled or stalled`);
     } else if (listing.daysOpen >= 14) {
-      score += 3;
+      score += 8;
+      signals.push(`Open ${listing.daysOpen} days — you're already late to this one`);
     } else if (listing.daysOpen <= 3) {
       score -= 5; // freshly posted is a good sign
     }
@@ -261,7 +272,7 @@ function scoreLocally(listing) {
   // === REPOST ===
   if (listing.isRepost) {
     score += 20;
-    signals.push('Marked as reposted');
+    signals.push('Recycled listing — marked as reposted');
   }
 
   // === SALARY ===
@@ -272,8 +283,8 @@ function scoreLocally(listing) {
 
   // === THIRD PARTY ===
   if (listing.isThirdParty) {
-    score += 15;
-    signals.push('Posted by staffing agency or job board');
+    score += 12;
+    signals.push('Middleman — staffing agency or job board');
   }
 
   // === EMPLOYER RESPONSIVENESS ===
@@ -370,7 +381,7 @@ function scoreLocally(listing) {
   if (listing.daysOpen >= 30 && !listing.activelyReviewing && 
       !listing.employerResponsive && !listing.salaryListed) {
     score += 10;
-    signals.push('🚩 Stale listing pattern: old, no engagement, no salary');
+    signals.push('🚩 Stale listing: old, no engagement, no salary — classic dead end');
   }
 
   // === HIGH TURNOVER ROLE ===
@@ -458,7 +469,7 @@ function injectOverlay(localScore, backendData, listing) {
     very_high: { bg: '#f3e5f5', border: '#9c27b0', text: '#6a1b9a', icon: '👻' },
   };
   const color = colors[finalLabel] || colors.moderate;
-  const labelText = { low: 'Low Risk', moderate: 'Moderate Risk', high: 'High Risk', very_high: 'Ghost Alert' };
+  const labelText = { low: 'Worth Applying', moderate: 'Proceed with Caution', high: 'Likely a Waste of Time', very_high: 'Skip This Job' };
 
   const overlay = document.createElement('div');
   overlay.id = 'ghost-detector-overlay';

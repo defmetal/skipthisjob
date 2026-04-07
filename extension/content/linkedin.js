@@ -225,52 +225,52 @@ function parseLinkedInListing() {
 // SCORING (local heuristic)
 // ============================================================
 
-// Score ranges (heuristic only, before backend blend):
-//   0–24  Low Risk      — 0-3 minor flags, likely legitimate
-//   25–49 Moderate Risk  — 4+ flags, proceed with caution
-//   50–74 High Risk      — multiple strong signals, likely a waste of time
-//   75–100 Ghost Alert   — overwhelming evidence, almost certainly not real
+// Philosophy: "How likely is applying to this job a waste of my time?"
+// A listing doesn't have to be fake to be a waste of time. A real job
+// open 30 days with 200+ applicants has almost zero chance of resulting
+// in an interview. We score for futility, not just fraud.
 //
-// Design intent: reaching Moderate requires 4-5 significant signals.
-// Reaching 75+ on heuristics alone is very hard — it should take a
-// repost (+20) plus several other strong flags, or backend employer
-// data confirming the pattern via the 40/60 blend.
+// Score ranges (heuristic only, before backend blend):
+//   0–24  Worth Applying        — fresh listing, few red flags
+//   25–49 Proceed with Caution  — some warning signs, manage expectations
+//   50–74 Likely a Waste of Time — stale, oversaturated, or opaque
+//   75–100 Skip This Job        — overwhelming evidence this won't lead anywhere
 //
 // Max possible heuristic-only score (all flags firing):
-//   20 (60d age) + 20 (repost) + 12 (500+ applicants) + 5 (no salary)
-//   + 8 (no contact) + 15 (third-party) + 8 (no response data)
-//   + 8 (responses offsite) + 5 (100+ apps no engagement) = 101 → capped 100
+//   25 (60d age) + 20 (repost) + 15 (500+ applicants) + 5 (no salary)
+//   + 8 (no contact) + 12 (third-party) + 8 (no response data)
+//   + 8 (responses offsite) + 5 (100+ apps no engagement) = 106 → capped 100
 // Realistic worst case without repost or third-party:
-//   20 + 12 + 5 + 8 + 8 + 8 + 5 = 66 (High Risk, not Ghost Alert)
+//   25 + 15 + 5 + 8 + 8 + 8 + 5 = 74 (Likely a Waste of Time)
 function scoreLocally(listing) {
   let score = 0;
   const signals = [];
 
   if (listing.daysOpen != null) {
     if (listing.daysOpen >= 60) {
-      score += 20;
-      signals.push(`Open ${listing.daysOpen} days`);
+      score += 25;
+      signals.push(`Open ${listing.daysOpen} days — why is this still up?`);
     } else if (listing.daysOpen >= 30) {
-      score += 15;
-      signals.push(`Open ${listing.daysOpen} days`);
+      score += 18;
+      signals.push(`Open ${listing.daysOpen} days — almost certainly filled or stalled`);
     } else if (listing.daysOpen >= 14) {
-      score += 5;
-      signals.push(`Open ${listing.daysOpen} days`);
+      score += 8;
+      signals.push(`Open ${listing.daysOpen} days — you're already behind hundreds of applicants`);
     }
   }
 
   if (listing.isRepost) {
     score += 20;
-    signals.push('Marked as reposted');
+    signals.push('Recycled listing — marked as reposted');
   }
 
   if (listing.applicantCount != null) {
     if (listing.applicantCount >= 500) {
-      score += 12;
-      signals.push(`${listing.applicantCount}+ applicants`);
+      score += 15;
+      signals.push(`${listing.applicantCount}+ applicants — virtually zero chance of being seen`);
     } else if (listing.applicantCount >= 200) {
-      score += 6;
-      signals.push(`${listing.applicantCount}+ applicants`);
+      score += 10;
+      signals.push(`${listing.applicantCount}+ applicants — your resume is in a pile of ${listing.applicantCount}`);
     }
   }
 
@@ -281,13 +281,13 @@ function scoreLocally(listing) {
 
   if (!listing.hiringContactVisible) {
     score += 8;
-    signals.push('No hiring contact shown');
+    signals.push('No hiring contact — no one to follow up with');
   }
 
   // Third-party recruiter / staffing agency
   if (listing.isThirdParty) {
-    score += 15;
-    signals.push('Posted by staffing agency or job board');
+    score += 12;
+    signals.push('Middleman — staffing agency or job board');
   }
 
   // LinkedIn has no response data for this employer
@@ -299,7 +299,7 @@ function scoreLocally(listing) {
   // Responses managed off-platform
   if (listing.responseManagedOffsite) {
     score += 8;
-    signals.push('Responses managed off LinkedIn');
+    signals.push('Responses managed off LinkedIn — less accountability');
   }
 
   // High applicant count with no employer engagement
@@ -393,7 +393,7 @@ function injectOverlay(localScore, backendData, listing) {
     very_high: { bg: '#f3e5f5', border: '#9c27b0', text: '#6a1b9a', icon: '👻' },
   };
   const color = colors[finalLabel] || colors.moderate;
-  const labelText = { low: 'Low Risk', moderate: 'Moderate Risk', high: 'High Risk', very_high: 'Ghost Alert' };
+  const labelText = { low: 'Worth Applying', moderate: 'Proceed with Caution', high: 'Likely a Waste of Time', very_high: 'Skip This Job' };
 
   const overlay = document.createElement('div');
   overlay.id = 'ghost-detector-overlay';
