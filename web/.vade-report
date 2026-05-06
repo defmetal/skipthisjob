@@ -1,0 +1,68 @@
+# Vercel Web Analytics Installation Report
+
+## Summary
+Successfully installed and configured Vercel Web Analytics for the Skip This Job Next.js application following the latest official Vercel documentation.
+
+## Changes Made
+
+### 1. Package Installation
+- **Installed:** `@vercel/analytics` version `^2.0.1`
+- **Package Manager:** pnpm
+- **Command Used:** `pnpm i @vercel/analytics`
+
+### 2. Code Changes
+
+#### Modified: `web/app/layout.tsx`
+Added the Analytics component to the root layout following Next.js App Router best practices:
+
+1. **Import Added:** 
+   ```typescript
+   import { Analytics } from '@vercel/analytics/next';
+   ```
+
+2. **Component Placement:** 
+   - Added `<Analytics />` component inside the `<body>` tag, after `{children}`
+   - This ensures analytics tracking is active across all pages while not blocking initial page render
+
+### 3. Dependencies Updated
+
+#### Modified: `web/package.json`
+- Added `"@vercel/analytics": "^2.0.1"` to dependencies
+- Package manager alphabetically sorted dependencies (standard pnpm behavior)
+
+#### Created: `web/pnpm-lock.yaml`
+- Generated new lock file to ensure consistent dependency resolution
+- Locked all transitive dependencies for `@vercel/analytics` and its peer dependencies
+
+## Implementation Details
+
+### Framework-Specific Approach
+- This project uses **Next.js App Router** (identified by presence of `app/layout.tsx`)
+- Followed the official Vercel documentation for App Router setup
+- Used the framework-specific import from `@vercel/analytics/next`
+
+### Verification Steps Completed
+1. ✅ TypeScript compilation passed (`npx tsc --noEmit` with no errors)
+2. ✅ All imports properly typed and recognized
+3. ✅ Component properly integrated into React component tree
+4. ⚠️ Full production build requires environment variables (Supabase config) - not related to Analytics changes
+
+### Files Staged for Commit
+- `web/app/layout.tsx` - Root layout with Analytics component
+- `web/package.json` - Updated dependencies
+- `web/pnpm-lock.yaml` - Lock file for dependency management
+
+## Next Steps for Deployment
+
+To activate Web Analytics on Vercel:
+1. Enable Web Analytics in the Vercel dashboard under Project Settings > Analytics
+2. Deploy the application using `vercel deploy` or push to connected Git repository
+3. Verify setup by checking browser Network tab for analytics requests to `/<unique-path>/view`
+4. View analytics data in the Vercel dashboard after users visit the site
+
+## Notes
+
+- The Analytics component is lightweight and doesn't block page rendering
+- No additional configuration is required in the code
+- Analytics will only be active when deployed to Vercel with the feature enabled in the dashboard
+- In development mode, the component is present but won't send data unless explicitly configured
