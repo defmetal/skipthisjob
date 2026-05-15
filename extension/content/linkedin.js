@@ -655,6 +655,11 @@ function getCurrentJobId() {
   return match ? match[1] : null;
 }
 
+function isOnJobPage() {
+  const url = window.location.href;
+  return url.includes('linkedin.com/jobs/') || url.includes('/jobs/view/');
+}
+
 /**
  * Wait for LinkedIn's job detail content to actually render.
  * Uses a fast polling loop instead of a fixed timeout so it works
@@ -783,16 +788,30 @@ document.addEventListener('click', (e) => {
   }
 }, true);
 
-// Initial run — also attach observer for SPA content swaps
-processCurrentListing();
-setupJobDetailObserver();
+// Initial run — only if we're on a job page
+if (isOnJobPage()) {
+  processCurrentListing();
+  setupJobDetailObserver();
+}
 
-// Re-attach observer if user navigates within LinkedIn (SPA route changes)
+// Handle navigation within LinkedIn (SPA)
 let lastObserverUrl = location.href;
 setInterval(() => {
   if (location.href !== lastObserverUrl) {
     lastObserverUrl = location.href;
-    // Give the new page a moment to mount its containers
-    setTimeout(setupJobDetailObserver, 1200);
+
+    const overlay = document.getElementById('ghost-detector-overlay');
+
+    if (!isOnJobPage()) {
+      // User left the jobs section → hide the overlay
+      if (overlay) {
+        overlay.remove();
+      }
+      // Reset so the overlay can appear again when they return to a job
+      lastProcessedJobId = null;
+    } else {
+      // Still on jobs section → make sure observer is active
+      setTimeout(setupJobDetailObserver, 1200);
+    }
   }
 }, 800);
