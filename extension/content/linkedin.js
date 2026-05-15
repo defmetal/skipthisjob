@@ -493,6 +493,8 @@ function injectOverlay(localScore, backendData, listing) {
         <span class="ghost-detector-icon">${color.icon}</span>
         <span class="ghost-detector-title">Ghost Risk: <strong style="color: ${color.text}">${labelText[finalLabel]}</strong></span>
         <span class="ghost-detector-score" style="color: ${color.text}">${finalScore}/100</span>
+        ${backendData && backendData.live ? 
+          `<span class="ghost-detector-live" style="background:#dcfce7;color:#166534;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:5px;font-weight:600;letter-spacing:0.3px;">● LIVE</span>` : ''}
       </div>
       ${finalSignals.length > 0 ? `
         <div class="ghost-detector-signals">
@@ -509,7 +511,9 @@ function injectOverlay(localScore, backendData, listing) {
       ` : ''}
       ${backendData && backendData.totalReports > 0 ? `
         <div class="ghost-detector-community" style="background: #fff3e0; padding: 6px 10px; border-radius: 6px; border-left: 3px solid #ff9800;">
-          📊 ${backendData.totalReports} other users have flagged this employer
+          📊 ${backendData.live 
+            ? `${backendData.totalReports} recent community reports` 
+            : `${backendData.totalReports} other users have flagged this employer`}
         </div>
       ` : ''}
       ${backendData && backendData.found && backendData.totalListings ? `
