@@ -229,6 +229,72 @@ function parseLinkedInListing() {
 // A listing doesn't have to be fake to be a waste of time. A real job
 // open 30 days with 200+ applicants has almost zero chance of resulting
 // in an interview. We score for futility, not just fraud.
+
+// --- Real description vagueness + seniority analysis (from scoring/ghostScore.js) ---
+// These give much more granular signals than the old binary "vague description" checks.
+
+const VAGUE_PATTERNS = [
+  /fast[- ]paced environment/i,
+  /wear many hats/i,
+  /self[- ]starter/i,
+  /team player/i,
+  /excellent communication skills/i,
+  /detail[- ]oriented/i,
+  /results[- ]driven/i,
+  /dynamic (environment|team|company)/i,
+  /exciting opportunity/i,
+  /competitive (salary|compensation|pay)/i,
+  /great (benefits|culture|team)/i,
+  /must be able to (multitask|work independently)/i,
+  /rockstar|ninja|guru|wizard/i,
+  /other duties as assigned/i,
+  /fast[- ]growing (company|startup)/i,
+];
+
+const SPECIFIC_PATTERNS = [
+  /\b(python|java|javascript|react|angular|vue|node|sql|aws|gcp|azure)\b/i,
+  /\b(salesforce|hubspot|marketo|tableau|jira|confluence)\b/i,
+  /\breport(s|ing)?\s+to\b/i,
+  /\b(team of|department of)\s+\d+/i,
+  /\$[\d,]+/i,
+  /\b\d+\+?\s*years?\b/i,
+];
+
+const KITCHEN_SINK_TECH = /\b(python|java|javascript|react|angular|vue|node|sql|aws|gcp|azure|docker|kubernetes|terraform|go|rust|c\+\+|ruby|php|swift|kotlin|scala|hadoop|spark|kafka|redis|mongodb|postgresql|mysql|elasticsearch|graphql|rest\s*api|ci\/cd|jenkins|github\s*actions)\b/gi;
+
+function analyzeDescriptionVagueness(text) {
+  if (!text) return 0;
+  let vagueIndicators = 0;
+  let totalChecks = 0;
+
+  totalChecks += VAGUE_PATTERNS.length;
+  VAGUE_PATTERNS.forEach(p => { if (p.test(text)) vagueIndicators++; });
+
+  totalChecks += SPECIFIC_PATTERNS.length;
+  SPECIFIC_PATTERNS.forEach(p => { if (p.test(text)) vagueIndicators--; });
+
+  if (text.length < 500) { vagueIndicators += 2; totalChecks += 2; }
+
+  const techMatches = text.match(KITCHEN_SINK_TECH);
+  if (techMatches && new Set(techMatches.map(t => t.toLowerCase())).size > 15) {
+    vagueIndicators += 3; totalChecks += 3;
+  }
+  return Math.max(0, Math.min(1, vagueIndicators / Math.max(totalChecks, 1)));
+}
+
+function detectSeniorityMismatch(title, description, seniorityLevel) {
+  if (!title || !description) return false;
+  const entrySignals = /\b(entry[- ]level|junior|associate|intern|graduate)\b/i;
+  const seniorRequirements = /\b(10|[1-9]\d)\+?\s*years?\b/i;
+  if (entrySignals.test(title) && seniorRequirements.test(description)) return true;
+
+  const juniorRequirements = /\b[0-2]\+?\s*years?\b/i;
+  const seniorTitleSignals = /\b(senior|lead|principal|director|vp|vice\s*president|head\s+of)\b/i;
+  if (seniorTitleSignals.test(title) && juniorRequirements.test(description)) return true;
+  return false;
+}
+
+// --- End imported analysis helpers ---
 //
 // Score ranges (heuristic only, before backend blend):
 //   0–24  Worth Applying        — fresh listing, few red flags
@@ -306,6 +372,30 @@ function scoreLocally(listing) {
   if (listing.applicantCount != null && listing.applicantCount >= 100 && listing.noResponseData) {
     score += 5;
     signals.push('100+ applicants with no employer engagement');
+  }
+
+  // --- Description quality (using real vagueness analyzer) ---
+  if (listing.description) {
+    const vagueness = analyzeDescriptionVagueness(listing.description);
+    if (vagueness >= 0.65) {
+      score += 12;
+      signals.push('Vague or generic description');
+    } else if (vagueness >= 0.45) {
+      score += 7;
+      signals.push('Some generic language in description');
+    } else if (vagueness <= 0.15) {
+      score -= 4; // actually specific — good sign
+      signals.push('Detailed, specific job description');
+    }
+  } else {
+    score += 6;
+    signals.push('No job description provided');
+  }
+
+  // --- Seniority mismatch (entry title + senior requirements, or vice versa) ---
+  if (detectSeniorityMismatch(listing.title, listing.description || '', listing.seniorityLevel)) {
+    score += 14;
+    signals.push('⚠️ Seniority mismatch — title and requirements conflict');
   }
 
   // High turnover role detection
@@ -403,6 +493,8 @@ function injectOverlay(localScore, backendData, listing) {
         <span class="ghost-detector-icon">${color.icon}</span>
         <span class="ghost-detector-title">Ghost Risk: <strong style="color: ${color.text}">${labelText[finalLabel]}</strong></span>
         <span class="ghost-detector-score" style="color: ${color.text}">${finalScore}/100</span>
+        ${backendData && backendData.live ? 
+          `<span class="ghost-detector-live" style="background:#dcfce7;color:#166534;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:5px;font-weight:600;letter-spacing:0.3px;">● LIVE</span>` : ''}
       </div>
       ${finalSignals.length > 0 ? `
         <div class="ghost-detector-signals">
@@ -419,7 +511,9 @@ function injectOverlay(localScore, backendData, listing) {
       ` : ''}
       ${backendData && backendData.totalReports > 0 ? `
         <div class="ghost-detector-community" style="background: #fff3e0; padding: 6px 10px; border-radius: 6px; border-left: 3px solid #ff9800;">
-          📊 ${backendData.totalReports} other users have flagged this employer
+          📊 ${backendData.live 
+            ? `${backendData.totalReports} recent community reports` 
+            : `${backendData.totalReports} other users have flagged this employer`}
         </div>
       ` : ''}
       ${backendData && backendData.found && backendData.totalListings ? `
@@ -549,13 +643,67 @@ function injectOverlay(localScore, backendData, listing) {
 
 
 // ============================================================
-// MAIN — poll-based, no MutationObserver
+// MAIN — robust initialization + MutationObserver
 // ============================================================
 
 function getCurrentJobId() {
   const match = window.location.href.match(/currentJobId=(\d+)/) ||
                 window.location.href.match(/\/jobs\/view\/(\d+)/);
   return match ? match[1] : null;
+}
+
+/**
+ * Wait for LinkedIn's job detail content to actually render.
+ * Uses a fast polling loop instead of a fixed timeout so it works
+ * on both fast and slow connections / first navigation.
+ */
+async function waitForLinkedInJobContent(maxWaitMs = 6500) {
+  const start = Date.now();
+  const keySelectors = [
+    '.jobs-description-content__text',
+    '.jobs-description__content',
+    'a[href*="/jobs/view/"]',
+    '.job-details-jobs-unified-top-card__company-name',
+    '.jobs-unified-top-card__company-name'
+  ];
+
+  while (Date.now() - start < maxWaitMs) {
+    for (const sel of keySelectors) {
+      if (document.querySelector(sel)) return true;
+    }
+    await new Promise(r => setTimeout(r, 180));
+  }
+  return false;
+}
+
+/**
+ * Attach a MutationObserver to the job detail pane.
+ * This catches cases where LinkedIn swaps the content without a URL change.
+ */
+function setupJobDetailObserver() {
+  const container =
+    document.querySelector('.jobs-search__job-details') ||
+    document.querySelector('.scaffold-layout__detail') ||
+    document.querySelector('#main') ||
+    document.body;
+
+  if (!container || (container as any)._ghostObserverAttached) return;
+
+  const observer = new MutationObserver(() => {
+    const jobId = getCurrentJobId();
+    if (jobId && jobId !== lastProcessedJobId && !isProcessing) {
+      // Debounce rapid mutations
+      setTimeout(() => {
+        if (jobId === getCurrentJobId() && !isProcessing) {
+          processCurrentListing();
+        }
+      }, 650);
+    }
+  });
+
+  observer.observe(container, { childList: true, subtree: true });
+  (container as any)._ghostObserverAttached = true;
+  console.log('[SkipThisJob] MutationObserver attached to job detail container');
 }
 
 async function processCurrentListing() {
@@ -565,8 +713,14 @@ async function processCurrentListing() {
   isProcessing = true;
   lastProcessedJobId = jobId;
 
-  // Wait for LinkedIn SPA to render
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  // Adaptive wait — much more reliable than fixed 2s on cold loads
+  const contentReady = await waitForLinkedInJobContent();
+  if (!contentReady) {
+    console.log('[SkipThisJob] Timed out waiting for job content — will retry on next poll');
+    isProcessing = false;
+    lastProcessedJobId = null; // allow retry
+    return;
+  }
 
   const listing = parseLinkedInListing();
   if (!listing.title || !listing.companyName) {
@@ -626,5 +780,16 @@ document.addEventListener('click', (e) => {
   }
 }, true);
 
-// Initial run
+// Initial run — also attach observer for SPA content swaps
 processCurrentListing();
+setupJobDetailObserver();
+
+// Re-attach observer if user navigates within LinkedIn (SPA route changes)
+let lastObserverUrl = location.href;
+setInterval(() => {
+  if (location.href !== lastObserverUrl) {
+    lastObserverUrl = location.href;
+    // Give the new page a moment to mount its containers
+    setTimeout(setupJobDetailObserver, 1200);
+  }
+}, 800);

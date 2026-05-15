@@ -239,6 +239,48 @@ function parseIndeedListing() {
 //   25–49 Proceed with Caution  — some warning signs, manage expectations
 //   50–74 Likely a Waste of Time — stale, opaque, or showing ghost patterns
 //   75–100 Skip This Job        — overwhelming evidence this won't lead anywhere
+
+// --- Real description vagueness + seniority analysis (from scoring/ghostScore.js) ---
+const VAGUE_PATTERNS = [
+  /fast[- ]paced environment/i, /wear many hats/i, /self[- ]starter/i,
+  /team player/i, /excellent communication skills/i, /detail[- ]oriented/i,
+  /results[- ]driven/i, /dynamic (environment|team|company)/i, /exciting opportunity/i,
+  /competitive (salary|compensation|pay)/i, /great (benefits|culture|team)/i,
+  /must be able to (multitask|work independently)/i, /rockstar|ninja|guru|wizard/i,
+  /other duties as assigned/i, /fast[- ]growing (company|startup)/i,
+];
+const SPECIFIC_PATTERNS = [
+  /\b(python|java|javascript|react|angular|vue|node|sql|aws|gcp|azure)\b/i,
+  /\b(salesforce|hubspot|marketo|tableau|jira|confluence)\b/i,
+  /\breport(s|ing)?\s+to\b/i, /\b(team of|department of)\s+\d+/i,
+  /\$[\d,]+/i, /\b\d+\+?\s*years?\b/i,
+];
+const KITCHEN_SINK_TECH = /\b(python|java|javascript|react|angular|vue|node|sql|aws|gcp|azure|docker|kubernetes|terraform|go|rust|c\+\+|ruby|php|swift|kotlin|scala|hadoop|spark|kafka|redis|mongodb|postgresql|mysql|elasticsearch|graphql|rest\s*api|ci\/cd|jenkins|github\s*actions)\b/gi;
+
+function analyzeDescriptionVagueness(text) {
+  if (!text) return 0;
+  let vagueIndicators = 0;
+  let totalChecks = 0;
+  totalChecks += VAGUE_PATTERNS.length; VAGUE_PATTERNS.forEach(p => { if (p.test(text)) vagueIndicators++; });
+  totalChecks += SPECIFIC_PATTERNS.length; SPECIFIC_PATTERNS.forEach(p => { if (p.test(text)) vagueIndicators--; });
+  if (text.length < 500) { vagueIndicators += 2; totalChecks += 2; }
+  const techMatches = text.match(KITCHEN_SINK_TECH);
+  if (techMatches && new Set(techMatches.map(t => t.toLowerCase())).size > 15) { vagueIndicators += 3; totalChecks += 3; }
+  return Math.max(0, Math.min(1, vagueIndicators / Math.max(totalChecks, 1)));
+}
+
+function detectSeniorityMismatch(title, description) {
+  if (!title || !description) return false;
+  const entrySignals = /\b(entry[- ]level|junior|associate|intern|graduate)\b/i;
+  const seniorRequirements = /\b(10|[1-9]\d)\+?\s*years?\b/i;
+  if (entrySignals.test(title) && seniorRequirements.test(description)) return true;
+  const juniorRequirements = /\b[0-2]\+?\s*years?\b/i;
+  const seniorTitleSignals = /\b(senior|lead|principal|director|vp|vice\s*president|head\s+of)\b/i;
+  if (seniorTitleSignals.test(title) && juniorRequirements.test(description)) return true;
+  return false;
+}
+// --- End imported analysis helpers ---
+
 function scoreLocally(listing) {
   let score = 0;
   const signals = [];
@@ -315,39 +357,32 @@ function scoreLocally(listing) {
     }
   }
 
-  // === DESCRIPTION QUALITY ===
+  // === DESCRIPTION QUALITY (real vagueness analyzer) ===
   if (listing.description) {
-    // Very short description
-    if (listing.descriptionLength < 300) {
-      score += 8;
+    const vagueness = analyzeDescriptionVagueness(listing.description);
+    if (vagueness >= 0.65) {
+      score += 11;
+      signals.push('Vague or generic description');
+    } else if (vagueness >= 0.45) {
+      score += 6;
+      signals.push('Some generic language in description');
+    } else if (vagueness <= 0.15) {
+      score -= 3;
+      signals.push('Detailed, specific job description');
+    }
+    if (listing.descriptionLength < 280) {
+      score += 5;
       signals.push('Very short job description');
     }
-
-    // Vague buzzwords
-    const vagueCount = [
-      /fast[- ]paced environment/i,
-      /wear many hats/i,
-      /self[- ]starter/i,
-      /rockstar|ninja|guru|wizard/i,
-      /competitive (salary|compensation|pay)/i,
-      /exciting opportunity/i,
-      /other duties as assigned/i,
-      /great (benefits|culture|team)/i,
-      /must be able to multitask/i,
-      /detail[- ]oriented/i,
-      /results[- ]driven/i,
-    ].filter(p => p.test(listing.description)).length;
-
-    if (vagueCount >= 4) {
-      score += 10;
-      signals.push('Vague or generic description');
-    } else if (vagueCount >= 2) {
-      score += 5;
-      signals.push('Some generic language in description');
-    }
   } else {
-    score += 5;
+    score += 7;
     signals.push('No description available');
+  }
+
+  // === SENIORITY MISMATCH ===
+  if (listing.seniorityMismatch || detectSeniorityMismatch(listing.title || '', listing.description || '')) {
+    score += 13;
+    signals.push('⚠️ Seniority mismatch — title and requirements conflict');
   }
 
   // === HIRING MULTIPLE ===
@@ -479,6 +514,8 @@ function injectOverlay(localScore, backendData, listing) {
         <span class="ghost-detector-icon">${color.icon}</span>
         <span class="ghost-detector-title">Ghost Risk: <strong style="color: ${color.text}">${labelText[finalLabel]}</strong></span>
         <span class="ghost-detector-score" style="color: ${color.text}">${finalScore}/100</span>
+        ${backendData && backendData.live ? 
+          `<span class="ghost-detector-live" style="background:#dcfce7;color:#166534;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:5px;font-weight:600;letter-spacing:0.3px;">● LIVE</span>` : ''}
       </div>
       ${finalSignals.length > 0 ? `
         <div class="ghost-detector-signals">
@@ -495,7 +532,9 @@ function injectOverlay(localScore, backendData, listing) {
       ` : ''}
       ${backendData && backendData.totalReports > 0 ? `
         <div class="ghost-detector-community" style="background: #fff3e0; padding: 6px 10px; border-radius: 6px; border-left: 3px solid #ff9800;">
-          📊 ${backendData.totalReports} other users have flagged this employer
+          📊 ${backendData.live 
+            ? `${backendData.totalReports} recent community reports` 
+            : `${backendData.totalReports} other users have flagged this employer`}
         </div>
       ` : ''}
       ${backendData && backendData.found && backendData.totalListings ? `
