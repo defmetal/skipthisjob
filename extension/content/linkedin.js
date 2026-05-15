@@ -687,7 +687,7 @@ function setupJobDetailObserver() {
     document.querySelector('#main') ||
     document.body;
 
-  if (!container || (container as any)._ghostObserverAttached) return;
+  if (!container || container._ghostObserverAttached) return;
 
   const observer = new MutationObserver(() => {
     const jobId = getCurrentJobId();
@@ -702,7 +702,7 @@ function setupJobDetailObserver() {
   });
 
   observer.observe(container, { childList: true, subtree: true });
-  (container as any)._ghostObserverAttached = true;
+  container._ghostObserverAttached = true;
   console.log('[SkipThisJob] MutationObserver attached to job detail container');
 }
 
