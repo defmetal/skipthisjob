@@ -548,22 +548,17 @@ function injectOverlay(localScore, backendData, listing) {
     </div>
   `;
 
-  const target =
-    document.querySelector('.jobs-search__job-details') ||
-    document.querySelector('.job-details-jobs-unified-top-card__container') ||
-    document.querySelector('.jobs-unified-top-card') ||
-    document.querySelector('.scaffold-layout__detail');
-
-  if (target) {
-    target.insertBefore(overlay, target.firstChild);
-  } else {
-    overlay.style.position = 'fixed';
-    overlay.style.top = '80px';
-    overlay.style.right = '20px';
-    overlay.style.zIndex = '9999';
-    overlay.style.maxWidth = '360px';
-    document.body.appendChild(overlay);
-  }
+  // Always use fixed positioning on LinkedIn.
+  // Their DOM is too unstable — they frequently destroy/re-render containers,
+  // which removes overlays that were inserted via insertBefore.
+  overlay.style.position = 'fixed';
+  overlay.style.top = '80px';
+  overlay.style.right = '20px';
+  overlay.style.zIndex = '99999';
+  overlay.style.maxWidth = '360px';
+  overlay.style.boxShadow = '0 4px 20px rgba(0,0,0,0.15)';
+  overlay.style.borderRadius = '10px';
+  document.body.appendChild(overlay);
 
   // Event listeners
   document.getElementById('ghost-btn-flag')?.addEventListener('click', () => {
