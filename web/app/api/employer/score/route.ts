@@ -227,7 +227,7 @@ function buildResponse(
   return corsResponse({
     score: finalScore,
     label,
-    signals: [...new Set(signals)], // dedupe
+    signals: Array.from(new Set(signals)), // dedupe
     totalReports: employer.total_reports,
     totalListings: employer.total_listings_tracked,
     glassdoor,
