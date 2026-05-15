@@ -489,12 +489,13 @@ function injectOverlay(localScore, backendData, listing) {
   overlay.id = 'ghost-detector-overlay';
   overlay.innerHTML = `
     <div class="ghost-detector-card" style="border-left: 4px solid ${color.border}; background: ${color.bg};">
-      <div class="ghost-detector-header">
+      <div class="ghost-detector-header" style="display:flex; align-items:center; gap:6px;">
         <span class="ghost-detector-icon">${color.icon}</span>
         <span class="ghost-detector-title">Ghost Risk: <strong style="color: ${color.text}">${labelText[finalLabel]}</strong></span>
         <span class="ghost-detector-score" style="color: ${color.text}">${finalScore}/100</span>
         ${backendData && backendData.live ? 
           `<span class="ghost-detector-live" style="background:#dcfce7;color:#166534;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:5px;font-weight:600;letter-spacing:0.3px;">● LIVE</span>` : ''}
+        <span id="ghost-close-btn" style="margin-left:auto; cursor:pointer; font-size:16px; line-height:1; opacity:0.65; padding:2px 6px;">✕</span>
       </div>
       ${finalSignals.length > 0 ? `
         <div class="ghost-detector-signals">
@@ -559,6 +560,13 @@ function injectOverlay(localScore, backendData, listing) {
   overlay.style.boxShadow = '0 4px 20px rgba(0,0,0,0.15)';
   overlay.style.borderRadius = '10px';
   document.body.appendChild(overlay);
+
+  // Close button handler
+  document.getElementById('ghost-close-btn')?.addEventListener('click', () => {
+    overlay.remove();
+    // Prevent the overlay from immediately re-appearing on the same job
+    lastProcessedJobId = getCurrentJobId();
+  });
 
   // Event listeners
   document.getElementById('ghost-btn-flag')?.addEventListener('click', () => {
