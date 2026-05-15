@@ -2,6 +2,10 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { corsResponse, corsOptions } from '@/lib/cors';
 
+// Simple in-memory cache for fresh employer scores (reduces DB load on repeated lookups)
+const freshScoreCache = new Map<string, { result: any; timestamp: number }>();
+const FRESH_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
 export async function OPTIONS() {
   return corsOptions();
 }
@@ -72,9 +76,20 @@ export async function GET(request: NextRequest) {
     return corsResponse({ score: null, found: false });
   }
 
-  // === NEW: Compute fresh score from recent activity (reports + reposts) ===
-  // This makes scores dynamic for employers that are actually being seen right now.
-  const fresh = await computeFreshEmployerScore(employer.id, employer.ghost_score);
+  // === Fresh score with caching ===
+  // The two extra queries (community_reports + repost_patterns) are expensive.
+  // We cache the result for 10 minutes to avoid hammering the DB on repeated views
+  // of the same company (very common when users browse multiple jobs).
+  let fresh = null;
+  const cacheKey = employer.id;
+  const cached = freshScoreCache.get(cacheKey);
+
+  if (cached && Date.now() - cached.timestamp < FRESH_CACHE_TTL_MS) {
+    fresh = cached.result;
+  } else {
+    fresh = await computeFreshEmployerScore(employer.id, employer.ghost_score);
+    freshScoreCache.set(cacheKey, { result: fresh, timestamp: Date.now() });
+  }
 
   return buildResponse(employer, fresh);
 }
