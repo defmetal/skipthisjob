@@ -83,7 +83,16 @@ export async function GET(request: NextRequest) {
  * Compute a live-adjusted ghost score using recent community reports and repost patterns.
  * Falls back to the stored ghost_score when there is little recent activity.
  */
-async function computeFreshEmployerScore(employerId: string, storedScore: number | null) {
+type FreshScoreResult = {
+  score: number;
+  signals: string[];
+  hasFreshData: boolean;
+};
+
+async function computeFreshEmployerScore(
+  employerId: string,
+  storedScore: number | null
+): Promise<FreshScoreResult> {
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
 
   // Recent community reports
@@ -101,12 +110,14 @@ async function computeFreshEmployerScore(employerId: string, storedScore: number
     .order('occurrence_count', { ascending: false })
     .limit(5);
 
-  let liveScore = storedScore ?? 40; // neutral default if nothing at all
+  let liveScore = storedScore ?? 40;
   const liveSignals: string[] = [];
 
   const totalReports = reports?.length || 0;
   if (totalReports >= 3) {
-    const noResponse = reports!.filter(r => r.outcome === 'no_response' || r.report_type === 'ghost_flag').length;
+    const noResponse = (reports || []).filter(
+      r => r.outcome === 'no_response' || r.report_type === 'ghost_flag'
+    ).length;
     const noResponseRate = noResponse / totalReports;
 
     if (noResponseRate >= 0.75) {
@@ -122,9 +133,10 @@ async function computeFreshEmployerScore(employerId: string, storedScore: number
   }
 
   // Repost frequency (very strong ghost signal)
-  if (reposts && reposts.length > 0) {
-    const maxRepost = Math.max(...reposts.map(r => r.occurrence_count || 0));
-    const hasIdentical = reposts.some(r => r.descriptions_identical);
+  const safeReposts = reposts || [];
+  if (safeReposts.length > 0) {
+    const maxRepost = Math.max(0, ...safeReposts.map(r => r.occurrence_count || 0));
+    const hasIdentical = safeReposts.some(r => r.descriptions_identical);
 
     if (maxRepost >= 6) {
       liveScore = Math.max(liveScore, 75);
@@ -141,19 +153,24 @@ async function computeFreshEmployerScore(employerId: string, storedScore: number
 
   // Blend: 55% live signals + 45% stored score when we have meaningful recent data
   let finalLive = liveScore;
-  if (totalReports >= 2 || (reposts && reposts.length > 0)) {
+  if (totalReports >= 2 || safeReposts.length > 0) {
     const stored = storedScore ?? 45;
     finalLive = Math.round(stored * 0.45 + liveScore * 0.55);
   }
 
+  const hasFreshData = totalReports >= 2 || safeReposts.length > 0;
+
   return {
     score: Math.min(100, Math.max(0, Math.round(finalLive))),
     signals: liveSignals,
-    hasFreshData: totalReports >= 2 || (reposts && reposts.length > 0),
+    hasFreshData,
   };
 }
 
-function buildResponse(employer: any, fresh?: { score: number; signals: string[]; hasFreshData: boolean }) {
+function buildResponse(
+  employer: any,
+  fresh?: { score: number; signals: string[]; hasFreshData: boolean }
+) {
   const signals: string[] = [];
   let finalScore = employer.ghost_score ?? 40;
   let label = employer.ghost_label || 'moderate';
