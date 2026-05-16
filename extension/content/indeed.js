@@ -8,12 +8,44 @@ const API_BASE = 'https://skipthisjob.com/api';
 // DOM PARSING
 // ============================================================
 
+// 0.1.8 - Read the mosaic snapshot mirrored by indeed-mosaic-bridge.js.
+// The bridge runs in the page's MAIN world and writes window.mosaic data
+// into #__stj_mosaic, because this content script's isolated world cannot
+// see the page's window.mosaic directly.
+let _stjBridgeWarned = false;
+let _stjMosaicCacheKey = '';
+let _stjMosaicCacheVal = null;
+function readBridgedMosaic() {
+  try {
+    const node = document.getElementById('__stj_mosaic');
+    if (!node || !node.textContent) {
+      if (!_stjBridgeWarned) {
+        _stjBridgeWarned = true;
+        console.log('[SkipThisJob] Mosaic bridge not ready yet (no #__stj_mosaic)');
+      }
+      return null;
+    }
+    const txt = node.textContent;
+    // Parse once per distinct snapshot. getIndeedJobFromMosaic() runs inside
+    // a high-frequency MutationObserver; re-parsing multi-KB JSON per DOM
+    // mutation would jank the page.
+    if (txt === _stjMosaicCacheKey) return _stjMosaicCacheVal;
+    const parsed = JSON.parse(txt);
+    _stjMosaicCacheKey = txt;
+    _stjMosaicCacheVal = parsed;
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
 // 0.1.8 - Hardened aggressive extraction from Indeed's mosaic providers.
 // Prioritizes the jobcards list (where pubDate / formattedRelativeTime usually lives)
 // and uses strong multi-signal matching for right-pane detail views (vjk= URLs).
 function getIndeedJobFromMosaic() {
   try {
-    const providerData = window.mosaic?.providerData;
+    const snapshot = readBridgedMosaic();
+    const providerData = snapshot?.providers;
     if (!providerData) return null;
 
     const currentUrl = window.location.href.toLowerCase();
@@ -38,6 +70,7 @@ function getIndeedJobFromMosaic() {
 
     let bestMatch = null;
     let bestScore = 0;
+    let bestIdentity = 0;
 
     const allProviders = Object.keys(providerData);
 
@@ -57,30 +90,21 @@ function getIndeedJobFromMosaic() {
       for (const job of results) {
         if (!job) continue;
 
-        let score = 0;
         const thisJobKey = (job.jobkey || '').toLowerCase();
         const jobTitle = (job.displayTitle || job.title || '').toLowerCase();
         const jobCompany = (job.company || '').toLowerCase();
-        const jobLink = (job.link || job.url || '').toLowerCase();
 
         const hasDate = !!(job.pubDate || job.formattedRelativeTime);
 
-        // 1. Exact jobkey match (best)
-        if (jobKey && thisJobKey === jobKey) score += 100;
+        // Identity signals — proof this row IS the job being viewed.
+        let identity = 0;
+        if (jobKey && thisJobKey === jobKey) identity += 100;            // exact jobkey
+        if (jobKey && currentUrl.includes(jobKey)) identity += 40;       // jobkey in URL
+        if (pageTitle && jobTitle && pageTitle.includes(jobTitle.substring(0, 25))) identity += 35; // title
+        if (pageCompany && jobCompany && pageCompany.includes(jobCompany)) identity += 15;          // company
+        if (jobTitle && currentUrl.includes(jobTitle.replace(/\s+/g, '').substring(0, 20))) identity += 10; // url frag
 
-        // 2. jobkey appears in current URL
-        if (jobKey && currentUrl.includes(jobKey)) score += 40;
-
-        // 3. Strong title match (very effective on right-pane views)
-        if (pageTitle && jobTitle && pageTitle.includes(jobTitle.substring(0, 25))) score += 35;
-
-        // 4. Company match
-        if (pageCompany && jobCompany && pageCompany.includes(jobCompany)) score += 15;
-
-        // 5. URL contains title fragment
-        if (jobTitle && currentUrl.includes(jobTitle.replace(/\s+/g, '').substring(0, 20))) score += 10;
-
-        // Bonus for having real date data
+        let score = identity;
         if (hasDate) score += 20;
         if (job.formattedRelativeTime) score += 10;
         if (job.pubDate) score += 5;
@@ -88,11 +112,16 @@ function getIndeedJobFromMosaic() {
         if (score > bestScore) {
           bestScore = score;
           bestMatch = job;
+          bestIdentity = identity;
         }
       }
     }
 
-    if (bestMatch && bestScore >= 25) {
+    // H2 - Require a real identity signal (exact jobkey, jobkey-in-URL, or a
+    // title match all reach 35). Date bonuses alone (max 35) must NOT be
+    // enough, or feed/list views with no selected job would stamp an
+    // arbitrary job's date onto the overlay.
+    if (bestMatch && bestIdentity >= 35) {
       return bestMatch;
     }
 
@@ -128,6 +157,44 @@ function parseIndeedRelativeDate(text) {
   m = t.match(/(\d+)\+?\s*days?\s*ago/);
   if (m) return parseInt(m[1], 10);
 
+  return null;
+}
+
+// H1 - Extract a posting age from a NOISY blob (e.g. stringified insights
+// JSON that may contain several jobs' relative times) without guessing.
+// Returns a day count only when every date-like phrase agrees; returns
+// null when absent OR ambiguous, so the identity-matched mosaic job
+// remains the source of truth instead of the first regex hit winning.
+function extractConsistentDaysFromBlob(blob) {
+  if (!blob) return null;
+  const t = String(blob).toLowerCase();
+  const vals = new Set();
+  const re = /(?:posted|reposted|active|hiring)?\s*(\d+)\+?\s*(days?|weeks?|d|w)\s*ago/g;
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (Number.isNaN(n)) continue;
+    vals.add(/^w/.test(m[2]) ? n * 7 : n);
+    if (vals.size > 1) return null; // conflicting ages → ambiguous, defer
+  }
+  if (/just posted|posted today|moments? ago/.test(t)) vals.add(0);
+  return vals.size === 1 ? [...vals][0] : null;
+}
+
+// M3 - Convert a matched mosaic job to a day count. Prefer Indeed's own
+// formattedRelativeTime (the label the user actually sees on the page)
+// over pubDate, and round pubDate math instead of ceil (ceil inflates
+// age by up to a full day, which inflates the ghost score).
+function mosaicJobToDays(job) {
+  if (!job) return null;
+  if (job.formattedRelativeTime) {
+    const d = parseIndeedRelativeDate(job.formattedRelativeTime);
+    if (d != null) return d;
+  }
+  if (job.pubDate) {
+    const diff = Math.round((Date.now() - new Date(job.pubDate)) / (1000 * 60 * 60 * 24));
+    return Math.max(0, diff);
+  }
   return null;
 }
 
@@ -312,19 +379,16 @@ async function parseIndeedListing() {
 
   // 1. Try the js-match-insights-provider-job-details contents (often has the date as text)
   try {
-    const detailsProvider = window.mosaic?.providerData?.['js-match-insights-provider-job-details'];
-    const section = detailsProvider?.jobDetailsSection;
-    if (section) {
-      // Stringify the entire section (handles object or array contents)
-      const sectionStr = JSON.stringify(section).toLowerCase();
-      const sectionDate = parseIndeedRelativeDate(sectionStr);
+    const sectionStr = readBridgedMosaic()?.jobDetailsSectionText || '';
+    if (sectionStr) {
+      // Only trust this blob when every date-like phrase agrees. Otherwise
+      // defer to the identity-matched mosaic job below — a wrong date here
+      // would pre-empt the reliable source.
+      const sectionDate = extractConsistentDaysFromBlob(sectionStr);
       if (sectionDate != null) {
         data.daysOpen = sectionDate;
-        console.log('[SkipThisJob] Days open from jobDetailsSection contents');
+        console.log('[SkipThisJob] Days open from jobDetailsSection (unambiguous):', sectionDate);
       }
-      // Also try to extract raw date-like text
-      const dateMatchInSection = sectionStr.match(/(posted|active)\s*(\d+|\d+\s*d|\d+\s*w)\s*(days?|d|weeks?|w)?\s*ago/);
-      if (dateMatchInSection) dateText = dateMatchInSection[0];
     }
   } catch (e) {}
 
@@ -386,15 +450,7 @@ async function parseIndeedListing() {
     }
 
     if (mosaicJob) {
-      let days = null;
-
-      if (mosaicJob.pubDate) {
-        const pubDate = new Date(mosaicJob.pubDate);
-        const diffDays = Math.ceil((Date.now() - pubDate) / (1000 * 60 * 60 * 24));
-        days = Math.max(0, diffDays);
-      } else if (mosaicJob.formattedRelativeTime) {
-        days = parseIndeedRelativeDate(mosaicJob.formattedRelativeTime);
-      }
+      const days = mosaicJobToDays(mosaicJob);
 
       if (days != null) {
         mosaicDateSuccesses++;
@@ -449,15 +505,7 @@ async function parseIndeedListing() {
         let lateDays = lateDateText ? parseIndeedRelativeDate(lateDateText) : null;
 
         if (lateDays == null) {
-          const lateMosaic = getIndeedJobFromMosaic();
-          if (lateMosaic) {
-            if (lateMosaic.pubDate) {
-              const d = new Date(lateMosaic.pubDate);
-              lateDays = Math.max(0, Math.ceil((Date.now() - d) / (1000 * 60 * 60 * 24)));
-            } else if (lateMosaic.formattedRelativeTime) {
-              lateDays = parseIndeedRelativeDate(lateMosaic.formattedRelativeTime);
-            }
-          }
+          lateDays = mosaicJobToDays(getIndeedJobFromMosaic());
         }
 
         if (lateDays != null) {
@@ -496,11 +544,7 @@ async function parseIndeedListing() {
         let d = dt ? parseIndeedRelativeDate(dt) : null;
 
         if (d == null) {
-          const mj = getIndeedJobFromMosaic();
-          if (mj) {
-            if (mj.pubDate) d = Math.max(0, Math.ceil((Date.now() - new Date(mj.pubDate)) / (1000*60*60*24)));
-            else if (mj.formattedRelativeTime) d = parseIndeedRelativeDate(mj.formattedRelativeTime);
-          }
+          d = mosaicJobToDays(getIndeedJobFromMosaic());
         }
 
         if (d != null) {
@@ -930,30 +974,85 @@ function scoreLocally(listing) {
 // BACKEND API (via background service worker to avoid CORS)
 // ============================================================
 
+// --- Extension lifecycle guard -------------------------------------------
+// When the extension is reloaded or auto-updates, content scripts already
+// running on open tabs are orphaned: the DOM stays, but every chrome.* call
+// throws "Extension context invalidated". Detect that, disconnect our
+// timers/observer, and go silent so the dead script stops working and stops
+// spamming errors. The page must be reloaded to attach a fresh script.
+let _ghostTornDown = false;
+const _ghostTimers = [];
+let _ghostObserver = null;
+
+function extensionAlive() {
+  try {
+    return !!(chrome.runtime && chrome.runtime.id);
+  } catch (e) {
+    return false;
+  }
+}
+
+function teardownGhostDetector() {
+  if (_ghostTornDown) return;
+  _ghostTornDown = true;
+  try { if (_ghostObserver) _ghostObserver.disconnect(); } catch (e) {}
+  while (_ghostTimers.length) clearInterval(_ghostTimers.pop());
+  console.log('[SkipThisJob] Extension context gone — content script stood down. Reload the page to re-enable.');
+}
+
+function safeSendMessage(message, callback) {
+  if (!extensionAlive()) { teardownGhostDetector(); return; }
+  try {
+    chrome.runtime.sendMessage(message, (response) => {
+      // Touch lastError so Chrome doesn't log "Unchecked runtime.lastError".
+      const err = chrome.runtime && chrome.runtime.lastError;
+      if (err) {
+        if (!extensionAlive()) teardownGhostDetector();
+        return;
+      }
+      if (callback) callback(response);
+    });
+  } catch (e) {
+    teardownGhostDetector();
+  }
+}
+
 async function fetchEmployerScore(companyName) {
   return new Promise(resolve => {
-    chrome.runtime.sendMessage(
+    if (!extensionAlive()) { teardownGhostDetector(); resolve(null); return; }
+    safeSendMessage(
       { type: 'FETCH_EMPLOYER_SCORE', name: companyName },
       response => resolve(response?.data || null)
     );
+    // If the context dies mid-flight the callback never fires; make sure the
+    // promise still settles so `await fetchEmployerScore` can't hang.
+    setTimeout(() => resolve(null), 8000);
   });
 }
 
 async function submitReport(reportData) {
-  let { userHash } = await chrome.storage.local.get('userHash');
-  if (!userHash) {
-    userHash = crypto.randomUUID();
-    await chrome.storage.local.set({ userHash });
+  if (!extensionAlive()) { teardownGhostDetector(); return false; }
+  let userHash;
+  try {
+    ({ userHash } = await chrome.storage.local.get('userHash'));
+    if (!userHash) {
+      userHash = crypto.randomUUID();
+      await chrome.storage.local.set({ userHash });
+    }
+  } catch (e) {
+    teardownGhostDetector();
+    return false;
   }
 
   return new Promise(resolve => {
-    chrome.runtime.sendMessage(
+    safeSendMessage(
       {
         type: 'SUBMIT_REPORT',
         reportData: { ...reportData, anonymousUserHash: userHash, platform: 'indeed' },
       },
       response => resolve(response?.success || false)
     );
+    setTimeout(() => resolve(false), 8000);
   });
 }
 
@@ -962,20 +1061,61 @@ async function submitReport(reportData) {
 // UI INJECTION
 // ============================================================
 
+// Confidence-weighted, asymmetric blend of the listing heuristic and the
+// employer backend score.
+//
+// Why: a thin backend record (employer merely present in the Kaggle seed
+// with a few listings and zero reports) returns a near-zero score that
+// means "no evidence", NOT "safe employer". The old flat 40/60 blend
+// weighted that emptiness at 60% and dragged strong listing-level ghost
+// signals (e.g. 87 "Skip This Job") down to 35 "Proceed with Caution" —
+// under-warning on exactly the obscure employers most likely to ghost.
+//
+// Rules:
+//  - Backend weight scales with how much real evidence it has.
+//  - A low-confidence backend may RAISE the score (a sketchy employer is
+//    worth heeding) but must not SUPPRESS a listing that already looks
+//    like a ghost job. Lowering requires confidence; raising is easier.
+function blendGhostScore(localScore, backendData) {
+  const local = localScore.score;
+
+  if (!backendData || backendData.score == null) {
+    return { score: local, label: localScore.label, signals: localScore.signals };
+  }
+
+  const backend = backendData.score;
+  const reports = backendData.totalReports || 0;
+  const listings = backendData.totalListings || 0;
+
+  // Confidence the backend carries real signal → its weight when it would
+  // pull the score DOWN.
+  let wDown;
+  if (backendData.live) wDown = 0.60;        // fresh community reports / repost patterns
+  else if (reports >= 10) wDown = 0.40;
+  else if (reports >= 3) wDown = 0.25;
+  else if (listings >= 8) wDown = 0.15;
+  else wDown = 0.0;                          // thin seed record → ~100% heuristic
+
+  // Raising is easier than lowering: an employer that looks sketchy matters
+  // more to a ghost detector than the cost of erring toward caution.
+  const wUp = Math.max(wDown, 0.30);
+
+  const w = backend >= local ? wUp : wDown;
+  const score = Math.round(local * (1 - w) + backend * w);
+  const label =
+    score >= 75 ? 'very_high' : score >= 50 ? 'high' : score >= 25 ? 'moderate' : 'low';
+  const signals = [...new Set([...localScore.signals, ...(backendData.signals || [])])];
+  return { score, label, signals };
+}
+
 function injectOverlay(localScore, backendData, listing) {
   const existing = document.getElementById('ghost-detector-overlay');
   if (existing) existing.remove();
 
-  let finalScore, finalLabel, finalSignals;
-  if (backendData && backendData.score != null) {
-    finalScore = Math.round(localScore.score * 0.4 + backendData.score * 0.6);
-    finalLabel = finalScore >= 75 ? 'very_high' : finalScore >= 50 ? 'high' : finalScore >= 25 ? 'moderate' : 'low';
-    finalSignals = [...new Set([...localScore.signals, ...(backendData.signals || [])])];
-  } else {
-    finalScore = localScore.score;
-    finalLabel = localScore.label;
-    finalSignals = localScore.signals;
-  }
+  const _blend = blendGhostScore(localScore, backendData);
+  const finalScore = _blend.score;
+  const finalLabel = _blend.label;
+  const finalSignals = _blend.signals;
 
   const colors = {
     low: { bg: '#e8f5e9', border: '#4caf50', text: '#2e7d32', icon: '✅' },
@@ -1174,6 +1314,7 @@ function getCurrentVjk() {
 }
 
 async function processCurrentListing() {
+  if (!extensionAlive()) { teardownGhostDetector(); return; }
   const vjk = getCurrentVjk();
   if (vjk === lastVjk && lastVjk !== null) return;
   if (isProcessing) return;
@@ -1198,7 +1339,7 @@ async function processCurrentListing() {
   };
 
   // Passively track listing metadata + new signals (0.1.8)
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     type: 'TRACK_LISTING',
     listingData: {
       companyName: listing.companyName,
@@ -1256,7 +1397,7 @@ document.addEventListener('click', (e) => {
     if (currentListingData && currentListingData.platformJobId === currentJobId) {
       currentListingData.userClickedApply = true;
 
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         type: 'TRACK_LISTING',
         listingData: {
           ...currentListingData,
@@ -1264,7 +1405,7 @@ document.addEventListener('click', (e) => {
         },
       });
     } else {
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         type: 'USER_CLICKED_APPLY',
         platform: 'indeed',
         url: window.location.href,
@@ -1274,12 +1415,13 @@ document.addEventListener('click', (e) => {
 }, true);
 
 // Poll for vjk changes
-setInterval(() => {
+_ghostTimers.push(setInterval(() => {
+  if (!extensionAlive()) { teardownGhostDetector(); return; }
   const vjk = getCurrentVjk();
   if (vjk !== lastVjk && !isProcessing) {
     processCurrentListing();
   }
-}, 1500);
+}, 1500));
 
 // Listen for clicks on job cards in the left pane
 document.addEventListener('click', (e) => {
@@ -1297,11 +1439,12 @@ document.addEventListener('click', (e) => {
 const rightPane = document.querySelector('.jobsearch-RightPane') || 
                   document.querySelector('#jobsearch-ViewjobPaneWrapper');
 if (rightPane) {
-  const observer = new MutationObserver(() => {
+  _ghostObserver = new MutationObserver(() => {
+    if (!extensionAlive()) { teardownGhostDetector(); return; }
     const vjk = getCurrentVjk();
     if (vjk !== lastVjk && !isProcessing) {
       processCurrentListing();
     }
   });
-  observer.observe(rightPane, { childList: true, subtree: true });
+  _ghostObserver.observe(rightPane, { childList: true, subtree: true });
 }
