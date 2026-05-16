@@ -27,9 +27,10 @@ function getIndeedJobFromMosaic() {
       if (pathMatch) jobKey = pathMatch[1];
     }
 
-    // 0.1.8 - Truly aggressive: scan ALL mosaic providers, not just jobcards.
-    // The current right-pane job is often in non-jobcards providers (jobdetails, serp, etc.)
-    // when you're on a search results page with vjk= in the URL.
+    // 0.1.8 - Truly aggressive: scan ALL mosaic providers.
+    // Right-pane detail jobs (vjk= URLs) frequently live in "job-details", "insights",
+    // or "match-insights" providers (e.g. js-match-insights-provider-job-details),
+    // not just the jobcards providers that power the left list.
     const allProviders = Object.keys(providerData);
 
     let bestMatch = null;
@@ -39,27 +40,68 @@ function getIndeedJobFromMosaic() {
       const provider = providerData[providerKey];
       if (!provider) continue;
 
-      // Try the common jobcards results array path
       let candidates = [];
+
+      // 1. Classic jobcards path (left list + sometimes current job)
       const jobCardsResults = provider?.metaData?.mosaicProviderJobCardsModel?.results;
       if (jobCardsResults && Array.isArray(jobCardsResults)) {
-        candidates = jobCardsResults;
-      } else if (provider && typeof provider === 'object') {
-        // Some providers (jobdetails style) put the current job directly on the object
-        // or under other keys. Collect anything that looks like a job.
-        if (provider.jobkey || provider.pubDate || provider.formattedRelativeTime || provider.displayTitle) {
-          candidates = [provider];
+        candidates = candidates.concat(jobCardsResults);
+      }
+
+      // 2. Job details / insights style providers (very common for the right pane)
+      // Examples: js-match-insights-provider-job-details, mosaic-provider-jobdetails, etc.
+      const isDetailsProvider = /job-details|jobdetails|insights|match-insights|jobdetail/i.test(providerKey);
+
+      if (isDetailsProvider || providerKey.includes('details')) {
+        // Common locations for the current selected job
+        const possibleJob =
+          provider?.metaData?.jobDetails ||
+          provider?.metaData?.mosaicProviderJobDetailsModel ||
+          provider?.jobDetails ||
+          provider?.job ||
+          provider;
+
+        if (possibleJob && typeof possibleJob === 'object') {
+          candidates.push(possibleJob);
         }
-        // Also check common nested locations
+
+        // Also check every key under metaData for job-like objects
         if (provider.metaData && typeof provider.metaData === 'object') {
           for (const nestedKey of Object.keys(provider.metaData)) {
             const nested = provider.metaData[nestedKey];
-            if (nested && (nested.jobkey || nested.pubDate || nested.formattedRelativeTime)) {
+            if (nested && typeof nested === 'object' &&
+                (nested.jobkey || nested.pubDate || nested.formattedRelativeTime || nested.displayTitle)) {
               candidates.push(nested);
             }
           }
         }
       }
+
+      // 3. Generic fallback: any object in this provider that looks like a job
+      if (provider && typeof provider === 'object') {
+        if (provider.jobkey || provider.pubDate || provider.formattedRelativeTime || provider.displayTitle) {
+          candidates.push(provider);
+        }
+        if (provider.metaData && typeof provider.metaData === 'object') {
+          for (const nestedKey of Object.keys(provider.metaData)) {
+            const nested = provider.metaData[nestedKey];
+            if (nested && typeof nested === 'object' &&
+                (nested.jobkey || nested.pubDate || nested.formattedRelativeTime)) {
+              candidates.push(nested);
+            }
+          }
+        }
+      }
+
+      // Deduplicate by reference (simple)
+      const seen = new Set();
+      candidates = candidates.filter(j => {
+        if (!j || typeof j !== 'object') return false;
+        const id = j.jobkey || j.id || JSON.stringify(j).slice(0, 80);
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
 
       for (const job of candidates) {
         if (!job || typeof job !== 'object') continue;
@@ -74,15 +116,15 @@ function getIndeedJobFromMosaic() {
 
         // Strongest possible match: exact jobkey from URL (vjk= or jk=)
         if (jobKey && thisJobKey === jobKey) {
-          return job; // immediate perfect match — this is the one we want
+          return job; // immediate perfect match for the viewed job
         }
 
-        // Very strong: jobkey appears anywhere in the current page URL
+        // Very strong: jobkey appears in the current page URL
         if (jobKey && (currentUrl.includes(jobKey) || jobUrl.includes(jobKey))) {
           matchScore += 12;
         }
 
-        // Good fallback: title appears in the URL (common on search + right pane views)
+        // Good fallback: title match (common on right-pane detail views)
         if (jobTitle) {
           const shortTitle = jobTitle.substring(0, 35);
           if (currentUrl.includes(encodeURIComponent(shortTitle)) ||
@@ -96,7 +138,7 @@ function getIndeedJobFromMosaic() {
           matchScore += 3;
         }
 
-        // Strongly prefer anything that actually has date information
+        // Heavily prefer objects that actually carry date information
         if (hasPubDate) matchScore += 7;
         if (hasRelativeTime) matchScore += 5;
 
@@ -110,7 +152,7 @@ function getIndeedJobFromMosaic() {
       }
     }
 
-    // Accept a lower quality match if it has real date data (pubDate or relative time)
+    // Accept lower-quality matches only if they have real date data
     if (bestMatch && bestScore >= 3) {
       return bestMatch;
     }
