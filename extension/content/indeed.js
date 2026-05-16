@@ -44,6 +44,8 @@ function getIndeedJobFromMosaic() {
         const jobUrl = (job.link || job.url || '').toLowerCase();
         const jobTitle = (job.displayTitle || job.title || '').toLowerCase();
         const jobCompany = (job.company || '').toLowerCase();
+        const hasPubDate = !!job.pubDate;
+        const hasRelativeTime = !!(job.formattedRelativeTime || job.relativeTime);
 
         // Strongest possible match: exact jobkey from URL
         if (jobKey && thisJobKey === jobKey) {
@@ -55,18 +57,22 @@ function getIndeedJobFromMosaic() {
           matchScore += 12;
         }
 
-        // Good fallback: title match
-        if (jobTitle && currentUrl.includes(encodeURIComponent(jobTitle.substring(0, 25)))) {
-          matchScore += 6;
+        // Good fallback: title match (more generous)
+        if (jobTitle) {
+          const shortTitle = jobTitle.substring(0, 30);
+          if (currentUrl.includes(encodeURIComponent(shortTitle)) || currentUrl.includes(shortTitle.replace(/\s+/g, ''))) {
+            matchScore += 7;
+          }
         }
 
-        // Weak fallback: company name
+        // Company name fallback
         if (jobCompany && currentUrl.includes(encodeURIComponent(jobCompany.replace(/\s+/g, '')))) {
-          matchScore += 2;
+          matchScore += 3;
         }
 
-        // Strongly prefer jobs that have a real pubDate
-        if (job.pubDate) matchScore += 5;
+        // Prefer jobs that have date information (pubDate or formattedRelativeTime)
+        if (hasPubDate) matchScore += 6;
+        if (hasRelativeTime) matchScore += 4;
 
         // Prefer jobs with salary data
         if (job.salarySnippet?.text) matchScore += 2;
@@ -78,14 +84,37 @@ function getIndeedJobFromMosaic() {
       }
     }
 
-    // Return the best match we found, even if not perfect
-    if (bestMatch && bestScore >= 5) {
+    // Return the best match we found (lower threshold to catch more cases)
+    if (bestMatch && bestScore >= 4) {
       return bestMatch;
     }
 
   } catch (e) {
     // Fail silently if the mosaic structure changes
   }
+  return null;
+}
+
+// Helper: parse Indeed relative time strings ("5 days ago", "just posted", "2 hours ago", etc.)
+function parseIndeedRelativeDate(text) {
+  if (!text) return null;
+  const t = String(text).toLowerCase().trim();
+
+  if (/just posted|today|moments? ago|posted today/.test(t)) return 0;
+  if (/(few |a few )?(hours?|mins?|minutes?) ago/.test(t)) return 0;
+
+  // "5 days ago", "12+ days ago", "reposted 3 days ago"
+  let m = t.match(/(?:posted|reposted|active)?\s*(\d+)\+?\s*days?\s*ago/);
+  if (m) return parseInt(m[1], 10);
+
+  // "Active 8 days ago"
+  m = t.match(/active\s+(\d+)\+?\s*days?/);
+  if (m) return parseInt(m[1], 10);
+
+  // "3 days ago" standalone
+  m = t.match(/(\d+)\+?\s*days?\s*ago/);
+  if (m) return parseInt(m[1], 10);
+
   return null;
 }
 
@@ -159,65 +188,113 @@ async function parseIndeedListing() {
   // --- Page text for signal detection ---
   const pageText = document.body.innerText.toLowerCase();
 
-  // --- Posted date ---
-  const dateEl =
-    document.querySelector('.jobsearch-HiringInsights-entry--bullet') ||
-    document.querySelector('[data-testid="myJobsStateDate"]');
-  
-  let dateText = dateEl ? dateEl.textContent.trim().toLowerCase() : '';
-  
-  // Also try to find date in the page text
+  // --- 0.1.8: Aggressive Posted date detection (visible text first, mosaic secondary) ---
+  // Indeed shows the date in many different containers depending on the view.
+  const dateSelectors = [
+    '.jobsearch-HiringInsights-entry--bullet',
+    '[data-testid="myJobsStateDate"]',
+    '[data-testid*="date"]',
+    '.jobsearch-JobMetadataFooter',
+    '.jobsearch-JobInfoHeader-subtitle',
+    '[aria-label*="Posted"]',
+    '[aria-label*="Active"]',
+    '.jobsearch-JobMetadataHeader-item'
+  ];
+
+  let dateText = '';
+  for (const sel of dateSelectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const txt = el.textContent.trim();
+      if (txt) {
+        dateText = txt;
+        break;
+      }
+    }
+  }
+
+  // Very aggressive fallback: scan page text for any common Indeed date phrasing
   if (!dateText) {
-    const dateMatch = pageText.match(/(posted|active)\s+(\d+)\+?\s*days?\s*ago/);
-    if (dateMatch) dateText = dateMatch[0];
+    const patterns = [
+      /(posted|active|reposted)\s+(\d+)\+?\s*days?\s*ago/i,
+      /active\s+(\d+)\s*days?\s*ago/i,
+      /(\d+)\+?\s*days?\s*ago/i,
+      /just posted|posted today/i,
+      /(\d+)\+?\s*hours?\s*ago/i
+    ];
+    for (const p of patterns) {
+      const m = pageText.match(p);
+      if (m) {
+        dateText = m[0];
+        break;
+      }
+    }
   }
 
   if (dateText) {
-    const daysPlus = dateText.match(/(\d+)\+\s*days/);
-    const daysMatch = dateText.match(/(\d+)\s*days?\s*ago/);
-    const justPosted = dateText.match(/just\s*posted|today/);
-
-    if (daysPlus) data.daysOpen = parseInt(daysPlus[1]);
-    else if (daysMatch) data.daysOpen = parseInt(daysMatch[1]);
-    else if (justPosted) data.daysOpen = 0;
+    const parsed = parseIndeedRelativeDate(dateText);
+    if (parsed != null) {
+      data.daysOpen = parsed;
+    }
   }
 
-  if (data.daysOpen != null) console.log('[SkipThisJob] Days open:', data.daysOpen);
+  if (data.daysOpen != null) {
+    console.log('[SkipThisJob] Days open (visible text):', data.daysOpen);
+  }
 
-  // 0.1.8 - Aggressive mosaic date extraction with one retry
+  // 0.1.8 - Aggressive mosaic date extraction with one retry (secondary)
   if (data.daysOpen == null) {
     mosaicDateAttempts++;
     window.SkipThisJob_MosaicStats.attempts = mosaicDateAttempts;
 
     let mosaicJob = getIndeedJobFromMosaic();
 
-    // Retry once with a short delay if we didn't get a good result
-    if (!mosaicJob || !mosaicJob.pubDate) {
+    // Retry once with delay (SPA hydration)
+    if (!mosaicJob || (!mosaicJob.pubDate && !mosaicJob.formattedRelativeTime && !mosaicJob.relativeTime)) {
       await new Promise(r => setTimeout(r, 550));
       mosaicJob = getIndeedJobFromMosaic();
     }
 
-    if (mosaicJob && mosaicJob.pubDate) {
-      mosaicDateSuccesses++;
-      window.SkipThisJob_MosaicStats.successes = mosaicDateSuccesses;
+    if (mosaicJob) {
+      let days = null;
 
-      const pubDate = new Date(mosaicJob.pubDate);
-      const now = new Date();
-      const diffTime = Math.abs(now - pubDate);
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      data.daysOpen = diffDays;
-
-      console.log(`[SkipThisJob] Mosaic date SUCCESS (attempts: ${mosaicDateAttempts}, successes: ${mosaicDateSuccesses}) → ${diffDays} days`);
-
-      // Enrich other signals from structured data when available
-      if (mosaicJob.salarySnippet?.text && !data.salaryListed) {
-        data.salaryListed = true;
+      if (mosaicJob.pubDate) {
+        const pubDate = new Date(mosaicJob.pubDate);
+        const now = new Date();
+        const diffTime = Math.abs(now - pubDate);
+        days = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      } else if (mosaicJob.formattedRelativeTime || mosaicJob.relativeTime) {
+        days = parseIndeedRelativeDate(mosaicJob.formattedRelativeTime || mosaicJob.relativeTime);
       }
-      if (mosaicJob.employerResponsive !== undefined) {
-        data.employerResponsive = mosaicJob.employerResponsive;
+
+      if (days != null) {
+        mosaicDateSuccesses++;
+        window.SkipThisJob_MosaicStats.successes = mosaicDateSuccesses;
+        data.daysOpen = days;
+
+        console.log(`[SkipThisJob] Mosaic date SUCCESS (attempts: ${mosaicDateAttempts}, successes: ${mosaicDateSuccesses}) → ${days} days`);
+
+        // Enrich salary + responsive if present
+        if (mosaicJob.salarySnippet?.text && !data.salaryListed) {
+          data.salaryListed = true;
+        }
+        if (mosaicJob.employerResponsive !== undefined) {
+          data.employerResponsive = mosaicJob.employerResponsive;
+        }
       }
-    } else {
+    }
+
+    if (data.daysOpen == null) {
       console.log(`[SkipThisJob] Mosaic date FAILED (attempts: ${mosaicDateAttempts}, successes: ${mosaicDateSuccesses})`);
+    }
+  }
+
+  // Final fallback: one last broad page text sweep for "X days ago" patterns
+  if (data.daysOpen == null) {
+    const lastChance = pageText.match(/(\d+)\+?\s*days?\s*ago/);
+    if (lastChance) {
+      data.daysOpen = parseInt(lastChance[1], 10);
+      console.log('[SkipThisJob] Days open (last-chance page text):', data.daysOpen);
     }
   }
 
