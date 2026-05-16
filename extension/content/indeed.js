@@ -95,7 +95,7 @@ function getIndeedJobFromMosaic() {
   return null;
 }
 
-// Helper: parse Indeed relative time strings ("5 days ago", "just posted", "2 hours ago", etc.)
+// Helper: parse Indeed relative time strings (very broad)
 function parseIndeedRelativeDate(text) {
   if (!text) return null;
   const t = String(text).toLowerCase().trim();
@@ -103,19 +103,62 @@ function parseIndeedRelativeDate(text) {
   if (/just posted|today|moments? ago|posted today/.test(t)) return 0;
   if (/(few |a few )?(hours?|mins?|minutes?) ago/.test(t)) return 0;
 
-  // "5 days ago", "12+ days ago", "reposted 3 days ago"
-  let m = t.match(/(?:posted|reposted|active)?\s*(\d+)\+?\s*days?\s*ago/);
+  // Abbreviated: "3d ago", "5d ago", "Posted 2d ago"
+  let m = t.match(/(?:posted|active)?\s*(\d+)\s*d\s*ago/);
   if (m) return parseInt(m[1], 10);
 
-  // "Active 8 days ago"
+  // Weeks: "1w ago", "2 weeks ago", "Posted 3 weeks ago"
+  m = t.match(/(?:posted|active)?\s*(\d+)\s*w(?:eeks?)?\s*ago/);
+  if (m) return parseInt(m[1], 10) * 7;
+
+  // Standard days
+  m = t.match(/(?:posted|reposted|active)?\s*(\d+)\+?\s*days?\s*ago/);
+  if (m) return parseInt(m[1], 10);
+
   m = t.match(/active\s+(\d+)\+?\s*days?/);
   if (m) return parseInt(m[1], 10);
 
-  // "3 days ago" standalone
   m = t.match(/(\d+)\+?\s*days?\s*ago/);
   if (m) return parseInt(m[1], 10);
 
   return null;
+}
+
+// Brute-force finder: walk the main job container and return the first element
+// whose text looks like a posting date. This beats Indeed's constantly changing classes.
+function findIndeedDateText(container) {
+  if (!container) return '';
+
+  // First try the known good selectors
+  const knownSelectors = [
+    '.jobsearch-HiringInsights-entry--bullet',
+    '[data-testid="myJobsStateDate"]',
+    '[data-testid*="date"]',
+    '.jobsearch-JobMetadataFooter',
+    '.jobsearch-JobInfoHeader-subtitle',
+    '[aria-label*="Posted"]',
+    '[aria-label*="Active"]',
+    '.jobsearch-JobMetadataHeader-item'
+  ];
+
+  for (const sel of knownSelectors) {
+    const el = container.querySelector(sel);
+    if (el && el.textContent.trim()) {
+      return el.textContent.trim();
+    }
+  }
+
+  // Brute force: any element inside the container that contains typical date phrasing
+  const datePattern = /(\d+\s*(?:d|days?|w|weeks?)\s*ago|posted\s+\d|active\s+\d|just posted)/i;
+  const allEls = container.querySelectorAll('*');
+  for (const el of allEls) {
+    const txt = el.textContent.trim();
+    if (txt.length > 3 && txt.length < 60 && datePattern.test(txt)) {
+      return txt;
+    }
+  }
+
+  return '';
 }
 
 async function parseIndeedListing() {
@@ -198,38 +241,26 @@ async function parseIndeedListing() {
   const detailText = (mainJobContainer.innerText || '').toLowerCase();
 
   // --- 0.1.8: Aggressive Posted date detection (visible text first, mosaic secondary) ---
-  // Use detailText (main right pane only) to avoid matching dates from the left job list sidebar.
-  const dateSelectors = [
-    '.jobsearch-HiringInsights-entry--bullet',
-    '[data-testid="myJobsStateDate"]',
-    '[data-testid*="date"]',
-    '.jobsearch-JobMetadataFooter',
-    '.jobsearch-JobInfoHeader-subtitle',
-    '[aria-label*="Posted"]',
-    '[aria-label*="Active"]',
-    '.jobsearch-JobMetadataHeader-item'
-  ];
+  // Primary: use the brute-force finder on the main job detail container only.
+  // This walks elements inside the right pane to defeat Indeed's changing DOM.
+  const mainJobContainerForDate =
+    document.querySelector('#jobsearch-JobBody') ||
+    document.querySelector('.jobsearch-JobInfoWrapper') ||
+    document.querySelector('[data-testid="jobsearch-JobComponent"]') ||
+    document.querySelector('div[role="main"]') ||
+    document.body;
 
-  let dateText = '';
-  for (const sel of dateSelectors) {
-    const el = document.querySelector(sel);
-    if (el) {
-      const txt = el.textContent.trim();
-      if (txt) {
-        dateText = txt;
-        break;
-      }
-    }
-  }
+  let dateText = findIndeedDateText(mainJobContainerForDate);
 
-  // Very aggressive fallback — search only inside the main job detail area
+  // Fallback regex sweep on the detail text if the walker didn't find anything
   if (!dateText) {
     const patterns = [
-      /(posted|active|reposted)\s+(\d+)\+?\s*days?\s*ago/i,
-      /active\s+(\d+)\s*days?\s*ago/i,
-      /(\d+)\+?\s*days?\s*ago/i,
+      /(posted|active|reposted)\s+(\d+)\+?\s*(?:d|days?)\s*ago/i,
+      /active\s+(\d+)\s*(?:d|days?)\s*ago/i,
+      /(\d+)\+?\s*(?:d|days?)\s*ago/i,
       /just posted|posted today/i,
-      /(\d+)\+?\s*hours?\s*ago/i
+      /(\d+)\+?\s*(?:h|hours?)\s*ago/i,
+      /(\d+)\s*w(?:eeks?)?\s*ago/i
     ];
     for (const p of patterns) {
       const m = detailText.match(p);
@@ -248,7 +279,7 @@ async function parseIndeedListing() {
   }
 
   if (data.daysOpen != null) {
-    console.log('[SkipThisJob] Days open (visible text):', data.daysOpen, 'from:', dateText.substring(0, 60));
+    console.log('[SkipThisJob] Days open (visible text):', data.daysOpen, 'from:', (dateText || '').substring(0, 60));
   }
 
   // 0.1.8 - Aggressive mosaic date extraction with one retry (secondary)
