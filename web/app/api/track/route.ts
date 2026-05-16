@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { corsResponse, corsOptions } from '@/lib/cors';
 import { supabaseAdmin } from '@/lib/supabase';
+import { recomputeEmployerScore } from '@/lib/employerScore';
 
 /**
  * POST /api/track
@@ -40,11 +41,18 @@ export async function POST(request: NextRequest) {
     // Additional 0.1.8 signals
     workArrangement,
     employmentType,
+    // 0.1.9 — extension pre-blend heuristic (scoreLocally().score)
+    listingHeuristic,
   } = body;
 
   if (!companyName || !jobTitle || !platform) {
     return corsResponse({ error: 'Missing required fields' }, 400);
   }
+
+  const heuristicScore =
+    typeof listingHeuristic === 'number' && Number.isFinite(listingHeuristic)
+      ? Math.max(0, Math.min(100, Math.round(listingHeuristic * 10) / 10))
+      : null;
 
   // Normalize company name (same logic as score API)
   let normalized = companyName.toLowerCase().trim().replace(/\.com\b/gi, '');
@@ -127,6 +135,7 @@ export async function POST(request: NextRequest) {
           salary_listed: salaryListed ?? false,
           is_repost: isRepost ?? false,
           posted_date: daysOpen != null ? new Date(Date.now() - daysOpen * 86400000).toISOString().split('T')[0] : null,
+          heuristic_score: heuristicScore,
           source: 'extension',
         })
         .select('id')
@@ -174,10 +183,13 @@ export async function POST(request: NextRequest) {
           });
       }
     } else {
-      // Update last_seen_at on existing listing
+      // Update last_seen_at on existing listing (+ refresh heuristic if sent)
       await supabaseAdmin
         .from('listings')
-        .update({ last_seen_at: new Date().toISOString() })
+        .update({
+          last_seen_at: new Date().toISOString(),
+          ...(heuristicScore != null ? { heuristic_score: heuristicScore } : {}),
+        })
         .eq('id', existing.id);
 
       // 0.1.8: Smarter similar roles count (title similarity)
@@ -211,6 +223,17 @@ export async function POST(request: NextRequest) {
           work_arrangement: workArrangement || null,
           employment_type: employmentType || null,
         });
+    }
+  }
+
+  // Re-aggregate this employer's ghost_score from stored listing heuristics
+  // so the leaderboard reflects what users actually see. Best-effort: a
+  // failure here (e.g. migration not yet applied) must not break tracking.
+  if (heuristicScore != null) {
+    try {
+      await recomputeEmployerScore(supabaseAdmin, employer.id, 'new_listing');
+    } catch (e) {
+      console.error('recomputeEmployerScore (track) failed:', e);
     }
   }
 

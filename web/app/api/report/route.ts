@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { corsResponse, corsOptions } from '@/lib/cors';
 import { supabaseAdmin } from '@/lib/supabase';
+import { recomputeEmployerScore } from '@/lib/employerScore';
 
 /**
  * POST /api/report
@@ -162,8 +163,7 @@ export async function POST(request: NextRequest) {
     employer_uuid: employer.id,
   });
 
-  // If the RPC doesn't exist yet, fall back to a manual update
-  // This is a simple version — production would recompute the full score
+  // If the RPC doesn't exist yet, fall back to a manual count update.
   await supabaseAdmin
     .from('employers')
     .update({
@@ -174,6 +174,14 @@ export async function POST(request: NextRequest) {
       ).count || 0,
     })
     .eq('id', employer.id);
+
+  // Re-aggregate ghost_score now that report counts changed. Best-effort:
+  // a new report should never fail just because scoring did.
+  try {
+    await recomputeEmployerScore(supabaseAdmin, employer.id, 'new_report');
+  } catch (e) {
+    console.error('recomputeEmployerScore (report) failed:', e);
+  }
 
   return corsResponse({ success: true });
 }

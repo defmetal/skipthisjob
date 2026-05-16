@@ -64,6 +64,7 @@ CREATE TABLE listings (
     is_active       BOOLEAN DEFAULT TRUE,
     source          TEXT DEFAULT 'extension',  -- 'extension', 'seed_kaggle', 'seed_theirstack'
     seniority_level TEXT,                      -- 'entry', 'mid', 'senior', 'director', 'vp', 'c_suite'
+    heuristic_score NUMERIC(4,1),              -- extension pre-blend scoreLocally().score 0-100
 
     CONSTRAINT uq_listing_platform UNIQUE (platform, platform_job_id)
 );
@@ -72,6 +73,8 @@ CREATE INDEX idx_listings_employer ON listings (employer_id);
 CREATE INDEX idx_listings_title_loc ON listings (employer_id, title_normalized, location_city);
 CREATE INDEX idx_listings_posted ON listings (posted_date DESC);
 CREATE INDEX idx_listings_desc_hash ON listings (description_hash);
+CREATE INDEX idx_listings_employer_heuristic ON listings (employer_id, heuristic_score)
+    WHERE heuristic_score IS NOT NULL;
 
 -- ============================================================
 -- REPOST_PATTERNS
