@@ -221,14 +221,69 @@ function findIndeedDateText(container) {
     }
   }
 
-  // Brute force: any element inside the container that contains typical date phrasing
-  const datePattern = /(\d+\s*(?:d|days?|w|weeks?)\s*ago|posted\s+\d|active\s+\d|just posted)/i;
+  // Strategy 1: Find "Date posted" label (exactly as in your diagnostic: "PayDistance...Date posted")
+  // and look for the value in siblings or the next meaningful text in the same row/container.
+  const datePostedEls = container.querySelectorAll('*');
+  for (const el of datePostedEls) {
+    const txt = el.textContent.trim();
+    if (/date posted/i.test(txt) && txt.length < 35) {
+      // Check the parent container (often a flex row: Pay | Distance | Job Type | Experience level | Date posted | Value)
+      const parent = el.parentElement;
+      if (parent) {
+        // Look at all children of the parent for a short date-like value
+        for (const child of parent.children) {
+          const childTxt = child.textContent.trim();
+          // Common values: "5d ago", "12 days ago", "Posted today", "3w ago", "just posted", "5d"
+          if (childTxt.length > 1 && childTxt.length < 40 && 
+              /(\d+[dw]|\d+\s*(d|days?|w|weeks?)|today|just posted|active)/i.test(childTxt)) {
+            return childTxt;
+          }
+        }
+
+        // Also check the full parent text for "Date posted" + value pattern
+        const parentText = parent.textContent.trim();
+        const dateMatch = parentText.match(/date posted[\s\n:,-]*([A-Za-z0-9\s]{2,30})/i);
+        if (dateMatch && dateMatch[1]) {
+          const val = dateMatch[1].trim();
+          if (val.length > 1 && val.length < 30) return `Date posted ${val}`;
+        }
+      }
+
+      // Walk up a bit to find a larger container that has the label + value
+      let ancestor = parent;
+      let depth = 0;
+      while (ancestor && ancestor !== container && depth < 4) {
+        const ancestorText = ancestor.textContent.trim();
+        if (ancestorText.length > 10 && ancestorText.length < 100 && /\d.*(d|days?|w|ago|today)/i.test(ancestorText)) {
+          // Extract the part after "Date posted"
+          const match = ancestorText.match(/date posted[^A-Za-z0-9]*([^\n]{3,40})/i);
+          if (match && match[1]) return match[0].trim();
+          return ancestorText;
+        }
+        ancestor = ancestor.parentElement;
+        depth++;
+      }
+    }
+  }
+
+  // Strategy 2: Brute force for any short text that looks like a relative date
+  // (e.g. "5d ago", "12 days ago", "3w ago", "Posted 4d ago", etc.)
+  const datePattern = /(\d+\s*(?:d|days?|w|weeks?|h|hours?)\s*ago|posted\s+\d|active\s+\d|just posted|\d+[dw]\s*ago)/i;
   const allEls = container.querySelectorAll('*');
   for (const el of allEls) {
     const txt = el.textContent.trim();
-    if (txt.length > 3 && txt.length < 60 && datePattern.test(txt)) {
+    if (txt.length > 2 && txt.length < 60 && datePattern.test(txt)) {
       return txt;
     }
+  }
+
+  // Strategy 3: Look for elements with data-testid containing "date" and grab their text or parent's
+  const dateTestIdEls = container.querySelectorAll('[data-testid*="date"], [data-testid*="posted"]');
+  for (const el of dateTestIdEls) {
+    const txt = el.textContent.trim();
+    if (txt.length > 3 && txt.length < 60) return txt;
+    const parentTxt = el.parentElement?.textContent.trim();
+    if (parentTxt && parentTxt.length > 3 && parentTxt.length < 80) return parentTxt;
   }
 
   return '';
