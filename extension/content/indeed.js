@@ -8,46 +8,88 @@ const API_BASE = 'https://skipthisjob.com/api';
 // DOM PARSING
 // ============================================================
 
-// 0.1.8 - Extract current job data from Indeed's mosaic providers (structured data)
+// 0.1.8 - Aggressive extraction of current job from Indeed's multiple mosaic providers
 function getIndeedJobFromMosaic() {
   try {
     const providerData = window.mosaic?.providerData;
     if (!providerData) return null;
 
-    const currentUrl = window.location.href;
+    const currentUrl = window.location.href.toLowerCase();
     let jobKey = null;
 
-    // Extract job key from URL (Indeed commonly uses jk= or the path)
-    const jkMatch = currentUrl.match(/[?&]jk=([^&]+)/);
+    // Extract job key from URL (handles multiple Indeed formats)
+    const jkMatch = currentUrl.match(/[?&]jk=([^&?#]+)/);
     if (jkMatch) jobKey = jkMatch[1];
 
+    // Also try path-based keys (some /viewjob URLs)
+    if (!jobKey) {
+      const pathMatch = currentUrl.match(/\/viewjob(?:\/[^/?#]+)?\/([^/?#]+)/);
+      if (pathMatch) jobKey = pathMatch[1];
+    }
+
     const providers = Object.keys(providerData).filter(k => k.includes('jobcards'));
+
+    let bestMatch = null;
+    let bestScore = 0;
 
     for (const providerKey of providers) {
       const results = providerData[providerKey]?.metaData?.mosaicProviderJobCardsModel?.results;
       if (!results || !Array.isArray(results)) continue;
 
       for (const job of results) {
-        const thisJobKey = job.jobkey || '';
+        if (!job) continue;
 
-        // Best match: jobkey from URL
+        let matchScore = 0;
+        const thisJobKey = (job.jobkey || '').toLowerCase();
+        const jobUrl = (job.link || job.url || '').toLowerCase();
+        const jobTitle = (job.displayTitle || job.title || '').toLowerCase();
+        const jobCompany = (job.company || '').toLowerCase();
+
+        // Strongest possible match: exact jobkey from URL
         if (jobKey && thisJobKey === jobKey) {
-          return job;
+          return job; // immediate perfect match
         }
 
-        // Fallback: URL contains the jobkey
-        if (thisJobKey && currentUrl.includes(thisJobKey)) {
-          return job;
+        // Very strong: jobkey appears in the current page URL
+        if (jobKey && (currentUrl.includes(jobKey) || jobUrl.includes(jobKey))) {
+          matchScore += 12;
+        }
+
+        // Good fallback: title match
+        if (jobTitle && currentUrl.includes(encodeURIComponent(jobTitle.substring(0, 25)))) {
+          matchScore += 6;
+        }
+
+        // Weak fallback: company name
+        if (jobCompany && currentUrl.includes(encodeURIComponent(jobCompany.replace(/\s+/g, '')))) {
+          matchScore += 2;
+        }
+
+        // Strongly prefer jobs that have a real pubDate
+        if (job.pubDate) matchScore += 5;
+
+        // Prefer jobs with salary data
+        if (job.salarySnippet?.text) matchScore += 2;
+
+        if (matchScore > bestScore) {
+          bestScore = matchScore;
+          bestMatch = job;
         }
       }
     }
+
+    // Return the best match we found, even if not perfect
+    if (bestMatch && bestScore >= 5) {
+      return bestMatch;
+    }
+
   } catch (e) {
-    // Fail silently if structure changes
+    // Fail silently if the mosaic structure changes
   }
   return null;
 }
 
-function parseIndeedListing() {
+async function parseIndeedListing() {
   const data = {
     title: null,
     companyName: null,
@@ -142,24 +184,40 @@ function parseIndeedListing() {
 
   if (data.daysOpen != null) console.log('[SkipThisJob] Days open:', data.daysOpen);
 
-  // 0.1.8 - Try to get accurate posting date from Indeed's structured mosaic data
+  // 0.1.8 - Aggressive mosaic date extraction with one retry
   if (data.daysOpen == null) {
-    const mosaicJob = getIndeedJobFromMosaic();
+    mosaicDateAttempts++;
+    window.SkipThisJob_MosaicStats.attempts = mosaicDateAttempts;
+
+    let mosaicJob = getIndeedJobFromMosaic();
+
+    // Retry once with a short delay if we didn't get a good result
+    if (!mosaicJob || !mosaicJob.pubDate) {
+      await new Promise(r => setTimeout(r, 550));
+      mosaicJob = getIndeedJobFromMosaic();
+    }
+
     if (mosaicJob && mosaicJob.pubDate) {
+      mosaicDateSuccesses++;
+      window.SkipThisJob_MosaicStats.successes = mosaicDateSuccesses;
+
       const pubDate = new Date(mosaicJob.pubDate);
       const now = new Date();
       const diffTime = Math.abs(now - pubDate);
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
       data.daysOpen = diffDays;
-      console.log('[SkipThisJob] Found accurate pubDate from mosaic data:', diffDays, 'days');
 
-      // Also enrich other signals if available from structured data
+      console.log(`[SkipThisJob] Mosaic date SUCCESS (attempts: ${mosaicDateAttempts}, successes: ${mosaicDateSuccesses}) → ${diffDays} days`);
+
+      // Enrich other signals from structured data when available
       if (mosaicJob.salarySnippet?.text && !data.salaryListed) {
         data.salaryListed = true;
       }
       if (mosaicJob.employerResponsive !== undefined) {
         data.employerResponsive = mosaicJob.employerResponsive;
       }
+    } else {
+      console.log(`[SkipThisJob] Mosaic date FAILED (attempts: ${mosaicDateAttempts}, successes: ${mosaicDateSuccesses})`);
     }
   }
 
@@ -196,26 +254,7 @@ function parseIndeedListing() {
     data.employmentType = 'internship';
   }
 
-  // 0.1.8 - Extract current job data from Indeed's mosaic providers (structured data)
-function getIndeedJobFromMosaic() {
-  try {
-    const providerData = window.mosaic?.providerData;
-    if (!providerData) return null;
 
-    const currentUrl = window.location.href;
-    let jobKey = null;
-
-    // Extract job key from URL (Indeed commonly uses jk= or the path)
-    const jkMatch = currentUrl.match(/[?&]jk=([^&]+)/);
-    if (jkMatch) jobKey = jkMatch[1];
-
-    const providers = Object.keys(providerData).filter(k => k.includes('jobcards'));
-
-    for (const providerKey of providers) {
-      const results = providerData[providerKey]?.metaData?.mosaicProviderJobCardsModel?.results;
-      if (!results || !Array.isArray(results)) continue;
-
-      for (const job of results) {
         const thisJobKey = job.jobkey || '';
 
         // Best match: jobkey from URL
@@ -470,10 +509,9 @@ function scoreLocally(listing) {
       agePenalty = 104 + (listing.daysOpen - 30) * 6;
     }
   } else {
-    // 0.1.8 - Heavier penalty for unknown posting age (as requested)
-    // We apply this more aggressively because unknown age on Indeed often
-    // correlates with older or low-quality listings.
-    agePenalty = 12;
+    // 0.1.8 - Significantly heavier penalty for unknown posting age
+    // (we now have good structured data via mosaic in most cases)
+    agePenalty = 15;
     signals.push('Posting age unknown');
   }
   if (isHighTurnover) agePenalty = Math.round(agePenalty * 0.4);
@@ -840,6 +878,11 @@ let lastVjk = null;
 let isProcessing = false;
 let currentListingData = null;   // 0.1.8 - store current listing for reliable Apply tracking
 
+// Temporary counters for 0.1.8 testing of mosaic date extraction
+let mosaicDateAttempts = 0;
+let mosaicDateSuccesses = 0;
+window.SkipThisJob_MosaicStats = { attempts: 0, successes: 0 }; // easy to inspect in console
+
 function getCurrentVjk() {
   const match = window.location.href.match(/vjk=([a-f0-9]+)/);
   return match ? match[1] : window.location.href;
@@ -856,7 +899,7 @@ async function processCurrentListing() {
   // Wait for page to render
   await new Promise(resolve => setTimeout(resolve, 1500));
 
-  const listing = parseIndeedListing();
+  const listing = await parseIndeedListing();
   if (!listing.title || !listing.companyName) {
     console.log('[SkipThisJob] Could not parse Indeed listing, skipping');
     isProcessing = false;
