@@ -188,8 +188,17 @@ async function parseIndeedListing() {
   // --- Page text for signal detection ---
   const pageText = document.body.innerText.toLowerCase();
 
+  // 0.1.8 - Targeted text from the main job detail pane only (avoids left sidebar job list dates)
+  const mainJobContainer =
+    document.querySelector('#jobsearch-JobBody') ||
+    document.querySelector('.jobsearch-JobInfoWrapper') ||
+    document.querySelector('[data-testid="jobsearch-JobComponent"]') ||
+    document.querySelector('div[role="main"]') ||
+    document.body;
+  const detailText = (mainJobContainer.innerText || '').toLowerCase();
+
   // --- 0.1.8: Aggressive Posted date detection (visible text first, mosaic secondary) ---
-  // Indeed shows the date in many different containers depending on the view.
+  // Use detailText (main right pane only) to avoid matching dates from the left job list sidebar.
   const dateSelectors = [
     '.jobsearch-HiringInsights-entry--bullet',
     '[data-testid="myJobsStateDate"]',
@@ -213,7 +222,7 @@ async function parseIndeedListing() {
     }
   }
 
-  // Very aggressive fallback: scan page text for any common Indeed date phrasing
+  // Very aggressive fallback — search only inside the main job detail area
   if (!dateText) {
     const patterns = [
       /(posted|active|reposted)\s+(\d+)\+?\s*days?\s*ago/i,
@@ -223,7 +232,7 @@ async function parseIndeedListing() {
       /(\d+)\+?\s*hours?\s*ago/i
     ];
     for (const p of patterns) {
-      const m = pageText.match(p);
+      const m = detailText.match(p);
       if (m) {
         dateText = m[0];
         break;
@@ -239,7 +248,7 @@ async function parseIndeedListing() {
   }
 
   if (data.daysOpen != null) {
-    console.log('[SkipThisJob] Days open (visible text):', data.daysOpen);
+    console.log('[SkipThisJob] Days open (visible text):', data.daysOpen, 'from:', dateText.substring(0, 60));
   }
 
   // 0.1.8 - Aggressive mosaic date extraction with one retry (secondary)
@@ -251,7 +260,7 @@ async function parseIndeedListing() {
 
     // Retry once with delay (SPA hydration)
     if (!mosaicJob || (!mosaicJob.pubDate && !mosaicJob.formattedRelativeTime && !mosaicJob.relativeTime)) {
-      await new Promise(r => setTimeout(r, 550));
+      await new Promise(r => setTimeout(r, 600));
       mosaicJob = getIndeedJobFromMosaic();
     }
 
@@ -289,12 +298,12 @@ async function parseIndeedListing() {
     }
   }
 
-  // Final fallback: one last broad page text sweep for "X days ago" patterns
+  // Final fallback: one last sweep inside the main detail area only
   if (data.daysOpen == null) {
-    const lastChance = pageText.match(/(\d+)\+?\s*days?\s*ago/);
+    const lastChance = detailText.match(/(\d+)\+?\s*days?\s*ago/);
     if (lastChance) {
       data.daysOpen = parseInt(lastChance[1], 10);
-      console.log('[SkipThisJob] Days open (last-chance page text):', data.daysOpen);
+      console.log('[SkipThisJob] Days open (last-chance detail area):', data.daysOpen);
     }
   }
 
@@ -455,15 +464,6 @@ async function parseIndeedListing() {
     }
   }
 
-  // Check for "active X days ago" which is different from "posted X days ago"
-  if (data.daysOpen == null) {
-    const activeMatch = pageText.match(/active\s+(\d+)\s*days?\s*ago/);
-    if (activeMatch) {
-      data.daysOpen = parseInt(activeMatch[1]);
-      console.log('[SkipThisJob] Active days ago:', data.daysOpen);
-    }
-  }
-
   // --- Job ID from URL ---
   const jobIdMatch = window.location.href.match(/jk=([a-f0-9]+)/) ||
                      window.location.href.match(/vjk=([a-f0-9]+)/);
@@ -473,6 +473,10 @@ async function parseIndeedListing() {
     title: data.title, company: data.companyName, days: data.daysOpen,
     salary: data.salaryListed, thirdParty: data.isThirdParty
   }));
+
+  if (data.daysOpen == null) {
+    console.warn('[SkipThisJob] ⚠️  STILL NO DATE after all attempts (visible + mosaic + detailText fallback). This job will get +15 unknown age penalty.');
+  }
 
   return data;
 }
@@ -960,8 +964,8 @@ async function processCurrentListing() {
   isProcessing = true;
   lastVjk = vjk;
 
-  // Wait for page to render
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  // Wait for page to render (Indeed is slow — date/Hiring Insights often appears late)
+  await new Promise(resolve => setTimeout(resolve, 2300));
 
   const listing = await parseIndeedListing();
   if (!listing.title || !listing.companyName) {
