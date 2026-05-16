@@ -10,7 +10,7 @@ export default function Privacy() {
 
       <article className="max-w-3xl mx-auto px-6 py-12">
         <h1 className="text-3xl font-bold mb-2">Privacy Policy</h1>
-        <p className="text-sm text-gray-400 mb-10">Last updated: May 18, 2026</p>
+        <p className="text-sm text-gray-400 mb-10">Last updated: May 15, 2026</p>
 
         <div className="prose prose-gray max-w-none space-y-6 text-gray-600 leading-relaxed">
           <p>
@@ -58,6 +58,15 @@ export default function Privacy() {
             signals are used only to improve the accuracy of ghost risk scoring and are not
             linked to your identity.
           </p>
+          <p>
+            <strong>Computed listing risk score (added in version 0.1.9).</strong> When you
+            view a job listing, the extension calculates a ghost-risk score for that listing
+            from the publicly visible signals described above and sends that score to our
+            server. We store it with the listing and combine it with the scores from other
+            listings for the same employer to produce that employer&apos;s overall ghost score
+            shown to the community. This score reflects the job listing only — it contains no
+            information about you, your device, or your browsing history.
+          </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">What We Do NOT Collect</h2>
           <p>
@@ -74,9 +83,11 @@ export default function Privacy() {
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">How We Use Data</h2>
           <p>
-            Community reports are aggregated anonymously to compute employer ghost scores.
-            These scores are displayed to other users of the extension and on the
-            skipthisjob.com website. Individual reports cannot be traced back to any person.
+            Community reports and the passively computed listing scores described above are
+            aggregated anonymously to compute employer ghost scores. These scores are
+            displayed to other users of the extension and on the skipthisjob.com website,
+            including a public leaderboard of employers with the highest ghost scores.
+            Individual reports and listing views cannot be traced back to any person.
           </p>
           <p>
             We may display aggregated statistics publicly, such as the total number of
