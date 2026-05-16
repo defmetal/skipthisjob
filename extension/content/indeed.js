@@ -1332,10 +1332,16 @@ async function processCurrentListing() {
     return;
   }
 
+  // Compute the pre-blend heuristic up front so it can be persisted server
+  // side (powers the employer leaderboard). Pre-blend on purpose: the
+  // blended score depends on the backend score → feedback loop if stored.
+  const localScore = scoreLocally(listing);
+
   // Store current listing data for reliable Apply tracking (0.1.8)
   currentListingData = {
     ...listing,
     userClickedApply: false,
+    listingHeuristic: localScore.score,
   };
 
   // Passively track listing metadata + new signals (0.1.8)
@@ -1356,10 +1362,11 @@ async function processCurrentListing() {
       userClickedApply: listing.userClickedApply,
       workArrangement: listing.workArrangement,
       employmentType: listing.employmentType,
+      // 0.1.9 — pre-blend heuristic for server-side employer aggregation
+      listingHeuristic: localScore.score,
     },
   });
 
-  const localScore = scoreLocally(listing);
   injectOverlay(localScore, null, listing);
 
   // Fetch backend employer score
