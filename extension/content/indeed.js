@@ -221,6 +221,12 @@ async function parseIndeedListing() {
     }
   }
 
+  // 0.1.8 - Repost detection (text + mosaic)
+  if (pageText.includes('reposted') || pageText.includes('originally posted') || pageText.includes('this job was posted')) {
+    data.isRepost = true;
+    console.log('[SkipThisJob] Repost detected on Indeed');
+  }
+
   // 0.1.8 - Improved salary detection (structured fields + description)
   const salaryEl =
     document.querySelector('#salaryInfoAndJobType') ||
@@ -254,27 +260,7 @@ async function parseIndeedListing() {
     data.employmentType = 'internship';
   }
 
-
-        const thisJobKey = job.jobkey || '';
-
-        // Best match: jobkey from URL
-        if (jobKey && thisJobKey === jobKey) {
-          return job;
-        }
-
-        // Fallback: URL contains the jobkey
-        if (thisJobKey && currentUrl.includes(thisJobKey)) {
-          return job;
-        }
-      }
-    }
-  } catch (e) {
-    // Fail silently if structure changes
-  }
-  return null;
-}
-
-// 0.1.8 - Improved description detection
+  // 0.1.8 - Improved description detection
   const descEl =
     document.querySelector('#jobDescriptionText') ||
     document.querySelector('.jobsearch-jobDescriptionText') ||
@@ -526,6 +512,7 @@ function scoreLocally(listing) {
   if (listing.isRepost) {
     repostPenalty = 20;
     signals.push('Recycled listing — marked as reposted');
+    signals.push('High Volume Repost');
   }
   if (isHighTurnover) repostPenalty = Math.round(repostPenalty * 0.4);
   score += repostPenalty;
@@ -612,7 +599,7 @@ function scoreLocally(listing) {
   const missingBasics = !listing.salaryListed && !listing.employerResponsive && !listing.activelyReviewing;
 
   if (isOld && missingBasics) {
-    score += 18;
+    score += 24;
     signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
   }
 
