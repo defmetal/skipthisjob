@@ -8,162 +8,96 @@ const API_BASE = 'https://skipthisjob.com/api';
 // DOM PARSING
 // ============================================================
 
-// 0.1.8 - Aggressive extraction of current job from Indeed's multiple mosaic providers
+// 0.1.8 - Hardened aggressive extraction from Indeed's mosaic providers.
+// Prioritizes the jobcards list (where pubDate / formattedRelativeTime usually lives)
+// and uses strong multi-signal matching for right-pane detail views (vjk= URLs).
 function getIndeedJobFromMosaic() {
   try {
     const providerData = window.mosaic?.providerData;
     if (!providerData) return null;
 
     const currentUrl = window.location.href.toLowerCase();
-    let jobKey = null;
 
-    // Extract job key from URL (handles multiple Indeed formats: vjk=, jk=, /viewjob/)
-    const jkMatch = currentUrl.match(/[?&]v?jk=([^&?#]+)/);
+    // Extract job key from URL (supports both jk= and vjk=)
+    let jobKey = null;
+    const jkMatch = currentUrl.match(/[?&]v?jk=([a-f0-9]+)/);
     if (jkMatch) jobKey = jkMatch[1];
 
-    // Also try path-based keys (some /viewjob URLs)
-    if (!jobKey) {
-      const pathMatch = currentUrl.match(/\/viewjob(?:\/[^/?#]+)?\/([^/?#]+)/);
-      if (pathMatch) jobKey = pathMatch[1];
-    }
+    // Try to get current title and company for fallback matching
+    let pageTitle = '';
+    let pageCompany = '';
 
-    // 0.1.8 - Truly aggressive: scan ALL mosaic providers.
-    // Right-pane detail jobs (vjk= URLs) frequently live in "job-details", "insights",
-    // or "match-insights" providers (e.g. js-match-insights-provider-job-details),
-    // not just the jobcards providers that power the left list.
-    const allProviders = Object.keys(providerData);
+    const titleEl = document.querySelector('[data-testid="jobsearch-JobInfoHeader-title"]') ||
+                    document.querySelector('h2.jobsearch-JobInfoHeader-title') ||
+                    document.querySelector('h1');
+    if (titleEl) pageTitle = titleEl.textContent.trim().toLowerCase();
+
+    const companyEl = document.querySelector('[data-testid="inlineHeader-companyName"]') ||
+                      document.querySelector('[data-testid="jobsearch-CompanyInfoContainer"]');
+    if (companyEl) pageCompany = companyEl.textContent.trim().toLowerCase();
 
     let bestMatch = null;
     let bestScore = 0;
+
+    const allProviders = Object.keys(providerData);
 
     for (const providerKey of allProviders) {
       const provider = providerData[providerKey];
       if (!provider) continue;
 
-      let candidates = [];
-
-      // 1. Classic jobcards path (left list + sometimes current job)
-      const jobCardsResults = provider?.metaData?.mosaicProviderJobCardsModel?.results;
-      if (jobCardsResults && Array.isArray(jobCardsResults)) {
-        candidates = candidates.concat(jobCardsResults);
+      let results = [];
+      if (provider.metaData?.mosaicProviderJobCardsModel?.results) {
+        results = provider.metaData.mosaicProviderJobCardsModel.results;
+      } else if (Array.isArray(provider.results)) {
+        results = provider.results;
       }
 
-      // 2. Job details / insights style providers (the right pane on vjk= pages)
-      // These often have the current job data at the TOP LEVEL:
-      //   jobKey, jobDetailsSection, salaryInfoModel, etc.
-      // (metaData is frequently empty on these providers)
-      const isDetailsProvider = /job-details|jobdetails|insights|match-insights|jobdetail/i.test(providerKey);
+      if (!Array.isArray(results) || results.length === 0) continue;
 
-      if (isDetailsProvider) {
-        // Add the provider itself (data is usually at root)
-        candidates.push(provider);
+      for (const job of results) {
+        if (!job) continue;
 
-        // Common top-level rich objects on these providers
-        if (provider.jobDetailsSection && typeof provider.jobDetailsSection === 'object') {
-          candidates.push(provider.jobDetailsSection);
-        }
-        if (provider.salaryInfoModel && typeof provider.salaryInfoModel === 'object') {
-          candidates.push(provider.salaryInfoModel);
-        }
-        if (provider.jobDetails && typeof provider.jobDetails === 'object') {
-          candidates.push(provider.jobDetails);
-        }
-
-        // Walk metaData anyway (in case it has something)
-        if (provider.metaData && typeof provider.metaData === 'object') {
-          for (const nestedKey of Object.keys(provider.metaData)) {
-            const nested = provider.metaData[nestedKey];
-            if (nested && typeof nested === 'object') {
-              candidates.push(nested);
-            }
-          }
-        }
-      }
-
-      // 3. Generic fallback for any provider
-      if (provider && typeof provider === 'object') {
-        if (provider.jobkey || provider.jobKey || provider.pubDate || provider.formattedRelativeTime || provider.displayTitle) {
-          candidates.push(provider);
-        }
-        if (provider.metaData && typeof provider.metaData === 'object') {
-          for (const nestedKey of Object.keys(provider.metaData)) {
-            const nested = provider.metaData[nestedKey];
-            if (nested && typeof nested === 'object' &&
-                (nested.jobkey || nested.jobKey || nested.pubDate || nested.formattedRelativeTime)) {
-              candidates.push(nested);
-            }
-          }
-        }
-      }
-
-      // Deduplicate
-      const seen = new Set();
-      candidates = candidates.filter(j => {
-        if (!j || typeof j !== 'object') return false;
-        const id = j.jobkey || j.jobKey || j.id || JSON.stringify(j).slice(0, 100);
-        if (seen.has(id)) return false;
-        seen.add(id);
-        return true;
-      });
-
-      for (const job of candidates) {
-        if (!job || typeof job !== 'object') continue;
-
-        let matchScore = 0;
-
-        // Support both jobkey and jobKey (Indeed uses both)
-        const thisJobKey = (job.jobkey || job.jobKey || '').toLowerCase();
-        const jobUrl = (job.link || job.url || '').toLowerCase();
+        let score = 0;
+        const thisJobKey = (job.jobkey || '').toLowerCase();
         const jobTitle = (job.displayTitle || job.title || '').toLowerCase();
         const jobCompany = (job.company || '').toLowerCase();
-        const hasPubDate = !!job.pubDate;
-        const hasRelativeTime = !!(job.formattedRelativeTime || job.relativeTime);
+        const jobLink = (job.link || job.url || '').toLowerCase();
 
-        // Strongest possible match: exact jobkey from URL (vjk= or jk=)
-        if (jobKey && thisJobKey === jobKey) {
-          return job; // immediate perfect match for the viewed job
-        }
+        const hasDate = !!(job.pubDate || job.formattedRelativeTime);
 
-        // Very strong: jobkey appears in the current page URL
-        if (jobKey && (currentUrl.includes(jobKey) || jobUrl.includes(jobKey))) {
-          matchScore += 12;
-        }
+        // 1. Exact jobkey match (best)
+        if (jobKey && thisJobKey === jobKey) score += 100;
 
-        // Good fallback: title match (common on right-pane detail views)
-        if (jobTitle) {
-          const shortTitle = jobTitle.substring(0, 35);
-          if (currentUrl.includes(encodeURIComponent(shortTitle)) ||
-              currentUrl.includes(shortTitle.replace(/\s+/g, ''))) {
-            matchScore += 8;
-          }
-        }
+        // 2. jobkey appears in current URL
+        if (jobKey && currentUrl.includes(jobKey)) score += 40;
 
-        // Company fallback
-        if (jobCompany && currentUrl.includes(encodeURIComponent(jobCompany.replace(/\s+/g, '')))) {
-          matchScore += 3;
-        }
+        // 3. Strong title match (very effective on right-pane views)
+        if (pageTitle && jobTitle && pageTitle.includes(jobTitle.substring(0, 25))) score += 35;
 
-        // Heavily prefer objects that actually carry date information
-        if (hasPubDate) matchScore += 7;
-        if (hasRelativeTime) matchScore += 5;
+        // 4. Company match
+        if (pageCompany && jobCompany && pageCompany.includes(jobCompany)) score += 15;
 
-        // Prefer jobs with salary data
-        if (job.salarySnippet?.text) matchScore += 2;
+        // 5. URL contains title fragment
+        if (jobTitle && currentUrl.includes(jobTitle.replace(/\s+/g, '').substring(0, 20))) score += 10;
 
-        if (matchScore > bestScore) {
-          bestScore = matchScore;
+        // Bonus for having real date data
+        if (hasDate) score += 20;
+        if (job.formattedRelativeTime) score += 10;
+        if (job.pubDate) score += 5;
+
+        if (score > bestScore) {
+          bestScore = score;
           bestMatch = job;
         }
       }
     }
 
-    // Accept lower-quality matches only if they have real date data
-    if (bestMatch && bestScore >= 3) {
+    if (bestMatch && bestScore >= 25) {
       return bestMatch;
     }
 
   } catch (e) {
-    // Fail silently if the mosaic structure changes
+    // fail silently
   }
   return null;
 }
@@ -221,47 +155,34 @@ function findIndeedDateText(container) {
     }
   }
 
-  // Strategy 1: Find "Date posted" label (exactly as in your diagnostic: "PayDistance...Date posted")
-  // and look for the value in siblings or the next meaningful text in the same row/container.
+  // Strategy 1: Skip the top filter bar "Date posted" (the one you just found: Pay | Distance | Job Type | Experience level | Date posted)
+  // and look for the actual job posting date in the Hiring Insights / job metadata area.
   const datePostedEls = container.querySelectorAll('*');
   for (const el of datePostedEls) {
-    const txt = el.textContent.trim();
-    if (/date posted/i.test(txt) && txt.length < 35) {
-      // Check the parent container (often a flex row: Pay | Distance | Job Type | Experience level | Date posted | Value)
+    const txt = el.textContent.trim().toLowerCase();
+    if (txt === 'date posted' || txt === 'date posted') {
+      // This is likely the filter bar label — skip it and its immediate parent row
       const parent = el.parentElement;
-      if (parent) {
-        // Look at all children of the parent for a short date-like value
-        for (const child of parent.children) {
-          const childTxt = child.textContent.trim();
-          // Common values: "5d ago", "12 days ago", "Posted today", "3w ago", "just posted", "5d"
-          if (childTxt.length > 1 && childTxt.length < 40 && 
-              /(\d+[dw]|\d+\s*(d|days?|w|weeks?)|today|just posted|active)/i.test(childTxt)) {
-            return childTxt;
-          }
-        }
-
-        // Also check the full parent text for "Date posted" + value pattern
-        const parentText = parent.textContent.trim();
-        const dateMatch = parentText.match(/date posted[\s\n:,-]*([A-Za-z0-9\s]{2,30})/i);
-        if (dateMatch && dateMatch[1]) {
-          const val = dateMatch[1].trim();
-          if (val.length > 1 && val.length < 30) return `Date posted ${val}`;
-        }
+      if (parent && /pay|distance|job type|experience level/i.test(parent.textContent)) {
+        continue; // skip the search filter row
       }
+    }
+  }
 
-      // Walk up a bit to find a larger container that has the label + value
-      let ancestor = parent;
-      let depth = 0;
-      while (ancestor && ancestor !== container && depth < 4) {
-        const ancestorText = ancestor.textContent.trim();
-        if (ancestorText.length > 10 && ancestorText.length < 100 && /\d.*(d|days?|w|ago|today)/i.test(ancestorText)) {
-          // Extract the part after "Date posted"
-          const match = ancestorText.match(/date posted[^A-Za-z0-9]*([^\n]{3,40})/i);
-          if (match && match[1]) return match[0].trim();
-          return ancestorText;
-        }
-        ancestor = ancestor.parentElement;
-        depth++;
+  // Strategy 2: Look for "Hiring Insights" or job metadata sections that contain the real posting date
+  const insightsSelectors = [
+    '.jobsearch-HiringInsights-entry--bullet',
+    '[data-testid*="hiringInsights"]',
+    '[data-testid*="insights"]',
+    '.jobsearch-JobMetadataFooter',
+    '.jobsearch-JobInfoHeader-subtitle'
+  ];
+  for (const sel of insightsSelectors) {
+    const el = container.querySelector(sel);
+    if (el) {
+      const txt = el.textContent.trim();
+      if (txt.length > 5 && txt.length < 80 && /(\d+.*(d|days?|w|weeks?|ago)|just posted|today|active)/i.test(txt)) {
+        return txt;
       }
     }
   }
@@ -442,8 +363,8 @@ async function parseIndeedListing() {
     let mosaicJob = getIndeedJobFromMosaic();
 
     // Retry once with delay (SPA hydration)
-    if (!mosaicJob || (!mosaicJob.pubDate && !mosaicJob.formattedRelativeTime && !mosaicJob.relativeTime)) {
-      await new Promise(r => setTimeout(r, 600));
+    if (!mosaicJob || (!mosaicJob.pubDate && !mosaicJob.formattedRelativeTime)) {
+      await new Promise(r => setTimeout(r, 650));
       mosaicJob = getIndeedJobFromMosaic();
     }
 
@@ -452,11 +373,10 @@ async function parseIndeedListing() {
 
       if (mosaicJob.pubDate) {
         const pubDate = new Date(mosaicJob.pubDate);
-        const now = new Date();
-        const diffTime = Math.abs(now - pubDate);
-        days = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      } else if (mosaicJob.formattedRelativeTime || mosaicJob.relativeTime) {
-        days = parseIndeedRelativeDate(mosaicJob.formattedRelativeTime || mosaicJob.relativeTime);
+        const diffDays = Math.ceil((Date.now() - pubDate) / (1000 * 60 * 60 * 24));
+        days = Math.max(0, diffDays);
+      } else if (mosaicJob.formattedRelativeTime) {
+        days = parseIndeedRelativeDate(mosaicJob.formattedRelativeTime);
       }
 
       if (days != null) {
@@ -464,14 +384,11 @@ async function parseIndeedListing() {
         window.SkipThisJob_MosaicStats.successes = mosaicDateSuccesses;
         data.daysOpen = days;
 
-        console.log(`[SkipThisJob] Mosaic date SUCCESS (attempts: ${mosaicDateAttempts}, successes: ${mosaicDateSuccesses}) → ${days} days`);
+        console.log(`[SkipThisJob] Mosaic date SUCCESS → ${days} days (${mosaicJob.formattedRelativeTime || 'from pubDate'})`);
 
-        // Enrich salary + responsive if present
+        // Enrich salary if available
         if (mosaicJob.salarySnippet?.text && !data.salaryListed) {
           data.salaryListed = true;
-        }
-        if (mosaicJob.employerResponsive !== undefined) {
-          data.employerResponsive = mosaicJob.employerResponsive;
         }
       }
     }
