@@ -322,14 +322,16 @@ async function parseIndeedListing() {
   // 1. Try the js-match-insights-provider-job-details contents (often has the date as text)
   try {
     const detailsProvider = window.mosaic?.providerData?.['js-match-insights-provider-job-details'];
-    if (detailsProvider?.jobDetailsSection) {
-      const sectionStr = JSON.stringify(detailsProvider.jobDetailsSection).toLowerCase();
+    const section = detailsProvider?.jobDetailsSection;
+    if (section) {
+      // Stringify the entire section (handles object or array contents)
+      const sectionStr = JSON.stringify(section).toLowerCase();
       const sectionDate = parseIndeedRelativeDate(sectionStr);
       if (sectionDate != null) {
         data.daysOpen = sectionDate;
         console.log('[SkipThisJob] Days open from jobDetailsSection contents');
       }
-      // Also try to extract raw date-like text from the contents for the visible parser
+      // Also try to extract raw date-like text
       const dateMatchInSection = sectionStr.match(/(posted|active)\s*(\d+|\d+\s*d|\d+\s*w)\s*(days?|d|weeks?|w)?\s*ago/);
       if (dateMatchInSection) dateText = dateMatchInSection[0];
     }
