@@ -17,8 +17,8 @@ function getIndeedJobFromMosaic() {
     const currentUrl = window.location.href.toLowerCase();
     let jobKey = null;
 
-    // Extract job key from URL (handles multiple Indeed formats)
-    const jkMatch = currentUrl.match(/[?&]jk=([^&?#]+)/);
+    // Extract job key from URL (handles multiple Indeed formats: vjk=, jk=, /viewjob/)
+    const jkMatch = currentUrl.match(/[?&]v?jk=([^&?#]+)/);
     if (jkMatch) jobKey = jkMatch[1];
 
     // Also try path-based keys (some /viewjob URLs)
@@ -27,17 +27,42 @@ function getIndeedJobFromMosaic() {
       if (pathMatch) jobKey = pathMatch[1];
     }
 
-    const providers = Object.keys(providerData).filter(k => k.includes('jobcards'));
+    // 0.1.8 - Truly aggressive: scan ALL mosaic providers, not just jobcards.
+    // The current right-pane job is often in non-jobcards providers (jobdetails, serp, etc.)
+    // when you're on a search results page with vjk= in the URL.
+    const allProviders = Object.keys(providerData);
 
     let bestMatch = null;
     let bestScore = 0;
 
-    for (const providerKey of providers) {
-      const results = providerData[providerKey]?.metaData?.mosaicProviderJobCardsModel?.results;
-      if (!results || !Array.isArray(results)) continue;
+    for (const providerKey of allProviders) {
+      const provider = providerData[providerKey];
+      if (!provider) continue;
 
-      for (const job of results) {
-        if (!job) continue;
+      // Try the common jobcards results array path
+      let candidates = [];
+      const jobCardsResults = provider?.metaData?.mosaicProviderJobCardsModel?.results;
+      if (jobCardsResults && Array.isArray(jobCardsResults)) {
+        candidates = jobCardsResults;
+      } else if (provider && typeof provider === 'object') {
+        // Some providers (jobdetails style) put the current job directly on the object
+        // or under other keys. Collect anything that looks like a job.
+        if (provider.jobkey || provider.pubDate || provider.formattedRelativeTime || provider.displayTitle) {
+          candidates = [provider];
+        }
+        // Also check common nested locations
+        if (provider.metaData && typeof provider.metaData === 'object') {
+          for (const nestedKey of Object.keys(provider.metaData)) {
+            const nested = provider.metaData[nestedKey];
+            if (nested && (nested.jobkey || nested.pubDate || nested.formattedRelativeTime)) {
+              candidates.push(nested);
+            }
+          }
+        }
+      }
+
+      for (const job of candidates) {
+        if (!job || typeof job !== 'object') continue;
 
         let matchScore = 0;
         const thisJobKey = (job.jobkey || '').toLowerCase();
@@ -47,32 +72,33 @@ function getIndeedJobFromMosaic() {
         const hasPubDate = !!job.pubDate;
         const hasRelativeTime = !!(job.formattedRelativeTime || job.relativeTime);
 
-        // Strongest possible match: exact jobkey from URL
+        // Strongest possible match: exact jobkey from URL (vjk= or jk=)
         if (jobKey && thisJobKey === jobKey) {
-          return job; // immediate perfect match
+          return job; // immediate perfect match — this is the one we want
         }
 
-        // Very strong: jobkey appears in the current page URL
+        // Very strong: jobkey appears anywhere in the current page URL
         if (jobKey && (currentUrl.includes(jobKey) || jobUrl.includes(jobKey))) {
           matchScore += 12;
         }
 
-        // Good fallback: title match (more generous)
+        // Good fallback: title appears in the URL (common on search + right pane views)
         if (jobTitle) {
-          const shortTitle = jobTitle.substring(0, 30);
-          if (currentUrl.includes(encodeURIComponent(shortTitle)) || currentUrl.includes(shortTitle.replace(/\s+/g, ''))) {
-            matchScore += 7;
+          const shortTitle = jobTitle.substring(0, 35);
+          if (currentUrl.includes(encodeURIComponent(shortTitle)) ||
+              currentUrl.includes(shortTitle.replace(/\s+/g, ''))) {
+            matchScore += 8;
           }
         }
 
-        // Company name fallback
+        // Company fallback
         if (jobCompany && currentUrl.includes(encodeURIComponent(jobCompany.replace(/\s+/g, '')))) {
           matchScore += 3;
         }
 
-        // Prefer jobs that have date information (pubDate or formattedRelativeTime)
-        if (hasPubDate) matchScore += 6;
-        if (hasRelativeTime) matchScore += 4;
+        // Strongly prefer anything that actually has date information
+        if (hasPubDate) matchScore += 7;
+        if (hasRelativeTime) matchScore += 5;
 
         // Prefer jobs with salary data
         if (job.salarySnippet?.text) matchScore += 2;
@@ -84,8 +110,8 @@ function getIndeedJobFromMosaic() {
       }
     }
 
-    // Return the best match we found (lower threshold to catch more cases)
-    if (bestMatch && bestScore >= 4) {
+    // Accept a lower quality match if it has real date data (pubDate or relative time)
+    if (bestMatch && bestScore >= 3) {
       return bestMatch;
     }
 
