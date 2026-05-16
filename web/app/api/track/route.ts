@@ -156,7 +156,7 @@ export async function POST(request: NextRequest) {
             const wordsA = new Set(normalizedTitle.split(/\s+/).filter((w: string) => w.length > 3));
             const wordsB = new Set(l.title_normalized.split(/\s+/).filter((w: string) => w.length > 3));
             let overlap = 0;
-            for (const w of wordsA) if (wordsB.has(w)) overlap++;
+            wordsA.forEach(w => { if (wordsB.has(w)) overlap++; });
             return overlap >= 3; // stricter: at least 3 significant words
           }).length;
         }
@@ -195,7 +195,7 @@ export async function POST(request: NextRequest) {
           const wordsA = new Set(normalizedTitle.split(/\s+/).filter((w: string) => w.length > 3));
           const wordsB = new Set(l.title_normalized.split(/\s+/).filter((w: string) => w.length > 3));
           let overlap = 0;
-          for (const w of wordsA) if (wordsB.has(w)) overlap++;
+          wordsA.forEach(w => { if (wordsB.has(w)) overlap++; });
           return overlap >= 3; // stricter: at least 3 significant words
         }).length;
       }
