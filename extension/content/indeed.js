@@ -155,21 +155,36 @@ function findIndeedDateText(container) {
     }
   }
 
-  // Strategy 1: Skip the top filter bar "Date posted" (the one you just found: Pay | Distance | Job Type | Experience level | Date posted)
-  // and look for the actual job posting date in the Hiring Insights / job metadata area.
-  const datePostedEls = container.querySelectorAll('*');
-  for (const el of datePostedEls) {
-    const txt = el.textContent.trim().toLowerCase();
-    if (txt === 'date posted' || txt === 'date posted') {
-      // This is likely the filter bar label — skip it and its immediate parent row
+  // Strategy 1: Specifically look for the "Date posted" value in the filter/metadata bar
+  // (the row the user found: Pay | Distance | Job Type | Experience level | Date posted)
+  // The actual value is usually in a sibling or nearby element in the same flex row.
+  const allEls = container.querySelectorAll('*');
+  for (const el of allEls) {
+    const txt = el.textContent.trim();
+    if (/date posted/i.test(txt) && txt.length < 40) {
       const parent = el.parentElement;
-      if (parent && /pay|distance|job type|experience level/i.test(parent.textContent)) {
-        continue; // skip the search filter row
+      if (parent) {
+        // Check all children of the parent row for a short date value
+        for (const child of parent.children) {
+          const childTxt = child.textContent.trim();
+          // Matches things like "5d ago", "12 days ago", "Posted today", "3w", "just posted", etc.
+          if (childTxt.length > 1 && childTxt.length < 35 &&
+              /(\d+[dw]|\d+\s*(d|days?|w|weeks?)|today|just posted|active)/i.test(childTxt)) {
+            return childTxt;
+          }
+        }
+
+        // Fallback: look for "Date posted" + value pattern in the parent's text
+        const parentText = parent.textContent.trim();
+        const match = parentText.match(/date posted[^A-Za-z0-9]*([A-Za-z0-9\s]{2,25})/i);
+        if (match && match[1] && match[1].length > 1) {
+          return match[0].trim();
+        }
       }
     }
   }
 
-  // Strategy 2: Look for "Hiring Insights" or job metadata sections that contain the real posting date
+  // Strategy 2: Look for "Hiring Insights" or job metadata sections
   const insightsSelectors = [
     '.jobsearch-HiringInsights-entry--bullet',
     '[data-testid*="hiringInsights"]',
@@ -190,8 +205,8 @@ function findIndeedDateText(container) {
   // Strategy 2: Brute force for any short text that looks like a relative date
   // (e.g. "5d ago", "12 days ago", "3w ago", "Posted 4d ago", etc.)
   const datePattern = /(\d+\s*(?:d|days?|w|weeks?|h|hours?)\s*ago|posted\s+\d|active\s+\d|just posted|\d+[dw]\s*ago)/i;
-  const allEls = container.querySelectorAll('*');
-  for (const el of allEls) {
+  const allContainerEls = container.querySelectorAll('*');
+  for (const el of allContainerEls) {
     const txt = el.textContent.trim();
     if (txt.length > 2 && txt.length < 60 && datePattern.test(txt)) {
       return txt;
@@ -355,16 +370,18 @@ async function parseIndeedListing() {
     console.log('[SkipThisJob] Days open (visible text):', data.daysOpen, 'from:', (dateText || '').substring(0, 60));
   }
 
-  // 0.1.8 - Aggressive mosaic date extraction with one retry (secondary)
+  // 0.1.8 - Mosaic date extraction (primary source for right-pane jobs)
   if (data.daysOpen == null) {
     mosaicDateAttempts++;
     window.SkipThisJob_MosaicStats.attempts = mosaicDateAttempts;
 
     let mosaicJob = getIndeedJobFromMosaic();
 
-    // Retry once with delay (SPA hydration)
-    if (!mosaicJob || (!mosaicJob.pubDate && !mosaicJob.formattedRelativeTime)) {
-      await new Promise(r => setTimeout(r, 650));
+    // Multiple retries — Indeed is slow to populate jobcards on some pages
+    const delays = [700, 900, 1100];
+    for (const delay of delays) {
+      if (mosaicJob && (mosaicJob.pubDate || mosaicJob.formattedRelativeTime)) break;
+      await new Promise(r => setTimeout(r, delay));
       mosaicJob = getIndeedJobFromMosaic();
     }
 
@@ -386,7 +403,6 @@ async function parseIndeedListing() {
 
         console.log(`[SkipThisJob] Mosaic date SUCCESS → ${days} days (${mosaicJob.formattedRelativeTime || 'from pubDate'})`);
 
-        // Enrich salary if available
         if (mosaicJob.salarySnippet?.text && !data.salaryListed) {
           data.salaryListed = true;
         }
@@ -405,6 +421,105 @@ async function parseIndeedListing() {
       data.daysOpen = parseInt(lastChance[1], 10);
       console.log('[SkipThisJob] Days open (last-chance detail area):', data.daysOpen);
     }
+  }
+
+  // 0.1.8 - Late re-check + MutationObserver (true Option B)
+  // If we still have no date after normal flow, do a fixed late re-check.
+  // If that also fails, attach a MutationObserver on the job list.
+  // When new job cards appear, re-run date extraction.
+  if (data.daysOpen == null) {
+    setTimeout(async () => {
+      if (data.daysOpen != null) return;
+
+      try {
+        const lateContainer =
+          document.querySelector('#jobsearch-JobBody') ||
+          document.querySelector('.jobsearch-JobInfoWrapper') ||
+          document.querySelector('[data-testid="jobsearch-JobComponent"]') ||
+          document.querySelector('div[role="main"]') ||
+          document.body;
+
+        let lateDateText = findIndeedDateText(lateContainer);
+        if (!lateDateText) {
+          const lateDetailText = (lateContainer.innerText || '').toLowerCase();
+          const lateMatch = lateDetailText.match(/(\d+)\+?\s*(?:d|days?|w|weeks?)\s*ago/);
+          if (lateMatch) lateDateText = lateMatch[0];
+        }
+
+        let lateDays = lateDateText ? parseIndeedRelativeDate(lateDateText) : null;
+
+        if (lateDays == null) {
+          const lateMosaic = getIndeedJobFromMosaic();
+          if (lateMosaic) {
+            if (lateMosaic.pubDate) {
+              const d = new Date(lateMosaic.pubDate);
+              lateDays = Math.max(0, Math.ceil((Date.now() - d) / (1000 * 60 * 60 * 24)));
+            } else if (lateMosaic.formattedRelativeTime) {
+              lateDays = parseIndeedRelativeDate(lateMosaic.formattedRelativeTime);
+            }
+          }
+        }
+
+        if (lateDays != null) {
+          data.daysOpen = lateDays;
+          console.log(`[SkipThisJob] Late re-check SUCCESS → ${lateDays} days`);
+          return;
+        }
+
+        // Still no date → attach observer for when new jobcards arrive
+        attachJobcardsObserver(data, lateContainer);
+      } catch (e) {}
+    }, 5500);
+  }
+
+  function attachJobcardsObserver(listingData, rightPane) {
+    try {
+      const jobList = document.querySelector('.jobsearch-ResultsList') ||
+                      document.querySelector('[data-testid*="jobsearch-Results"]') ||
+                      document.body;
+
+      if (!jobList) return;
+
+      const obs = new MutationObserver(async () => {
+        if (listingData.daysOpen != null) {
+          obs.disconnect();
+          return;
+        }
+
+        let dt = findIndeedDateText(rightPane || document.body);
+        if (!dt) {
+          const dtxt = (rightPane || document.body).innerText.toLowerCase();
+          const m = dtxt.match(/(\d+)\+?\s*(?:d|days?|w|weeks?)\s*ago/);
+          if (m) dt = m[0];
+        }
+
+        let d = dt ? parseIndeedRelativeDate(dt) : null;
+
+        if (d == null) {
+          const mj = getIndeedJobFromMosaic();
+          if (mj) {
+            if (mj.pubDate) d = Math.max(0, Math.ceil((Date.now() - new Date(mj.pubDate)) / (1000*60*60*24)));
+            else if (mj.formattedRelativeTime) d = parseIndeedRelativeDate(mj.formattedRelativeTime);
+          }
+        }
+
+        if (d != null) {
+          listingData.daysOpen = d;
+          console.log(`[SkipThisJob] MutationObserver re-scan SUCCESS → ${d} days`);
+          obs.disconnect();
+        }
+      });
+
+      obs.observe(jobList, { childList: true, subtree: true });
+
+      // Safety net
+      setTimeout(() => {
+        if (listingData.daysOpen == null) {
+          obs.disconnect();
+          console.warn('[SkipThisJob] ⚠️  STILL NO DATE after MutationObserver. This job will get +15 unknown age penalty.');
+        }
+      }, 30000);
+    } catch (e) {}
   }
 
   // 0.1.8 - Repost detection (text + mosaic)
@@ -1050,6 +1165,8 @@ let currentListingData = null;   // 0.1.8 - store current listing for reliable A
 let mosaicDateAttempts = 0;
 let mosaicDateSuccesses = 0;
 window.SkipThisJob_MosaicStats = { attempts: 0, successes: 0 }; // easy to inspect in console
+
+console.log('%c[SkipThisJob] Content script finished loading (bottom of file reached)', 'color: lime');
 
 function getCurrentVjk() {
   const match = window.location.href.match(/vjk=([a-f0-9]+)/);
