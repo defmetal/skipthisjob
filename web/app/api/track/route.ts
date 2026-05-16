@@ -153,11 +153,11 @@ export async function POST(request: NextRequest) {
         if (otherListingsNew && otherListingsNew.length > 0 && normalizedTitle) {
           similarCountNew = otherListingsNew.filter(l => {
             if (!l.title_normalized) return false;
-            const wordsA = new Set(normalizedTitle.split(/\s+/).filter(w => w.length > 3));
-            const wordsB = new Set(l.title_normalized.split(/\s+/).filter(w => w.length > 3));
+            const wordsA = new Set(normalizedTitle.split(/\s+/).filter((w: string) => w.length > 3));
+            const wordsB = new Set(l.title_normalized.split(/\s+/).filter((w: string) => w.length > 3));
             let overlap = 0;
             for (const w of wordsA) if (wordsB.has(w)) overlap++;
-            return overlap >= 2;
+            return overlap >= 3; // stricter: at least 3 significant words
           }).length;
         }
 
@@ -192,11 +192,11 @@ export async function POST(request: NextRequest) {
       if (otherListingsExisting && otherListingsExisting.length > 0 && normalizedTitle) {
         similarCountExisting = otherListingsExisting.filter(l => {
           if (!l.title_normalized) return false;
-          const wordsA = new Set(normalizedTitle.split(/\s+/).filter(w => w.length > 3));
-          const wordsB = new Set(l.title_normalized.split(/\s+/).filter(w => w.length > 3));
+          const wordsA = new Set(normalizedTitle.split(/\s+/).filter((w: string) => w.length > 3));
+          const wordsB = new Set(l.title_normalized.split(/\s+/).filter((w: string) => w.length > 3));
           let overlap = 0;
           for (const w of wordsA) if (wordsB.has(w)) overlap++;
-          return overlap >= 2;
+          return overlap >= 3; // stricter: at least 3 significant words
         }).length;
       }
 
