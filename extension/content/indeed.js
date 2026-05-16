@@ -48,56 +48,59 @@ function getIndeedJobFromMosaic() {
         candidates = candidates.concat(jobCardsResults);
       }
 
-      // 2. Job details / insights style providers (very common for the right pane)
-      // Examples: js-match-insights-provider-job-details, mosaic-provider-jobdetails, etc.
+      // 2. Job details / insights style providers (the right pane on vjk= pages)
+      // These often have the current job data at the TOP LEVEL:
+      //   jobKey, jobDetailsSection, salaryInfoModel, etc.
+      // (metaData is frequently empty on these providers)
       const isDetailsProvider = /job-details|jobdetails|insights|match-insights|jobdetail/i.test(providerKey);
 
-      if (isDetailsProvider || providerKey.includes('details')) {
-        // Common locations for the current selected job
-        const possibleJob =
-          provider?.metaData?.jobDetails ||
-          provider?.metaData?.mosaicProviderJobDetailsModel ||
-          provider?.jobDetails ||
-          provider?.job ||
-          provider;
+      if (isDetailsProvider) {
+        // Add the provider itself (data is usually at root)
+        candidates.push(provider);
 
-        if (possibleJob && typeof possibleJob === 'object') {
-          candidates.push(possibleJob);
+        // Common top-level rich objects on these providers
+        if (provider.jobDetailsSection && typeof provider.jobDetailsSection === 'object') {
+          candidates.push(provider.jobDetailsSection);
+        }
+        if (provider.salaryInfoModel && typeof provider.salaryInfoModel === 'object') {
+          candidates.push(provider.salaryInfoModel);
+        }
+        if (provider.jobDetails && typeof provider.jobDetails === 'object') {
+          candidates.push(provider.jobDetails);
         }
 
-        // Also check every key under metaData for job-like objects
+        // Walk metaData anyway (in case it has something)
         if (provider.metaData && typeof provider.metaData === 'object') {
           for (const nestedKey of Object.keys(provider.metaData)) {
             const nested = provider.metaData[nestedKey];
-            if (nested && typeof nested === 'object' &&
-                (nested.jobkey || nested.pubDate || nested.formattedRelativeTime || nested.displayTitle)) {
+            if (nested && typeof nested === 'object') {
               candidates.push(nested);
             }
           }
         }
       }
 
-      // 3. Generic fallback: any object in this provider that looks like a job
+      // 3. Generic fallback for any provider
       if (provider && typeof provider === 'object') {
-        if (provider.jobkey || provider.pubDate || provider.formattedRelativeTime || provider.displayTitle) {
+        if (provider.jobkey || provider.jobKey || provider.pubDate || provider.formattedRelativeTime || provider.displayTitle) {
           candidates.push(provider);
         }
         if (provider.metaData && typeof provider.metaData === 'object') {
           for (const nestedKey of Object.keys(provider.metaData)) {
             const nested = provider.metaData[nestedKey];
             if (nested && typeof nested === 'object' &&
-                (nested.jobkey || nested.pubDate || nested.formattedRelativeTime)) {
+                (nested.jobkey || nested.jobKey || nested.pubDate || nested.formattedRelativeTime)) {
               candidates.push(nested);
             }
           }
         }
       }
 
-      // Deduplicate by reference (simple)
+      // Deduplicate
       const seen = new Set();
       candidates = candidates.filter(j => {
         if (!j || typeof j !== 'object') return false;
-        const id = j.jobkey || j.id || JSON.stringify(j).slice(0, 80);
+        const id = j.jobkey || j.jobKey || j.id || JSON.stringify(j).slice(0, 100);
         if (seen.has(id)) return false;
         seen.add(id);
         return true;
@@ -107,7 +110,9 @@ function getIndeedJobFromMosaic() {
         if (!job || typeof job !== 'object') continue;
 
         let matchScore = 0;
-        const thisJobKey = (job.jobkey || '').toLowerCase();
+
+        // Support both jobkey and jobKey (Indeed uses both)
+        const thisJobKey = (job.jobkey || job.jobKey || '').toLowerCase();
         const jobUrl = (job.link || job.url || '').toLowerCase();
         const jobTitle = (job.displayTitle || job.title || '').toLowerCase();
         const jobCompany = (job.company || '').toLowerCase();
@@ -308,33 +313,55 @@ async function parseIndeedListing() {
     document.body;
   const detailText = (mainJobContainer.innerText || '').toLowerCase();
 
-  // --- 0.1.8: Aggressive Posted date detection (visible text first, mosaic secondary) ---
-  // Primary: use the brute-force finder on the main job detail container only.
-  // This walks elements inside the right pane to defeat Indeed's changing DOM.
-  const mainJobContainerForDate =
-    document.querySelector('#jobsearch-JobBody') ||
-    document.querySelector('.jobsearch-JobInfoWrapper') ||
-    document.querySelector('[data-testid="jobsearch-JobComponent"]') ||
-    document.querySelector('div[role="main"]') ||
-    document.body;
+  // --- 0.1.8: Aggressive Posted date detection (visible text + mosaic jobDetailsSection) ---
+  // On many right-pane vjk= views, the date is not in pubDate/formattedRelativeTime,
+  // but it can be in the human-readable text inside jobDetailsSection.contents.
 
-  let dateText = findIndeedDateText(mainJobContainerForDate);
+  let dateText = '';
 
-  // Fallback regex sweep on the detail text if the walker didn't find anything
-  if (!dateText) {
-    const patterns = [
-      /(posted|active|reposted)\s+(\d+)\+?\s*(?:d|days?)\s*ago/i,
-      /active\s+(\d+)\s*(?:d|days?)\s*ago/i,
-      /(\d+)\+?\s*(?:d|days?)\s*ago/i,
-      /just posted|posted today/i,
-      /(\d+)\+?\s*(?:h|hours?)\s*ago/i,
-      /(\d+)\s*w(?:eeks?)?\s*ago/i
-    ];
-    for (const p of patterns) {
-      const m = detailText.match(p);
-      if (m) {
-        dateText = m[0];
-        break;
+  // 1. Try the js-match-insights-provider-job-details contents (often has the date as text)
+  try {
+    const detailsProvider = window.mosaic?.providerData?.['js-match-insights-provider-job-details'];
+    if (detailsProvider?.jobDetailsSection) {
+      const sectionStr = JSON.stringify(detailsProvider.jobDetailsSection).toLowerCase();
+      const sectionDate = parseIndeedRelativeDate(sectionStr);
+      if (sectionDate != null) {
+        data.daysOpen = sectionDate;
+        console.log('[SkipThisJob] Days open from jobDetailsSection contents');
+      }
+      // Also try to extract raw date-like text from the contents for the visible parser
+      const dateMatchInSection = sectionStr.match(/(posted|active)\s*(\d+|\d+\s*d|\d+\s*w)\s*(days?|d|weeks?|w)?\s*ago/);
+      if (dateMatchInSection) dateText = dateMatchInSection[0];
+    }
+  } catch (e) {}
+
+  // 2. DOM-based extraction on the right pane
+  if (!data.daysOpen) {
+    const mainJobContainerForDate =
+      document.querySelector('#jobsearch-JobBody') ||
+      document.querySelector('.jobsearch-JobInfoWrapper') ||
+      document.querySelector('[data-testid="jobsearch-JobComponent"]') ||
+      document.querySelector('div[role="main"]') ||
+      document.body;
+
+    dateText = dateText || findIndeedDateText(mainJobContainerForDate);
+
+    // Fallback regex sweep on detailText
+    if (!dateText && !data.daysOpen) {
+      const patterns = [
+        /(posted|active|reposted)\s+(\d+)\+?\s*(?:d|days?)\s*ago/i,
+        /active\s+(\d+)\s*(?:d|days?)\s*ago/i,
+        /(\d+)\+?\s*(?:d|days?)\s*ago/i,
+        /just posted|posted today/i,
+        /(\d+)\+?\s*(?:h|hours?)\s*ago/i,
+        /(\d+)\s*w(?:eeks?)?\s*ago/i
+      ];
+      for (const p of patterns) {
+        const m = detailText.match(p);
+        if (m) {
+          dateText = m[0];
+          break;
+        }
       }
     }
   }
