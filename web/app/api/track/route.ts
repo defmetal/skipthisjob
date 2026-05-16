@@ -5,20 +5,12 @@ import { supabaseAdmin } from '@/lib/supabase';
 /**
  * POST /api/track
  *
- * Passively tracks job listing metadata from extension views.
- * No user data is collected — only public job listing information.
+ * Passively tracks job listing metadata + signals from extension views (0.1.8+).
  *
- * Body:
- * {
- *   companyName: string,
- *   jobTitle: string,
- *   platform: 'linkedin' | 'indeed',
- *   platformJobId?: string,
- *   location?: string,
- *   salaryListed?: boolean,
- *   isRepost?: boolean,
- *   daysOpen?: number,
- * }
+ * Body now includes optional signals:
+ * - userClickedApply
+ * - engagementSignals
+ * - employerResponseTime
  */
 export async function OPTIONS() {
   return corsOptions();
@@ -32,7 +24,23 @@ export async function POST(request: NextRequest) {
     return corsResponse({ error: 'Invalid JSON' }, 400);
   }
 
-  const { companyName, jobTitle, platform, platformJobId, location, salaryListed, isRepost, daysOpen } = body;
+  const {
+    companyName,
+    jobTitle,
+    platform,
+    platformJobId,
+    location,
+    salaryListed,
+    isRepost,
+    daysOpen,
+    // 0.1.8 new signals
+    engagementSignals,
+    employerResponseTime,
+    userClickedApply,
+    // Additional 0.1.8 signals
+    workArrangement,
+    employmentType,
+  } = body;
 
   if (!companyName || !jobTitle || !platform) {
     return corsResponse({ error: 'Missing required fields' }, 400);
@@ -104,7 +112,8 @@ export async function POST(request: NextRequest) {
         state = parts[1]?.trim() || null;
       }
 
-      const { error: listingError } = await supabaseAdmin
+      // Insert new listing and capture the ID
+      const { data: newListing, error: listingError } = await supabaseAdmin
         .from('listings')
         .insert({
           employer_id: employer.id,
@@ -119,9 +128,11 @@ export async function POST(request: NextRequest) {
           is_repost: isRepost ?? false,
           posted_date: daysOpen != null ? new Date(Date.now() - daysOpen * 86400000).toISOString().split('T')[0] : null,
           source: 'extension',
-        });
+        })
+        .select('id')
+        .single();
 
-      if (!listingError) {
+      if (!listingError && newListing) {
         // Increment employer listing count
         await supabaseAdmin
           .from('employers')
@@ -129,6 +140,38 @@ export async function POST(request: NextRequest) {
             total_listings_tracked: (employer.total_listings_tracked || 0) + 1,
           })
           .eq('id', employer.id);
+
+        // 0.1.8: Smarter similar roles count (title similarity)
+        const { data: otherListingsNew } = await supabaseAdmin
+          .from('listings')
+          .select('title_normalized')
+          .eq('employer_id', employer.id)
+          .eq('is_active', true)
+          .neq('id', newListing.id);
+
+        let similarCountNew = 0;
+        if (otherListingsNew && otherListingsNew.length > 0 && normalizedTitle) {
+          similarCountNew = otherListingsNew.filter(l => {
+            if (!l.title_normalized) return false;
+            const wordsA = new Set(normalizedTitle.split(/\s+/).filter(w => w.length > 3));
+            const wordsB = new Set(l.title_normalized.split(/\s+/).filter(w => w.length > 3));
+            let overlap = 0;
+            for (const w of wordsA) if (wordsB.has(w)) overlap++;
+            return overlap >= 2;
+          }).length;
+        }
+
+        await supabaseAdmin
+          .from('listing_signals')
+          .insert({
+            listing_id: newListing.id,
+            user_clicked_apply: userClickedApply ?? false,
+            engagement_signals: engagementSignals || [],
+            employer_response_time: employerResponseTime || null,
+            similar_roles_count: similarCountNew,
+            work_arrangement: workArrangement || null,
+            employment_type: employmentType || null,
+          });
       }
     } else {
       // Update last_seen_at on existing listing
@@ -136,6 +179,38 @@ export async function POST(request: NextRequest) {
         .from('listings')
         .update({ last_seen_at: new Date().toISOString() })
         .eq('id', existing.id);
+
+      // 0.1.8: Smarter similar roles count (title similarity)
+      const { data: otherListingsExisting } = await supabaseAdmin
+        .from('listings')
+        .select('title_normalized')
+        .eq('employer_id', employer.id)
+        .eq('is_active', true)
+        .neq('id', existing.id);
+
+      let similarCountExisting = 0;
+      if (otherListingsExisting && otherListingsExisting.length > 0 && normalizedTitle) {
+        similarCountExisting = otherListingsExisting.filter(l => {
+          if (!l.title_normalized) return false;
+          const wordsA = new Set(normalizedTitle.split(/\s+/).filter(w => w.length > 3));
+          const wordsB = new Set(l.title_normalized.split(/\s+/).filter(w => w.length > 3));
+          let overlap = 0;
+          for (const w of wordsA) if (wordsB.has(w)) overlap++;
+          return overlap >= 2;
+        }).length;
+      }
+
+      await supabaseAdmin
+        .from('listing_signals')
+        .insert({
+          listing_id: existing.id,
+          user_clicked_apply: userClickedApply ?? false,
+          engagement_signals: engagementSignals || [],
+          employer_response_time: employerResponseTime || null,
+          similar_roles_count: similarCountExisting,
+          work_arrangement: workArrangement || null,
+          employment_type: employmentType || null,
+        });
     }
   }
 

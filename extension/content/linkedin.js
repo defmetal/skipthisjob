@@ -6,6 +6,7 @@ const API_BASE = 'https://skipthisjob.com/api';
 
 let lastProcessedJobId = null;
 let isProcessing = false;
+let currentListingData = null;   // 0.1.8 - store current listing for reliable Apply tracking
 
 // ============================================================
 // DOM PARSING
@@ -28,6 +29,12 @@ function parseLinkedInListing() {
     isThirdParty: false,        // posted by staffing agency / job board
     noResponseData: false,      // LinkedIn says "no response insights"
     responseManagedOffsite: false, // "responses managed off LinkedIn"
+    engagementSignals: [],      // new for 0.1.8
+    employerResponseTime: null, // new for 0.1.8
+    userClickedApply: false,    // new for 0.1.8
+    // Structured job attributes (0.1.8)
+    workArrangement: null,     // 'remote', 'hybrid', 'onsite'
+    employmentType: null,      // 'full_time', 'part_time', 'contract', 'internship'
   };
 
   // Job title - LinkedIn now uses obfuscated classes, so find by URL pattern
@@ -184,24 +191,150 @@ function parseLinkedInListing() {
     console.log('[GhostDetector] Responses managed off LinkedIn');
   }
 
-  // Description - try to find the job description section
-  const descEl = document.querySelector('.jobs-description-content__text') || 
-    document.querySelector('.jobs-description__content') || 
-    document.querySelector('.jobs-box__html-content') ||
-    document.querySelector('[data-testid="job-details"]');
-  if (descEl) {
-    data.description = descEl.textContent.trim();
-    if (!data.salaryListed && /\$[\d,]+\s*([-–]|to)\s*\$[\d,]+/i.test(data.description)) {
+  // === 0.1.8: Engagement signals and response time detection ===
+  const engagementPatterns = [
+    { pattern: /actively reviewing applications/i, key: 'actively_reviewing' },
+    { pattern: /hiring multiple candidates/i, key: 'hiring_multiple' },
+    { pattern: /urgently hiring/i, key: 'urgently_hiring' },
+  ];
+
+  for (const { pattern, key } of engagementPatterns) {
+    if (pattern.test(detailText)) {
+      if (!data.engagementSignals.includes(key)) {
+        data.engagementSignals.push(key);
+      }
+    }
+  }
+
+  // Response time indicators
+  const responseTimeMatch = detailText.match(/usually responds (?:within|in)\s+(.+?)(?:\.|$)/i);
+  if (responseTimeMatch) {
+    const raw = responseTimeMatch[1].toLowerCase().trim();
+    if (raw.includes('day') || raw.includes('24')) {
+      data.employerResponseTime = 'within_1_day';
+    } else if (raw.includes('2') || raw.includes('few')) {
+      data.employerResponseTime = 'within_2_days';
+    } else if (raw.includes('week')) {
+      data.employerResponseTime = 'within_a_week';
+    } else {
+      data.employerResponseTime = 'slow';
+    }
+  }
+
+  // 0.1.8 - Robust description detection
+  // LinkedIn often puts the full description inside data-testid="expandable-text-box"
+  // even when it is visually collapsed behind a "More" button.
+  function getFullDescription() {
+    // Primary: modern expandable box (contains full text)
+    let el = document.querySelector('[data-testid="expandable-text-box"]');
+    if (el) {
+      let text = (el.innerText || el.textContent || '').trim();
+      if (text.length > 150) return text;
+    }
+
+    // Try the direct parent (sometimes the real content is one level up)
+    const parent = document.querySelector('[data-testid="expandable-text-box"]')?.parentElement;
+    if (parent) {
+      let text = (parent.innerText || parent.textContent || '').trim();
+      if (text.length > 150) return text;
+    }
+
+    // Fallbacks for older LinkedIn DOM structures
+    const fallbacks = [
+      '.jobs-description-content__text',
+      '.jobs-description__content',
+      '.jobs-box__html-content',
+      '[data-testid="job-details"]'
+    ];
+
+    for (const sel of fallbacks) {
+      el = document.querySelector(sel);
+      if (el) {
+        let text = (el.innerText || el.textContent || '').trim();
+        if (text.length > 100) return text;
+      }
+    }
+
+    return null;
+  }
+
+  data.description = getFullDescription();
+
+  // 0.1.8 - Parse top-level job attribute tags (salary bubble, Remote, Full-time, etc.)
+  // LinkedIn shows these in a row of tags near the top of the job card.
+  const topAttributeArea = document.querySelector('._81f0ce2b, [data-testid*="job-attribute"]') || document.body;
+  const attributeText = topAttributeArea.textContent.toLowerCase();
+
+  // Salary from the top structured tags (the "bubble")
+  if (!data.salaryListed) {
+    const topSalaryMatch = attributeText.match(/\$[\d,]+(?:\s*[-–to]+\s*\$?[\d,]+)?(?:\s*(?:k|K|per year|\/year|\/hr|\/hour))?/i);
+    if (topSalaryMatch) {
       data.salaryListed = true;
     }
   }
 
-  // Hiring contact - check if recruiter/HM is shown
+  // Work arrangement and employment type from top tags
+  if (attributeText.includes('remote') && !attributeText.includes('hybrid')) {
+    data.workArrangement = 'remote';
+  } else if (attributeText.includes('hybrid')) {
+    data.workArrangement = 'hybrid';
+  } else if (attributeText.includes('on-site') || attributeText.includes('onsite')) {
+    data.workArrangement = 'onsite';
+  }
+
+  if (attributeText.includes('full-time')) {
+    data.employmentType = 'full_time';
+  } else if (attributeText.includes('part-time')) {
+    data.employmentType = 'part_time';
+  } else if (attributeText.includes('contract')) {
+    data.employmentType = 'contract';
+  } else if (attributeText.includes('intern')) {
+    data.employmentType = 'internship';
+  }
+
+  // 0.1.8 - Stronger salary detection inside the full description (fallback)
+  if (!data.salaryListed && data.description) {
+    const salaryPatterns = [
+      // $130K - $160K/yr, $95-145k, $55 to $60/hour
+      /\$[\d,]+(?:\s*[-–to]+\s*\$?[\d,]+)?(?:\s*(?:k|K|per year|\/year|\/hr|\/hour))?/i,
+      // Pay Range: $X to $Y, Compensation Range: $220K - $250K
+      /(?:salary|compensation|pay\s*range|base\s*pay)[:\s]*\$?[\d,]+(?:\s*[-–to]+\s*\$?[\d,]+)?/i,
+      // $130K/yr - $160K/yr
+      /\$[\d,]+k?\s*(?:-|–|to)\s*\$?[\d,]+k?/i
+    ];
+
+    for (const pattern of salaryPatterns) {
+      if (pattern.test(data.description)) {
+        data.salaryListed = true;
+        break;
+      }
+    }
+  }
+
+  // 0.1.8 - Improved hiring contact detection
   const hiringEl =
     document.querySelector('.jobs-poster__name') ||
     document.querySelector('.hirer-card__hirer-information') ||
-    document.querySelector('[data-testid="hirer-card"]');
-  data.hiringContactVisible = !!hiringEl || detailText.includes('people you can reach out to');
+    document.querySelector('[data-testid="hirer-card"]') ||
+    document.querySelector('[data-testid*="hiring-team"]') ||
+    document.querySelector('a[href*="/in/"]'); // LinkedIn profile links
+
+  const hasHiringTeamText = detailText.includes('meet the hiring team') ||
+                            detailText.includes('people you can reach out to');
+
+  data.hiringContactVisible = !!hiringEl || hasHiringTeamText;
+
+  // Also check the top attribute tags for hiring team mentions
+  if (!data.hiringContactVisible) {
+    const hiringTeamTags = document.querySelectorAll('._834b0593 a span');
+    for (const tag of hiringTeamTags) {
+      if (tag.textContent.toLowerCase().includes('hiring')) {
+        data.hiringContactVisible = true;
+        break;
+      }
+    }
+  }
+
   console.log('[GhostDetector] Hiring contact visible:', data.hiringContactVisible);
 
   // Seniority from detail panel text
@@ -262,6 +395,17 @@ const SPECIFIC_PATTERNS = [
 
 const KITCHEN_SINK_TECH = /\b(python|java|javascript|react|angular|vue|node|sql|aws|gcp|azure|docker|kubernetes|terraform|go|rust|c\+\+|ruby|php|swift|kotlin|scala|hadoop|spark|kafka|redis|mongodb|postgresql|mysql|elasticsearch|graphql|rest\s*api|ci\/cd|jenkins|github\s*actions)\b/gi;
 
+const HIGH_TURNOVER_PATTERNS = [
+  /barista/i, /crew\s*member/i, /team\s*member/i, /cashier/i,
+  /sales\s*associate/i, /retail\s*associate/i, /warehouse/i,
+  /delivery\s*driver/i, /package\s*handler/i, /registered\s*nurse/i,
+  /\b(lpn|lvn|cna)\b/i, /nursing\s*assistant/i, /home\s*health/i,
+  /caregiver/i, /security\s*(officer|guard)/i, /janitor|custodian/i,
+  /housekeeper/i, /front\s*desk/i, /dishwasher|line\s*cook|server|bartender/i,
+  /call\s*center/i, /customer\s*service\s*rep/i, /truck\s*driver/i,
+  /forklift/i, /picker|packer|stocker/i, /medical\s*assistant/i,
+];
+
 function analyzeDescriptionVagueness(text) {
   if (!text) return 0;
   let vagueIndicators = 0;
@@ -311,70 +455,134 @@ function detectSeniorityMismatch(title, description, seniorityLevel) {
 function scoreLocally(listing) {
   let score = 0;
   const signals = [];
+  const isHighTurnover = listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title));
+
+  // ============================================================
+  // POSTING AGE (0.1.8 curve)
+  // ============================================================
+  let agePenalty = 0;
 
   if (listing.daysOpen != null) {
-    if (listing.daysOpen >= 60) {
-      score += 25;
-      signals.push(`Open ${listing.daysOpen} days — why is this still up?`);
-    } else if (listing.daysOpen >= 30) {
-      score += 18;
-      signals.push(`Open ${listing.daysOpen} days — almost certainly filled or stalled`);
-    } else if (listing.daysOpen >= 14) {
-      score += 8;
-      signals.push(`Open ${listing.daysOpen} days — you're already behind hundreds of applicants`);
+    if (listing.daysOpen <= 2) {
+      // Strong recency benefit only in the first 48 hours
+      agePenalty = -10;
+      signals.push('Posted in last 48 hours — highest visibility window');
+    } else if (listing.daysOpen <= 7) {
+      agePenalty = (listing.daysOpen - 2) * 2;
+    } else if (listing.daysOpen <= 14) {
+      agePenalty = 10 + (listing.daysOpen - 7) * 3;
+    } else if (listing.daysOpen <= 21) {
+      agePenalty = 31 + (listing.daysOpen - 14) * 4;
+    } else if (listing.daysOpen <= 30) {
+      agePenalty = 59 + (listing.daysOpen - 21) * 5;
+    } else {
+      agePenalty = 104 + (listing.daysOpen - 30) * 6;
     }
   }
 
+  // High-turnover role reduction (~60%)
+  if (isHighTurnover) agePenalty = Math.round(agePenalty * 0.4);
+  score += agePenalty;
+
+  if (listing.daysOpen > 2) {
+    signals.push(`Open ${listing.daysOpen} days`);
+  }
+
+  // ============================================================
+  // REPOST / RECYCLED LISTING
+  // ============================================================
+  let repostPenalty = 0;
   if (listing.isRepost) {
-    score += 20;
+    repostPenalty = 20;
     signals.push('Recycled listing — marked as reposted');
   }
+  if (isHighTurnover) repostPenalty = Math.round(repostPenalty * 0.4);
+  score += repostPenalty;
 
+  // ============================================================
+  // APPLICANT COUNT
+  // ============================================================
+  let applicantPenalty = 0;
   if (listing.applicantCount != null) {
     if (listing.applicantCount >= 500) {
-      score += 15;
+      applicantPenalty = 15;
       signals.push(`${listing.applicantCount}+ applicants — virtually zero chance of being seen`);
     } else if (listing.applicantCount >= 200) {
-      score += 10;
-      signals.push(`${listing.applicantCount}+ applicants — your resume is in a pile of ${listing.applicantCount}`);
+      applicantPenalty = 10;
+      signals.push(`${listing.applicantCount}+ applicants — your resume is in a large pile`);
     }
   }
+  if (isHighTurnover) applicantPenalty = Math.round(applicantPenalty * 0.6);
+  score += applicantPenalty;
 
+  // ============================================================
+  // MISSING BASICS
+  // ============================================================
   if (!listing.salaryListed) {
     score += 5;
     signals.push('No salary listed');
   }
 
   if (!listing.hiringContactVisible) {
-    score += 8;
+    score += 10;
     signals.push('No hiring contact — no one to follow up with');
   }
 
-  // Third-party recruiter / staffing agency
+  if (!listing.description || listing.description.length < 200) {
+    score += 12;
+    signals.push('No or very weak job description');
+  } else if (listing.description.length < 500) {
+    score += 6;
+    signals.push('Short or limited job description');
+  }
+
+  // ============================================================
+  // OTHER RED FLAGS
+  // ============================================================
   if (listing.isThirdParty) {
     score += 12;
     signals.push('Middleman — staffing agency or job board');
   }
 
-  // LinkedIn has no response data for this employer
   if (listing.noResponseData) {
     score += 8;
     signals.push('No employer response data on LinkedIn');
   }
 
-  // Responses managed off-platform
   if (listing.responseManagedOffsite) {
     score += 8;
     signals.push('Responses managed off LinkedIn — less accountability');
   }
 
-  // High applicant count with no employer engagement
-  if (listing.applicantCount != null && listing.applicantCount >= 100 && listing.noResponseData) {
-    score += 5;
-    signals.push('100+ applicants with no employer engagement');
+  // ============================================================
+  // 0.1.8: STRONG COMBO PENALTIES
+  // ============================================================
+  const isOld = listing.daysOpen >= 14;
+  const missingBasics = !listing.hiringContactVisible &&
+                        (!listing.description || listing.description.length < 300) &&
+                        !listing.salaryListed;
+
+  // Old + multiple missing basics
+  if (isOld && missingBasics) {
+    score += 20;
+    signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
   }
 
-  // --- Description quality (using real vagueness analyzer) ---
+  // High Volume Repost (Recycled + Easy Apply + high applicants)
+  if (listing.isRepost && listing.applicantCount >= 100) {
+    score += 16;
+    signals.push('High Volume Repost (Easy Apply + high applicants)');
+  }
+
+  // Very old + high applicants
+  if (listing.daysOpen >= 30 && listing.applicantCount >= 200) {
+    score += 16;
+    signals.push('30+ days old with 200+ applicants — very low chance of being seen');
+  }
+
+  // ============================================================
+  // DESCRIPTION QUALITY + SENIORITY MISMATCH
+  // ============================================================
   if (listing.description) {
     const vagueness = analyzeDescriptionVagueness(listing.description);
     if (vagueness >= 0.65) {
@@ -384,42 +592,35 @@ function scoreLocally(listing) {
       score += 7;
       signals.push('Some generic language in description');
     } else if (vagueness <= 0.15) {
-      score -= 4; // actually specific — good sign
+      score -= 4;
       signals.push('Detailed, specific job description');
     }
   } else {
-    score += 6;
+    score += 12;
     signals.push('No job description provided');
   }
 
-  // --- Seniority mismatch (entry title + senior requirements, or vice versa) ---
   if (detectSeniorityMismatch(listing.title, listing.description || '', listing.seniorityLevel)) {
     score += 14;
     signals.push('⚠️ Seniority mismatch — title and requirements conflict');
   }
 
-  // High turnover role detection
-  const HIGH_TURNOVER_PATTERNS = [
-    /barista/i, /crew\s*member/i, /team\s*member/i, /cashier/i,
-    /sales\s*associate/i, /retail\s*associate/i, /warehouse/i,
-    /delivery\s*driver/i, /package\s*handler/i, /registered\s*nurse/i,
-    /\b(lpn|lvn|cna)\b/i, /nursing\s*assistant/i, /home\s*health/i,
-    /caregiver/i, /security\s*(officer|guard)/i, /janitor|custodian/i,
-    /housekeeper/i, /front\s*desk/i, /dishwasher|line\s*cook|server|bartender/i,
-    /call\s*center/i, /customer\s*service\s*rep/i, /truck\s*driver/i,
-    /forklift/i, /picker|packer|stocker/i, /medical\s*assistant/i,
-  ];
-  const isHighTurnover = listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title));
+  // ============================================================
+  // HIGH TURNOVER ROLE (informational)
+  // ============================================================
   if (isHighTurnover) {
     signals.push('⚡ High turnover role — expect frequent reposting');
   }
 
+  // ============================================================
+  // FINALIZE + TIER LABELS
+  // ============================================================
   score = Math.min(100, Math.max(0, score));
 
   let label = 'low';
   if (score >= 75) label = 'very_high';
-  else if (score >= 50) label = 'high';
-  else if (score >= 25) label = 'moderate';
+  else if (score >= 55) label = 'high';
+  else if (score >= 35) label = 'moderate';
 
   return { score, label, signals, isHighTurnover };
 }
@@ -489,7 +690,7 @@ function injectOverlay(localScore, backendData, listing) {
   overlay.id = 'ghost-detector-overlay';
   overlay.innerHTML = `
     <div class="ghost-detector-card" style="border-left: 4px solid ${color.border}; background: ${color.bg};">
-      <div class="ghost-detector-header" style="display:flex; align-items:center; gap:6px;">
+      <div class="ghost-detector-header" style="display:flex; align-items:center; gap:6px; flex-wrap: wrap;">
         <span class="ghost-detector-icon">${color.icon}</span>
         <span class="ghost-detector-title">Ghost Risk: <strong style="color: ${color.text}">${labelText[finalLabel]}</strong></span>
         <span class="ghost-detector-score" style="color: ${color.text}">${finalScore}/100</span>
@@ -497,6 +698,12 @@ function injectOverlay(localScore, backendData, listing) {
           `<span class="ghost-detector-live" style="background:#dcfce7;color:#166534;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:5px;font-weight:600;letter-spacing:0.3px;">● LIVE</span>` : ''}
         <span id="ghost-close-btn" style="margin-left:auto; cursor:pointer; font-size:16px; line-height:1; opacity:0.65; padding:2px 6px;">✕</span>
       </div>
+
+      ${localScore.isHighTurnover ? 
+        `<div style="font-size:9px; background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fde68a;">High Turnover Role – Scoring Adjusted</div>` : ''}
+
+      ${finalSignals.some(s => s.includes('High Volume Repost')) ? 
+        `<div style="font-size:9px; background:#fee2e2; color:#991b1b; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fecaca;">High Volume Repost</div>` : ''}
       ${finalSignals.length > 0 ? `
         <div class="ghost-detector-signals">
           ${finalSignals.map(s => `<span class="ghost-detector-signal">${s}</span>`).join('')}
@@ -739,7 +946,13 @@ async function processCurrentListing() {
 
   console.log('[SkipThisJob] Scored:', listing.title, '@', listing.companyName);
 
-  // Passively track listing metadata (no user data)
+  // Store current listing data for reliable Apply tracking (0.1.8)
+  currentListingData = {
+    ...listing,
+    userClickedApply: false,
+  };
+
+  // Passively track listing metadata + new signals (0.1.8)
   chrome.runtime.sendMessage({
     type: 'TRACK_LISTING',
     listingData: {
@@ -751,6 +964,12 @@ async function processCurrentListing() {
       salaryListed: listing.salaryListed,
       isRepost: listing.isRepost,
       daysOpen: listing.daysOpen,
+      // New 0.1.8 signals
+      engagementSignals: listing.engagementSignals,
+      employerResponseTime: listing.employerResponseTime,
+      userClickedApply: listing.userClickedApply,
+      workArrangement: listing.workArrangement,
+      employmentType: listing.employmentType,
     },
   });
 
@@ -815,3 +1034,41 @@ setInterval(() => {
     }
   }
 }, 800);
+
+// 0.1.8 - Track Apply clicks on LinkedIn (passive, reliable)
+document.addEventListener('click', (e) => {
+  const target = e.target.closest('button, a');
+  if (!target) return;
+
+  const text = (target.textContent || target.innerText || '').toLowerCase();
+  const ariaLabel = (target.getAttribute('aria-label') || '').toLowerCase();
+
+  if (
+    text.includes('apply') ||
+    ariaLabel.includes('apply') ||
+    target.classList.contains('jobs-apply-button') ||
+    target.getAttribute('data-control-name') === 'apply'
+  ) {
+    // If we have a current listing and the user is still on the same job, update it
+    const currentJobId = getCurrentJobId();
+    if (currentListingData && currentListingData.platformJobId === currentJobId) {
+      currentListingData.userClickedApply = true;
+
+      // Re-send the full enriched payload so the signal is properly linked
+      chrome.runtime.sendMessage({
+        type: 'TRACK_LISTING',
+        listingData: {
+          ...currentListingData,
+          userClickedApply: true,
+        },
+      });
+    } else {
+      // Fallback: send lightweight update
+      chrome.runtime.sendMessage({
+        type: 'USER_CLICKED_APPLY',
+        platform: 'linkedin',
+        url: window.location.href,
+      });
+    }
+  }
+}, true);

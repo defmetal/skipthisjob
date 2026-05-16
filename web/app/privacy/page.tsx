@@ -10,7 +10,7 @@ export default function Privacy() {
 
       <article className="max-w-3xl mx-auto px-6 py-12">
         <h1 className="text-3xl font-bold mb-2">Privacy Policy</h1>
-        <p className="text-sm text-gray-400 mb-10">Last updated: April 5, 2026</p>
+        <p className="text-sm text-gray-400 mb-10">Last updated: May 18, 2026</p>
 
         <div className="prose prose-gray max-w-none space-y-6 text-gray-600 leading-relaxed">
           <p>
@@ -47,6 +47,16 @@ export default function Privacy() {
             long the listing has been open. This data comes from the job listing itself —
             no information about you or your device is included. This helps us track
             employer posting patterns and improve ghost scores for the community.
+          </p>
+          <p>
+            <strong>Additional passive job signals (added in version 0.1.8).</strong> The
+            extension also collects the following non-personal signals from job listings you
+            view: engagement indicators shown on the page (such as “Actively reviewing
+            applications”, “Urgently hiring”, or “Hiring multiple candidates”), whether a
+            response time is displayed by the platform, whether you click the Apply button,
+            and the approximate number of similar roles the same employer has open. These
+            signals are used only to improve the accuracy of ghost risk scoring and are not
+            linked to your identity.
           </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">What We Do NOT Collect</h2>

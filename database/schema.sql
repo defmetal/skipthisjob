@@ -98,6 +98,39 @@ CREATE INDEX idx_repost_employer ON repost_patterns (employer_id);
 CREATE INDEX idx_repost_count ON repost_patterns (occurrence_count DESC);
 
 -- ============================================================
+-- LISTING SIGNALS
+-- Passive signals collected from the Chrome extension (0.1.8+)
+-- Used to improve ghost risk scoring
+-- ============================================================
+CREATE TABLE listing_signals (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    listing_id              UUID NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+    user_clicked_apply      BOOLEAN NOT NULL DEFAULT FALSE,
+    engagement_signals      TEXT[] NOT NULL DEFAULT '{}',
+    employer_response_time  TEXT,
+    similar_roles_count     INTEGER,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_listing_signals_listing_id ON listing_signals (listing_id);
+CREATE INDEX idx_listing_signals_created_at ON listing_signals (created_at DESC);
+
+COMMENT ON TABLE listing_signals IS 
+    'Stores passive signals collected from the Chrome extension when users view job listings. Used to improve ghost risk scoring in future versions.';
+
+COMMENT ON COLUMN listing_signals.user_clicked_apply IS 
+    'True if the user clicked the Apply button on this specific listing.';
+
+COMMENT ON COLUMN listing_signals.engagement_signals IS 
+    'Array of engagement indicators shown on the job page (e.g. actively_reviewing, urgently_hiring).';
+
+COMMENT ON COLUMN listing_signals.employer_response_time IS 
+    'Normalized response time shown by LinkedIn or Indeed (e.g. within_2_days, slow).';
+
+COMMENT ON COLUMN listing_signals.similar_roles_count IS 
+    'Number of similar roles the same employer had open when this listing was viewed.';
+
+-- ============================================================
 -- COMMUNITY_REPORTS
 -- User-submitted thumbs-down / outcome reports
 -- ============================================================

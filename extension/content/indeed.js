@@ -8,6 +8,45 @@ const API_BASE = 'https://skipthisjob.com/api';
 // DOM PARSING
 // ============================================================
 
+// 0.1.8 - Extract current job data from Indeed's mosaic providers (structured data)
+function getIndeedJobFromMosaic() {
+  try {
+    const providerData = window.mosaic?.providerData;
+    if (!providerData) return null;
+
+    const currentUrl = window.location.href;
+    let jobKey = null;
+
+    // Extract job key from URL (Indeed commonly uses jk= or the path)
+    const jkMatch = currentUrl.match(/[?&]jk=([^&]+)/);
+    if (jkMatch) jobKey = jkMatch[1];
+
+    const providers = Object.keys(providerData).filter(k => k.includes('jobcards'));
+
+    for (const providerKey of providers) {
+      const results = providerData[providerKey]?.metaData?.mosaicProviderJobCardsModel?.results;
+      if (!results || !Array.isArray(results)) continue;
+
+      for (const job of results) {
+        const thisJobKey = job.jobkey || '';
+
+        // Best match: jobkey from URL
+        if (jobKey && thisJobKey === jobKey) {
+          return job;
+        }
+
+        // Fallback: URL contains the jobkey
+        if (thisJobKey && currentUrl.includes(thisJobKey)) {
+          return job;
+        }
+      }
+    }
+  } catch (e) {
+    // Fail silently if structure changes
+  }
+  return null;
+}
+
 function parseIndeedListing() {
   const data = {
     title: null,
@@ -24,6 +63,13 @@ function parseIndeedListing() {
     listingUrl: window.location.href,
     isThirdParty: false,
     noResponseData: false,
+    // 0.1.8 new signals
+    engagementSignals: [],
+    employerResponseTime: null,
+    userClickedApply: false,
+    // 0.1.8 new signals
+    workArrangement: null,
+    employmentType: null,
   };
 
   // --- Job title ---
@@ -96,26 +142,124 @@ function parseIndeedListing() {
 
   if (data.daysOpen != null) console.log('[SkipThisJob] Days open:', data.daysOpen);
 
-  // --- Salary ---
+  // 0.1.8 - Try to get accurate posting date from Indeed's structured mosaic data
+  if (data.daysOpen == null) {
+    const mosaicJob = getIndeedJobFromMosaic();
+    if (mosaicJob && mosaicJob.pubDate) {
+      const pubDate = new Date(mosaicJob.pubDate);
+      const now = new Date();
+      const diffTime = Math.abs(now - pubDate);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      data.daysOpen = diffDays;
+      console.log('[SkipThisJob] Found accurate pubDate from mosaic data:', diffDays, 'days');
+
+      // Also enrich other signals if available from structured data
+      if (mosaicJob.salarySnippet?.text && !data.salaryListed) {
+        data.salaryListed = true;
+      }
+      if (mosaicJob.employerResponsive !== undefined) {
+        data.employerResponsive = mosaicJob.employerResponsive;
+      }
+    }
+  }
+
+  // 0.1.8 - Improved salary detection (structured fields + description)
   const salaryEl =
     document.querySelector('#salaryInfoAndJobType') ||
     document.querySelector('[data-testid="attribute_snippet_testid"]') ||
     document.querySelector('.jobsearch-JobMetadataHeader-item') ||
-    document.querySelector('.salary-snippet-container');
+    document.querySelector('.salary-snippet-container') ||
+    document.querySelector('[data-testid*="salary"]');
+
   if (salaryEl && /\$[\d,.]+/.test(salaryEl.textContent)) {
     data.salaryListed = true;
     console.log('[SkipThisJob] Salary found');
   }
 
-  // --- Description ---
+  // 0.1.8 - Detect work arrangement and employment type
+  const lowerPage = pageText.toLowerCase();
+  if (lowerPage.includes('remote') && !lowerPage.includes('hybrid')) {
+    data.workArrangement = 'remote';
+  } else if (lowerPage.includes('hybrid')) {
+    data.workArrangement = 'hybrid';
+  } else if (lowerPage.includes('on-site') || lowerPage.includes('onsite')) {
+    data.workArrangement = 'onsite';
+  }
+
+  if (lowerPage.includes('full-time')) {
+    data.employmentType = 'full_time';
+  } else if (lowerPage.includes('part-time')) {
+    data.employmentType = 'part_time';
+  } else if (lowerPage.includes('contract')) {
+    data.employmentType = 'contract';
+  } else if (lowerPage.includes('intern')) {
+    data.employmentType = 'internship';
+  }
+
+  // 0.1.8 - Extract current job data from Indeed's mosaic providers (structured data)
+function getIndeedJobFromMosaic() {
+  try {
+    const providerData = window.mosaic?.providerData;
+    if (!providerData) return null;
+
+    const currentUrl = window.location.href;
+    let jobKey = null;
+
+    // Extract job key from URL (Indeed commonly uses jk= or the path)
+    const jkMatch = currentUrl.match(/[?&]jk=([^&]+)/);
+    if (jkMatch) jobKey = jkMatch[1];
+
+    const providers = Object.keys(providerData).filter(k => k.includes('jobcards'));
+
+    for (const providerKey of providers) {
+      const results = providerData[providerKey]?.metaData?.mosaicProviderJobCardsModel?.results;
+      if (!results || !Array.isArray(results)) continue;
+
+      for (const job of results) {
+        const thisJobKey = job.jobkey || '';
+
+        // Best match: jobkey from URL
+        if (jobKey && thisJobKey === jobKey) {
+          return job;
+        }
+
+        // Fallback: URL contains the jobkey
+        if (thisJobKey && currentUrl.includes(thisJobKey)) {
+          return job;
+        }
+      }
+    }
+  } catch (e) {
+    // Fail silently if structure changes
+  }
+  return null;
+}
+
+// 0.1.8 - Improved description detection
   const descEl =
     document.querySelector('#jobDescriptionText') ||
     document.querySelector('.jobsearch-jobDescriptionText') ||
-    document.querySelector('.jobsearch-JobComponent-description');
+    document.querySelector('.jobsearch-JobComponent-description') ||
+    document.querySelector('[data-testid="job-description"]') ||
+    document.querySelector('.jobsearch-JobDescription');
+
   if (descEl) {
     data.description = descEl.textContent.trim();
-    if (!data.salaryListed && /\$[\d,]+\s*([-–]|to)\s*\$[\d,]+/i.test(data.description)) {
-      data.salaryListed = true;
+
+    // Improved salary detection inside description
+    if (!data.salaryListed) {
+      const salaryPatterns = [
+        /\$[\d,]+(?:\s*-\s*\$[\d,]+)?(?:\s*(?:k|K|per year|\/year|\/hr|\/hour))?/i,
+        /pay\s*range[:\s]*\$?[\d,]+(?:\s*-\s*\$?[\d,]+)?/i,
+        /\$[\d,]+\s*(?:to|–|-)\s*\$[\d,]+/i
+      ];
+
+      for (const pattern of salaryPatterns) {
+        if (pattern.test(data.description)) {
+          data.salaryListed = true;
+          break;
+        }
+      }
     }
   }
 
@@ -155,12 +299,19 @@ function parseIndeedListing() {
     data.hiringMultiple = true;
   }
 
-  // Engagement signals — Indeed shows these when the employer is actively reviewing
-  data.activelyReviewing = pageText.includes('reviewing applicants') || 
-                           pageText.includes('actively reviewing') ||
-                           pageText.includes('recently active');
-  if (data.activelyReviewing) {
-    console.log('[SkipThisJob] Employer actively reviewing');
+  // 0.1.8 - Improved engagement signal detection
+  const engagementPatterns = [
+    { pattern: /actively reviewing|reviewing applicants|recently active/i, key: 'actively_reviewing' },
+    { pattern: /hiring multiple candidates/i, key: 'hiring_multiple' },
+    { pattern: /urgently hiring/i, key: 'urgently_hiring' },
+  ];
+
+  for (const { pattern, key } of engagementPatterns) {
+    if (pattern.test(pageText)) {
+      if (!data.engagementSignals.includes(key)) {
+        data.engagementSignals.push(key);
+      }
+    }
   }
 
   // "Urgently hiring" — can be legitimate or evergreen bait
@@ -257,6 +408,17 @@ const SPECIFIC_PATTERNS = [
 ];
 const KITCHEN_SINK_TECH = /\b(python|java|javascript|react|angular|vue|node|sql|aws|gcp|azure|docker|kubernetes|terraform|go|rust|c\+\+|ruby|php|swift|kotlin|scala|hadoop|spark|kafka|redis|mongodb|postgresql|mysql|elasticsearch|graphql|rest\s*api|ci\/cd|jenkins|github\s*actions)\b/gi;
 
+const HIGH_TURNOVER_PATTERNS = [
+  /barista/i, /crew\s*member/i, /team\s*member/i, /cashier/i,
+  /sales\s*associate/i, /retail\s*associate/i, /warehouse/i,
+  /delivery\s*driver/i, /package\s*handler/i, /registered\s*nurse/i,
+  /\b(lpn|lvn|cna)\b/i, /nursing\s*assistant/i, /home\s*health/i,
+  /caregiver/i, /security\s*(officer|guard)/i, /janitor|custodian/i,
+  /housekeeper/i, /front\s*desk/i, /dishwasher|line\s*cook|server|bartender/i,
+  /call\s*center/i, /customer\s*service\s*rep/i, /truck\s*driver/i,
+  /forklift/i, /picker|packer|stocker/i, /medical\s*assistant/i,
+];
+
 function analyzeDescriptionVagueness(text) {
   if (!text) return 0;
   let vagueIndicators = 0;
@@ -284,38 +446,51 @@ function detectSeniorityMismatch(title, description) {
 function scoreLocally(listing) {
   let score = 0;
   const signals = [];
+  const isHighTurnover = listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title));
 
   // === INDEED PLATFORM BASELINE ===
-  // Indeed provides less transparency than LinkedIn — no applicant counts,
-  // no repost labels, no hiring contact info, no response insights on most
-  // listings. The absence of this data IS a signal. Start with a baseline
-  // that reflects the platform's opacity.
   score += 10;
 
-  // === POSTING AGE ===
+  // === POSTING AGE (0.1.8 curve) ===
+  let agePenalty = 0;
+
   if (listing.daysOpen != null) {
-    if (listing.daysOpen >= 60) {
-      score += 25;
-      signals.push(`Open ${listing.daysOpen}+ days — why is this still up?`);
-    } else if (listing.daysOpen >= 30) {
-      score += 18;
-      signals.push(`Open ${listing.daysOpen} days — almost certainly filled or stalled`);
-    } else if (listing.daysOpen >= 14) {
-      score += 8;
-      signals.push(`Open ${listing.daysOpen} days — you're already late to this one`);
-    } else if (listing.daysOpen <= 3) {
-      score -= 5; // freshly posted is a good sign
+    if (listing.daysOpen <= 2) {
+      agePenalty = -8;
+      signals.push('Posted in last 48 hours — highest visibility window');
+    } else if (listing.daysOpen <= 7) {
+      agePenalty = (listing.daysOpen - 2) * 2;
+    } else if (listing.daysOpen <= 14) {
+      agePenalty = 10 + (listing.daysOpen - 7) * 3;
+    } else if (listing.daysOpen <= 21) {
+      agePenalty = 31 + (listing.daysOpen - 14) * 4;
+    } else if (listing.daysOpen <= 30) {
+      agePenalty = 59 + (listing.daysOpen - 21) * 5;
+    } else {
+      agePenalty = 104 + (listing.daysOpen - 30) * 6;
     }
   } else {
-    score += 5;
+    // 0.1.8 - Heavier penalty for unknown posting age (as requested)
+    // We apply this more aggressively because unknown age on Indeed often
+    // correlates with older or low-quality listings.
+    agePenalty = 12;
     signals.push('Posting age unknown');
+  }
+  if (isHighTurnover) agePenalty = Math.round(agePenalty * 0.4);
+  score += agePenalty;
+
+  if (listing.daysOpen > 2) {
+    signals.push(`Open ${listing.daysOpen} days`);
   }
 
   // === REPOST ===
+  let repostPenalty = 0;
   if (listing.isRepost) {
-    score += 20;
+    repostPenalty = 20;
     signals.push('Recycled listing — marked as reposted');
   }
+  if (isHighTurnover) repostPenalty = Math.round(repostPenalty * 0.4);
+  score += repostPenalty;
 
   // === SALARY ===
   if (!listing.salaryListed) {
@@ -331,7 +506,7 @@ function scoreLocally(listing) {
 
   // === EMPLOYER RESPONSIVENESS ===
   if (listing.employerResponsive) {
-    score -= 5; // positive signal but shouldn't cancel red flags
+    score -= 5;
     signals.push('✓ Employer responds quickly');
   } else {
     score += 8;
@@ -353,11 +528,11 @@ function scoreLocally(listing) {
       score += 5;
       signals.push(`Indeed rating: ${listing.indeedRating}/5`);
     } else if (listing.indeedRating >= 4.0) {
-      score -= 3; // well-rated employer
+      score -= 3;
     }
   }
 
-  // === DESCRIPTION QUALITY (real vagueness analyzer) ===
+  // === DESCRIPTION QUALITY ===
   if (listing.description) {
     const vagueness = analyzeDescriptionVagueness(listing.description);
     if (vagueness >= 0.65) {
@@ -385,52 +560,36 @@ function scoreLocally(listing) {
     signals.push('⚠️ Seniority mismatch — title and requirements conflict');
   }
 
-  // === HIRING MULTIPLE ===
-  if (listing.hiringMultiple) {
-    score += 3;
-    signals.push('Hiring multiple candidates');
-  }
-
   // === ENGAGEMENT SIGNALS ===
-  // Indeed's own advice: listings older than 30 days with no 
-  // "Reviewing Applicants" or "Recently Active" badge are highly suspicious
   if (listing.activelyReviewing) {
-    score -= 8; // strong positive signal
+    score -= 8;
     signals.push('✓ Employer actively reviewing applications');
   } else if (listing.daysOpen != null && listing.daysOpen >= 14) {
-    // Old listing with NO engagement signals = stale/ghost
     score += 10;
     signals.push('No active review signals on older listing');
   }
 
-  // === SENIORITY MISMATCH ===
-  // Indeed flags this: "entry-level" with "5+ years required"
-  if (listing.seniorityMismatch) {
-    score += 12;
-    signals.push('⚠️ Seniority mismatch — entry role requires senior experience');
+  // === 0.1.8: STRONG COMBO PENALTIES (adapted for Indeed) ===
+  const isOld = listing.daysOpen >= 14;
+  const missingBasics = !listing.salaryListed && !listing.employerResponsive && !listing.activelyReviewing;
+
+  if (isOld && missingBasics) {
+    score += 18;
+    signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
   }
 
-  // === STALE LISTING COMBO ===
-  // The worst signal: old + no engagement + no response data + no salary
-  // This is the classic ghost job pattern
+  if (listing.daysOpen >= 30 && !listing.activelyReviewing) {
+    score += 14;
+    signals.push('30+ days old with no active review signals — very low chance');
+  }
+
   if (listing.daysOpen >= 30 && !listing.activelyReviewing && 
       !listing.employerResponsive && !listing.salaryListed) {
-    score += 10;
+    score += 12;
     signals.push('🚩 Stale listing: old, no engagement, no salary — classic dead end');
   }
 
   // === HIGH TURNOVER ROLE ===
-  const HIGH_TURNOVER_PATTERNS = [
-    /barista/i, /crew\s*member/i, /team\s*member/i, /cashier/i,
-    /sales\s*associate/i, /retail\s*associate/i, /warehouse/i,
-    /delivery\s*driver/i, /package\s*handler/i, /registered\s*nurse/i,
-    /\b(lpn|lvn|cna)\b/i, /nursing\s*assistant/i, /home\s*health/i,
-    /caregiver/i, /security\s*(officer|guard)/i, /janitor|custodian/i,
-    /housekeeper/i, /front\s*desk/i, /dishwasher|line\s*cook|server|bartender/i,
-    /call\s*center/i, /customer\s*service\s*rep/i, /truck\s*driver/i,
-    /forklift/i, /picker|packer|stocker/i, /medical\s*assistant/i,
-  ];
-  const isHighTurnover = listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title));
   if (isHighTurnover) {
     signals.push('⚡ High turnover role — expect frequent reposting');
   }
@@ -439,8 +598,8 @@ function scoreLocally(listing) {
 
   let label = 'low';
   if (score >= 75) label = 'very_high';
-  else if (score >= 50) label = 'high';
-  else if (score >= 25) label = 'moderate';
+  else if (score >= 55) label = 'high';
+  else if (score >= 35) label = 'moderate';
 
   return { score, label, signals, isHighTurnover };
 }
@@ -510,13 +669,20 @@ function injectOverlay(localScore, backendData, listing) {
   overlay.id = 'ghost-detector-overlay';
   overlay.innerHTML = `
     <div class="ghost-detector-card" style="border-left: 4px solid ${color.border}; background: ${color.bg};">
-      <div class="ghost-detector-header">
+      <div class="ghost-detector-header" style="display:flex; align-items:center; gap:6px; flex-wrap: wrap;">
         <span class="ghost-detector-icon">${color.icon}</span>
         <span class="ghost-detector-title">Ghost Risk: <strong style="color: ${color.text}">${labelText[finalLabel]}</strong></span>
         <span class="ghost-detector-score" style="color: ${color.text}">${finalScore}/100</span>
         ${backendData && backendData.live ? 
           `<span class="ghost-detector-live" style="background:#dcfce7;color:#166534;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:5px;font-weight:600;letter-spacing:0.3px;">● LIVE</span>` : ''}
+        <span id="ghost-close-btn" style="margin-left:auto; cursor:pointer; font-size:16px; line-height:1; opacity:0.65; padding:2px 6px;">✕</span>
       </div>
+
+      ${localScore.isHighTurnover ? 
+        `<div style="font-size:9px; background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fde68a;">High Turnover Role – Scoring Adjusted</div>` : ''}
+
+      ${finalSignals.some(s => s.includes('High Volume Repost')) ? 
+        `<div style="font-size:9px; background:#fee2e2; color:#991b1b; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fecaca;">High Volume Repost</div>` : ''}
       ${finalSignals.length > 0 ? `
         <div class="ghost-detector-signals">
           ${finalSignals.map(s => `<span class="ghost-detector-signal">${s}</span>`).join('')}
@@ -579,6 +745,12 @@ function injectOverlay(localScore, backendData, listing) {
   overlay.style.boxShadow = '0 4px 20px rgba(0,0,0,0.15)';
   overlay.style.borderRadius = '10px';
   document.body.appendChild(overlay);
+
+  // Close button handler (0.1.8)
+  document.getElementById('ghost-close-btn')?.addEventListener('click', () => {
+    overlay.remove();
+    lastVjk = getCurrentVjk(); // prevent immediate re-show on same job
+  });
 
   // --- Event listeners ---
   document.getElementById('ghost-btn-flag')?.addEventListener('click', () => {
@@ -666,6 +838,7 @@ function injectOverlay(localScore, backendData, listing) {
 
 let lastVjk = null;
 let isProcessing = false;
+let currentListingData = null;   // 0.1.8 - store current listing for reliable Apply tracking
 
 function getCurrentVjk() {
   const match = window.location.href.match(/vjk=([a-f0-9]+)/);
@@ -690,7 +863,13 @@ async function processCurrentListing() {
     return;
   }
 
-  // Passively track listing metadata (no user data)
+  // Store current listing data for reliable Apply tracking (0.1.8)
+  currentListingData = {
+    ...listing,
+    userClickedApply: false,
+  };
+
+  // Passively track listing metadata + new signals (0.1.8)
   chrome.runtime.sendMessage({
     type: 'TRACK_LISTING',
     listingData: {
@@ -702,6 +881,12 @@ async function processCurrentListing() {
       salaryListed: listing.salaryListed,
       isRepost: listing.isRepost,
       daysOpen: listing.daysOpen,
+      // New 0.1.8 signals
+      engagementSignals: listing.engagementSignals,
+      employerResponseTime: listing.employerResponseTime,
+      userClickedApply: listing.userClickedApply,
+      workArrangement: listing.workArrangement,
+      employmentType: listing.employmentType,
     },
   });
 
@@ -725,6 +910,40 @@ async function processCurrentListing() {
 
 // Initial run
 processCurrentListing();
+
+// 0.1.8 - Track Apply clicks on Indeed (passive, reliable)
+document.addEventListener('click', (e) => {
+  const target = e.target.closest('button, a');
+  if (!target) return;
+
+  const text = (target.textContent || target.innerText || '').toLowerCase();
+  const ariaLabel = (target.getAttribute('aria-label') || '').toLowerCase();
+
+  if (
+    text.includes('apply') ||
+    ariaLabel.includes('apply') ||
+    target.getAttribute('data-testid')?.includes('apply')
+  ) {
+    const currentJobId = getCurrentVjk();
+    if (currentListingData && currentListingData.platformJobId === currentJobId) {
+      currentListingData.userClickedApply = true;
+
+      chrome.runtime.sendMessage({
+        type: 'TRACK_LISTING',
+        listingData: {
+          ...currentListingData,
+          userClickedApply: true,
+        },
+      });
+    } else {
+      chrome.runtime.sendMessage({
+        type: 'USER_CLICKED_APPLY',
+        platform: 'indeed',
+        url: window.location.href,
+      });
+    }
+  }
+}, true);
 
 // Poll for vjk changes
 setInterval(() => {

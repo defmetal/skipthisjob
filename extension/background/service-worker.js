@@ -76,6 +76,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // --- 0.1.8: User clicked Apply on a job ---
+  if (message.type === 'USER_CLICKED_APPLY') {
+    // For simplicity in 0.1.8, we send a lightweight update.
+    // In a more complete implementation, we would store the last listing and update it.
+    fetch(`${API_BASE}/track`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform: message.platform,
+        listingUrl: message.url,
+        userClickedApply: true,
+      }),
+    }).catch(() => {});
+    return true;
+  }
+
   // --- Update badge ---
   if (message.type === 'UPDATE_BADGE') {
     const { score, label } = message;
