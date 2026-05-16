@@ -222,40 +222,36 @@ function parseLinkedInListing() {
   }
 
   // 0.1.8 - Robust description detection
-  // LinkedIn often puts the full description inside data-testid="expandable-text-box"
-  // even when it is visually collapsed behind a "More" button.
+  // LinkedIn collapses the description behind a "…see more" toggle. The full
+  // text IS in the DOM, but innerText only returns the *rendered* (truncated)
+  // portion — so a collapsed listing looked like it had no description and
+  // was wrongly scored as a ghost-risk signal. textContent returns the entire
+  // subtree regardless of the collapse, so read that and take whichever of
+  // the two is longer across all candidate containers.
   function getFullDescription() {
-    // Primary: modern expandable box (contains full text)
-    let el = document.querySelector('[data-testid="expandable-text-box"]');
-    if (el) {
-      let text = (el.innerText || el.textContent || '').trim();
-      if (text.length > 150) return text;
-    }
+    const readBest = (el) => {
+      if (!el) return '';
+      const tc = (el.textContent || '').replace(/[ \t]+/g, ' ').trim();
+      const it = (el.innerText || '').trim();
+      return tc.length >= it.length ? tc : it;
+    };
 
-    // Try the direct parent (sometimes the real content is one level up)
-    const parent = document.querySelector('[data-testid="expandable-text-box"]')?.parentElement;
-    if (parent) {
-      let text = (parent.innerText || parent.textContent || '').trim();
-      if (text.length > 150) return text;
-    }
-
-    // Fallbacks for older LinkedIn DOM structures
-    const fallbacks = [
-      '.jobs-description-content__text',
-      '.jobs-description__content',
-      '.jobs-box__html-content',
-      '[data-testid="job-details"]'
+    const candidates = [
+      document.querySelector('[data-testid="expandable-text-box"]'),
+      document.querySelector('[data-testid="expandable-text-box"]')?.parentElement,
+      document.querySelector('.jobs-description-content__text'),
+      document.querySelector('.jobs-description__content'),
+      document.querySelector('.jobs-box__html-content'),
+      document.querySelector('[data-testid="job-details"]'),
     ];
 
-    for (const sel of fallbacks) {
-      el = document.querySelector(sel);
-      if (el) {
-        let text = (el.innerText || el.textContent || '').trim();
-        if (text.length > 100) return text;
-      }
+    let best = '';
+    for (const el of candidates) {
+      const t = readBest(el);
+      if (t.length > best.length) best = t;
     }
 
-    return null;
+    return best.length > 80 ? best : null;
   }
 
   data.description = getFullDescription();
@@ -583,6 +579,9 @@ function scoreLocally(listing) {
   // ============================================================
   // DESCRIPTION QUALITY + SENIORITY MISMATCH
   // ============================================================
+  // Absent / very-weak descriptions are already scored above
+  // ("No or very weak job description"). Only analyze vagueness when a
+  // description actually exists, so a missing one isn't penalized twice.
   if (listing.description) {
     const vagueness = analyzeDescriptionVagueness(listing.description);
     if (vagueness >= 0.65) {
@@ -595,9 +594,6 @@ function scoreLocally(listing) {
       score -= 4;
       signals.push('Detailed, specific job description');
     }
-  } else {
-    score += 12;
-    signals.push('No job description provided');
   }
 
   if (detectSeniorityMismatch(listing.title, listing.description || '', listing.seniorityLevel)) {
@@ -630,30 +626,85 @@ function scoreLocally(listing) {
 // BACKEND API (via background service worker to avoid CORS)
 // ============================================================
 
+// --- Extension lifecycle guard -------------------------------------------
+// When the extension is reloaded or auto-updates, content scripts already
+// running on open tabs are orphaned: the DOM stays, but every chrome.* call
+// throws "Extension context invalidated". Detect that, disconnect our
+// timers/observer, and go silent so the dead script stops working and stops
+// spamming errors. The page must be reloaded to attach a fresh script.
+let _ghostTornDown = false;
+const _ghostTimers = [];
+let _ghostObserver = null;
+
+function extensionAlive() {
+  try {
+    return !!(chrome.runtime && chrome.runtime.id);
+  } catch (e) {
+    return false;
+  }
+}
+
+function teardownGhostDetector() {
+  if (_ghostTornDown) return;
+  _ghostTornDown = true;
+  try { if (_ghostObserver) _ghostObserver.disconnect(); } catch (e) {}
+  while (_ghostTimers.length) clearInterval(_ghostTimers.pop());
+  console.log('[SkipThisJob] Extension context gone — content script stood down. Reload the page to re-enable.');
+}
+
+function safeSendMessage(message, callback) {
+  if (!extensionAlive()) { teardownGhostDetector(); return; }
+  try {
+    chrome.runtime.sendMessage(message, (response) => {
+      // Touch lastError so Chrome doesn't log "Unchecked runtime.lastError".
+      const err = chrome.runtime && chrome.runtime.lastError;
+      if (err) {
+        if (!extensionAlive()) teardownGhostDetector();
+        return;
+      }
+      if (callback) callback(response);
+    });
+  } catch (e) {
+    teardownGhostDetector();
+  }
+}
+
 async function fetchEmployerScore(companyName) {
   return new Promise(resolve => {
-    chrome.runtime.sendMessage(
+    if (!extensionAlive()) { teardownGhostDetector(); resolve(null); return; }
+    safeSendMessage(
       { type: 'FETCH_EMPLOYER_SCORE', name: companyName },
       response => resolve(response?.data || null)
     );
+    // If the context dies mid-flight the callback never fires; make sure the
+    // promise still settles so `await fetchEmployerScore` can't hang.
+    setTimeout(() => resolve(null), 8000);
   });
 }
 
 async function submitReport(reportData) {
-  let { userHash } = await chrome.storage.local.get('userHash');
-  if (!userHash) {
-    userHash = crypto.randomUUID();
-    await chrome.storage.local.set({ userHash });
+  if (!extensionAlive()) { teardownGhostDetector(); return false; }
+  let userHash;
+  try {
+    ({ userHash } = await chrome.storage.local.get('userHash'));
+    if (!userHash) {
+      userHash = crypto.randomUUID();
+      await chrome.storage.local.set({ userHash });
+    }
+  } catch (e) {
+    teardownGhostDetector();
+    return false;
   }
 
   return new Promise(resolve => {
-    chrome.runtime.sendMessage(
+    safeSendMessage(
       {
         type: 'SUBMIT_REPORT',
         reportData: { ...reportData, anonymousUserHash: userHash, platform: 'linkedin' },
       },
       response => resolve(response?.success || false)
     );
+    setTimeout(() => resolve(false), 8000);
   });
 }
 
@@ -662,20 +713,57 @@ async function submitReport(reportData) {
 // UI INJECTION
 // ============================================================
 
+// Confidence-weighted, asymmetric blend of the listing heuristic and the
+// employer backend score. Mirror of the same helper in indeed.js — scoring
+// is platform-agnostic, so both content scripts must blend identically.
+//
+// Why: a thin backend record (employer merely present in the Kaggle seed
+// with a few listings and zero reports) returns a near-zero score that
+// means "no evidence", NOT "safe employer". The old flat 40/60 blend
+// weighted that emptiness at 60% and dragged strong listing-level ghost
+// signals down into a falsely reassuring band.
+//
+// Rules:
+//  - Backend weight scales with how much real evidence it has.
+//  - A low-confidence backend may RAISE the score (a sketchy employer is
+//    worth heeding) but must not SUPPRESS a listing that already looks
+//    like a ghost job. Lowering requires confidence; raising is easier.
+function blendGhostScore(localScore, backendData) {
+  const local = localScore.score;
+
+  if (!backendData || backendData.score == null) {
+    return { score: local, label: localScore.label, signals: localScore.signals };
+  }
+
+  const backend = backendData.score;
+  const reports = backendData.totalReports || 0;
+  const listings = backendData.totalListings || 0;
+
+  let wDown;
+  if (backendData.live) wDown = 0.60;        // fresh community reports / repost patterns
+  else if (reports >= 10) wDown = 0.40;
+  else if (reports >= 3) wDown = 0.25;
+  else if (listings >= 8) wDown = 0.15;
+  else wDown = 0.0;                          // thin seed record → ~100% heuristic
+
+  const wUp = Math.max(wDown, 0.30);
+
+  const w = backend >= local ? wUp : wDown;
+  const score = Math.round(local * (1 - w) + backend * w);
+  const label =
+    score >= 75 ? 'very_high' : score >= 50 ? 'high' : score >= 25 ? 'moderate' : 'low';
+  const signals = [...new Set([...localScore.signals, ...(backendData.signals || [])])];
+  return { score, label, signals };
+}
+
 function injectOverlay(localScore, backendData, listing) {
   const existing = document.getElementById('ghost-detector-overlay');
   if (existing) existing.remove();
 
-  let finalScore, finalLabel, finalSignals;
-  if (backendData && backendData.score != null) {
-    finalScore = Math.round(localScore.score * 0.4 + backendData.score * 0.6);
-    finalLabel = finalScore >= 75 ? 'very_high' : finalScore >= 50 ? 'high' : finalScore >= 25 ? 'moderate' : 'low';
-    finalSignals = [...new Set([...localScore.signals, ...(backendData.signals || [])])];
-  } else {
-    finalScore = localScore.score;
-    finalLabel = localScore.label;
-    finalSignals = localScore.signals;
-  }
+  const _blend = blendGhostScore(localScore, backendData);
+  const finalScore = _blend.score;
+  const finalLabel = _blend.label;
+  const finalSignals = _blend.signals;
 
   const colors = {
     low: { bg: '#e8f5e9', border: '#4caf50', text: '#2e7d32', icon: '✅' },
@@ -874,18 +962,26 @@ function isOnJobPage() {
  */
 async function waitForLinkedInJobContent(maxWaitMs = 6500) {
   const start = Date.now();
-  const keySelectors = [
+  const descSelectors = [
+    '[data-testid="expandable-text-box"]',
     '.jobs-description-content__text',
     '.jobs-description__content',
+    '.jobs-box__html-content'
+  ];
+  const pageReadySelectors = [
     'a[href*="/jobs/view/"]',
     '.job-details-jobs-unified-top-card__company-name',
     '.jobs-unified-top-card__company-name'
   ];
 
+  // Prefer to wait for the actual description container — parsing before it
+  // renders is what made collapsed-but-present descriptions look missing.
+  // Only fall back to "page loaded, no description" late in the budget so
+  // genuine no-description listings still get scored.
+  const descDeadline = start + Math.round(maxWaitMs * 0.8);
   while (Date.now() - start < maxWaitMs) {
-    for (const sel of keySelectors) {
-      if (document.querySelector(sel)) return true;
-    }
+    if (descSelectors.some(s => document.querySelector(s))) return true;
+    if (Date.now() > descDeadline && pageReadySelectors.some(s => document.querySelector(s))) return true;
     await new Promise(r => setTimeout(r, 180));
   }
   return false;
@@ -904,7 +1000,8 @@ function setupJobDetailObserver() {
 
   if (!container || container._ghostObserverAttached) return;
 
-  const observer = new MutationObserver(() => {
+  _ghostObserver = new MutationObserver(() => {
+    if (!extensionAlive()) { teardownGhostDetector(); return; }
     const jobId = getCurrentJobId();
     if (jobId && jobId !== lastProcessedJobId && !isProcessing) {
       // Debounce rapid mutations
@@ -916,12 +1013,13 @@ function setupJobDetailObserver() {
     }
   });
 
-  observer.observe(container, { childList: true, subtree: true });
+  _ghostObserver.observe(container, { childList: true, subtree: true });
   container._ghostObserverAttached = true;
   console.log('[SkipThisJob] MutationObserver attached to job detail container');
 }
 
 async function processCurrentListing() {
+  if (!extensionAlive()) { teardownGhostDetector(); return; }
   const jobId = getCurrentJobId();
   if (!jobId || jobId === lastProcessedJobId || isProcessing) return;
 
@@ -953,7 +1051,7 @@ async function processCurrentListing() {
   };
 
   // Passively track listing metadata + new signals (0.1.8)
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     type: 'TRACK_LISTING',
     listingData: {
       companyName: listing.companyName,
@@ -986,12 +1084,13 @@ async function processCurrentListing() {
 }
 
 // Poll every 1 second for URL changes (LinkedIn is a SPA)
-setInterval(() => {
+_ghostTimers.push(setInterval(() => {
+  if (!extensionAlive()) { teardownGhostDetector(); return; }
   const jobId = getCurrentJobId();
   if (jobId && jobId !== lastProcessedJobId && !isProcessing) {
     processCurrentListing();
   }
-}, 1000);
+}, 1000));
 
 // Also listen for clicks on job listing cards in the sidebar
 document.addEventListener('click', (e) => {
@@ -1015,7 +1114,8 @@ if (isOnJobPage()) {
 
 // Handle navigation within LinkedIn (SPA)
 let lastObserverUrl = location.href;
-setInterval(() => {
+_ghostTimers.push(setInterval(() => {
+  if (!extensionAlive()) { teardownGhostDetector(); return; }
   if (location.href !== lastObserverUrl) {
     lastObserverUrl = location.href;
 
@@ -1033,7 +1133,7 @@ setInterval(() => {
       setTimeout(setupJobDetailObserver, 1200);
     }
   }
-}, 800);
+}, 800));
 
 // 0.1.8 - Track Apply clicks on LinkedIn (passive, reliable)
 document.addEventListener('click', (e) => {
@@ -1055,7 +1155,7 @@ document.addEventListener('click', (e) => {
       currentListingData.userClickedApply = true;
 
       // Re-send the full enriched payload so the signal is properly linked
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         type: 'TRACK_LISTING',
         listingData: {
           ...currentListingData,
@@ -1064,7 +1164,7 @@ document.addEventListener('click', (e) => {
       });
     } else {
       // Fallback: send lightweight update
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         type: 'USER_CLICKED_APPLY',
         platform: 'linkedin',
         url: window.location.href,
