@@ -461,26 +461,52 @@
     });
   }
 
+  function normalizeAgeText(text) {
+    return String(text || '')
+      .replace(/[\u00a0\u202f\u2007\u2009\u200a\u2060]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .toLowerCase()
+      .trim();
+  }
+
+  /**
+   * Parse a relative posting age. Months/weeks/days are checked BEFORE
+   * freshness phrases so a LinkedIn detail dump that also contains
+   * "2 hours ago" (sidebar, hiring-team activity) cannot zero out
+   * "5 months ago" in the top card.
+   *
+   * Live 0.2.2 failure: Baton "5 months ago" / First Point "3 months ago"
+   * never became daysOpen, so age floors never ran and the overlay
+   * stayed 6 Worth Applying.
+   */
   function parseRelativeDays(text) {
     if (!text) return null;
-    const t = String(text).toLowerCase().trim();
-    if (/just posted|posted today|moments? ago|active\s+today/.test(t)) return 0;
-    if (/(few |a few )?(hours?|mins?|minutes?) ago/.test(t)) return 0;
-    if (/\btoday\b/.test(t) && t.length < 24) return 0;
-    // LinkedIn compact: "3mo ago", "5 mo ago", "Posted 3 months ago"
-    let m = t.match(/(\d+)\s*mo(?:nths?|s)?\.?\s+ago/);
-    if (!m) m = t.match(/(\d+)\s*mo(?:nths?|s)?\.?\s*ago/);
+    const t = normalizeAgeText(text);
+    if (!t) return null;
+
+    // LinkedIn header: "San Francisco, CA · 5 months ago · Over 100 applicants"
+    let m = t.match(/(\d+)\s*(?:months?|mos\.?|mo)\s+ago/);
     if (m) return parseInt(m[1], 10) * 30;
-    // "2w ago", "2 weeks ago", "Posted 3 weeks ago"
-    m = t.match(/(\d+)\s*w(?:eeks?)?\s*ago/);
+
+    m = t.match(/(\d+)\s*w(?:ee)?k?s?\.?\s+ago/);
     if (m) return parseInt(m[1], 10) * 7;
-    // "30+ days ago", "5d ago", "Posted 12 days ago"
-    m = t.match(/(\d+)\+?\s*(?:days?|d)\s*ago/);
+
+    m = t.match(/(\d+)\+?\s*(?:days?|d)\s+ago/);
     if (m) return parseInt(m[1], 10);
+
     m = t.match(/active\s+(\d+)\+?\s*(?:days?|d)/);
     if (m) return parseInt(m[1], 10);
+
+    if (/just posted|posted today|moments? ago|active\s+today/.test(t)) return 0;
+    if (/(?:few |a few )?(?:hours?|mins?|minutes?) ago/.test(t)) return 0;
     if (/\byesterday\b/.test(t)) return 1;
+    if (/\btoday\b/.test(t) && t.length < 40) return 0;
     return null;
+  }
+
+  // Explicit alias for tests / LinkedIn header strings.
+  function parseLinkedInPostedAge(text) {
+    return parseRelativeDays(text);
   }
 
   function daysOpenFromIso(iso, nowMs) {
@@ -502,27 +528,33 @@
   }
 
   /**
-   * Prefer <time datetime>, then compact "3mo ago" on the card, then
-   * a footer / fallback string. Used by list badges so they see the
-   * same age the detail overlay would.
+   * Card age: prefer visible "N months ago" on the whole card (LinkedIn
+   * headers / footers) over a random <time datetime> (hiring-team "3d"
+   * was winning and wiping floors).
    */
   function daysOpenFromCard(card, dateEl, fallbackText) {
+    const blob = [
+      fallbackText,
+      dateEl && dateEl.textContent,
+      card && (card.innerText || card.textContent),
+    ].filter(Boolean).join(' · ');
+    const fromText = parseRelativeDays(blob);
+    if (fromText != null) return fromText;
+
     if (dateEl && dateEl.getAttribute) {
       const iso = daysOpenFromIso(dateEl.getAttribute('datetime'));
       if (iso != null) return iso;
-      const fromEl = parseRelativeDays(dateEl.textContent);
-      if (fromEl != null) return fromEl;
     }
     if (card && card.querySelectorAll) {
       const times = card.querySelectorAll('time[datetime], time');
       for (let i = 0; i < times.length; i++) {
-        const iso = daysOpenFromIso(times[i].getAttribute('datetime'));
-        if (iso != null) return iso;
         const fromTime = parseRelativeDays(times[i].textContent);
         if (fromTime != null) return fromTime;
+        const iso = daysOpenFromIso(times[i].getAttribute('datetime'));
+        if (iso != null) return iso;
       }
     }
-    return parseRelativeDays(fallbackText);
+    return null;
   }
 
   // --- Indeed identity + path-consistent listing signals -----------------
@@ -1095,6 +1127,8 @@
   api.scoreListingSignals = scoreListingSignals;
   api.scoreListPreview = scoreListPreview;
   api.parseRelativeDays = parseRelativeDays;
+  api.parseLinkedInPostedAge = parseLinkedInPostedAge;
+  api.normalizeAgeText = normalizeAgeText;
   api.daysOpenFromIso = daysOpenFromIso;
   api.parseApplicantCount = parseApplicantCount;
   api.daysOpenFromCard = daysOpenFromCard;

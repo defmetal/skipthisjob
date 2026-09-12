@@ -14,6 +14,94 @@ let lastPublishedScore = null;
 // DOM PARSING
 // ============================================================
 
+/**
+ * Live 0.2.2 soak: "5 months ago" in the detail header never reached
+ * scoreListingSignals because we (1) started from the first sidebar
+ * /jobs/view/ link, (2) trusted hiring-team <time datetime>, and
+ * (3) let parseRelativeDays return 0 on any "hours ago" in a blob.
+ * Read the DETAIL top card only; prefer visible "N months ago".
+ */
+function readLinkedInDaysOpen() {
+  const parseAge = STJ.parseLinkedInPostedAge || STJ.parseRelativeDays;
+  if (!parseAge) return { days: null, source: '' };
+
+  const detailRoots = [
+    document.querySelector('.jobs-search__job-details'),
+    document.querySelector('.scaffold-layout__detail'),
+    document.querySelector('.job-details-jobs-unified-top-card'),
+    document.querySelector('.jobs-unified-top-card'),
+    document.querySelector('.jobs-details'),
+  ].filter(Boolean);
+
+  const seedSelectors = [
+    '.job-details-jobs-unified-top-card__tertiary-description-container',
+    '.jobs-unified-top-card__tertiary-description-container',
+    '[class*="tertiary-description"]',
+    '.job-details-jobs-unified-top-card__primary-description-container',
+    '.jobs-unified-top-card__subtitle-secondary-grouping',
+    '.job-details-jobs-unified-top-card__primary-description-without-tagline',
+    '.tvm__text',
+  ];
+
+  const skip = function (el) {
+    if (!el || !el.closest) return true;
+    return !!(
+      el.closest('.scaffold-layout__list') ||
+      el.closest('.jobs-search-results-list') ||
+      el.closest('.hirer-card') ||
+      el.closest('.jobs-poster') ||
+      el.closest('[data-testid="hirer-card"]') ||
+      el.closest('.comments-comment-entity')
+    );
+  };
+
+  const tryText = function (text, source) {
+    const days = parseAge(text);
+    if (days != null) return { days: days, source: source + ': ' + String(text).replace(/\s+/g, ' ').trim() };
+    return null;
+  };
+
+  for (let r = 0; r < detailRoots.length; r++) {
+    const root = detailRoots[r];
+    if (skip(root) && !root.classList.contains('job-details-jobs-unified-top-card') &&
+        !root.classList.contains('jobs-unified-top-card') &&
+        !root.classList.contains('jobs-search__job-details') &&
+        !(root.classList && root.classList.contains('scaffold-layout__detail'))) {
+      continue;
+    }
+    for (let s = 0; s < seedSelectors.length; s++) {
+      const nodes = root.querySelectorAll(seedSelectors[s]);
+      for (let i = 0; i < nodes.length; i++) {
+        if (skip(nodes[i])) continue;
+        const hit = tryText(nodes[i].innerText || nodes[i].textContent, seedSelectors[s]);
+        if (hit) return hit;
+      }
+    }
+    const topHit = tryText(root.innerText || root.textContent, 'detail-root');
+    if (topHit) return topHit;
+  }
+
+  // Last resort: body text, but months still win over "hours ago".
+  const bodyHit = tryText(document.body ? document.body.innerText : '', 'body');
+  if (bodyHit) return bodyHit;
+  return { days: null, source: '' };
+}
+
+function stampListBadgeForCurrentJob(listing, result) {
+  if (!STJ.injectListBadge || !listing || !result) return;
+  const jobId = listing.platformJobId;
+  if (!jobId) return;
+  const card =
+    document.querySelector('[data-job-id="' + jobId + '"]') ||
+    document.querySelector('[data-occludable-job-id="' + jobId + '"]') ||
+    document.querySelector('li[data-occludable-job-id="' + jobId + '"] .job-card-container');
+  if (!card) return;
+  const anchor = card.querySelector(
+    'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link'
+  ) || card;
+  STJ.injectListBadge(card, result, anchor);
+}
+
 function parseLinkedInListing() {
   const data = {
     title: null,
@@ -128,36 +216,13 @@ function parseLinkedInListing() {
     console.log('[GhostDetector] Detected: Reposted');
   }
 
-  // Prefer <time datetime> in the detail panel, then shared relative
-  // parser (handles "3mo ago" / "3 months ago"). Last-resort regexes
-  // still prefer "reposted X ago" / months over a sidebar "2 days ago".
-  const detailTime = container && container.querySelector
-    ? (container.querySelector('.job-details-jobs-unified-top-card time[datetime]') ||
-       container.querySelector('time[datetime]') ||
-       container.querySelector('time'))
-    : null;
-  if (STJ.daysOpenFromIso && detailTime && detailTime.getAttribute('datetime')) {
-    data.daysOpen = STJ.daysOpenFromIso(detailTime.getAttribute('datetime'));
+  const ageRead = readLinkedInDaysOpen();
+  data.daysOpen = ageRead.days;
+  if (data.daysOpen != null) {
+    console.log('[SkipThisJob] Days open:', data.daysOpen, 'from:', (ageRead.source || '').substring(0, 80));
+  } else {
+    console.log('[SkipThisJob] Days open: null (no months/weeks/days-ago in top card)');
   }
-  if (data.daysOpen == null && STJ.parseRelativeDays) {
-    data.daysOpen = STJ.parseRelativeDays(detailTime ? detailTime.textContent : '') ||
-                    STJ.parseRelativeDays(detailText);
-  }
-  if (data.daysOpen == null) {
-    const monthsMatch = detailText.match(/reposted\s+(\d+)\s*mo(?:nths?)?\s*ago/) ||
-                        detailText.match(/(\d+)\s*mo(?:nths?)?\s*ago/);
-    const weeksMatch = detailText.match(/reposted\s+(\d+)\s*weeks?\s*ago/) ||
-                       detailText.match(/(\d+)\s*weeks?\s*ago/);
-    const daysMatch = detailText.match(/reposted\s+(\d+)\s*days?\s*ago/) ||
-                      detailText.match(/(\d+)\s*days?\s*ago/);
-    const hoursMatch = detailText.match(/(\d+)\s*hours?\s*ago/);
-    if (monthsMatch) data.daysOpen = parseInt(monthsMatch[1], 10) * 30;
-    else if (weeksMatch) data.daysOpen = parseInt(weeksMatch[1], 10) * 7;
-    else if (daysMatch) data.daysOpen = parseInt(daysMatch[1], 10);
-    else if (hoursMatch) data.daysOpen = 0;
-  }
-
-  if (data.daysOpen != null) console.log('[GhostDetector] Days open:', data.daysOpen);
 
   data.easyApply = /easy apply/.test(detailText);
 
@@ -918,7 +983,12 @@ async function waitForLinkedInJobContent(maxWaitMs = 6500) {
   // genuine no-description listings still get scored.
   const descDeadline = start + Math.round(maxWaitMs * 0.8);
   while (Date.now() - start < maxWaitMs) {
-    if (descSelectors.some(s => document.querySelector(s))) return true;
+    const hasDesc = descSelectors.some(s => document.querySelector(s));
+    const hasAge = readLinkedInDaysOpen().days != null;
+    // Prefer both description AND a parsed top-card age (Baton/First Point
+    // soak scored 6 because we ran before "5 months ago" was in the DOM).
+    if (hasDesc && hasAge) return true;
+    if (hasDesc && Date.now() - start > 1200 && hasAge) return true;
     if (Date.now() > descDeadline && pageReadySelectors.some(s => document.querySelector(s))) return true;
     await new Promise(r => setTimeout(r, 180));
   }
@@ -993,19 +1063,31 @@ async function processCurrentListing() {
     return;
   }
 
-  const listing = parseLinkedInListing();
+  let listing = parseLinkedInListing();
   if (!listing.title || !listing.companyName) {
     console.log('[SkipThisJob] Could not parse listing — selectors may need updating');
     isProcessing = false;
     return;
   }
 
-  console.log('[SkipThisJob] Scored:', listing.title, '@', listing.companyName);
+  // Top-card age often paints after the description. Retry so Baton-like
+  // "5 months ago" cannot score as a 6 with daysOpen still null.
+  if (listing.daysOpen == null) {
+    for (let i = 0; i < 4; i++) {
+      await new Promise(r => setTimeout(r, 350));
+      const again = parseLinkedInListing();
+      if (again.title) listing = again;
+      if (listing.daysOpen != null) break;
+    }
+  }
+
+  console.log('[SkipThisJob] Scored:', listing.title, '@', listing.companyName, 'daysOpen=', listing.daysOpen);
 
   // Compute the pre-blend heuristic up front so it can be persisted server
   // side (powers the employer leaderboard). Pre-blend on purpose: the
   // blended score depends on the backend score → feedback loop if stored.
   const localScore = scoreLocally(listing);
+  stampListBadgeForCurrentJob(listing, localScore);
 
   // Store current listing data for reliable Apply tracking (0.1.8)
   currentListingData = {
@@ -1046,6 +1128,7 @@ async function processCurrentListing() {
     ? STJ.publishActiveListing(currentListingData, initialBlend, 'linkedin')
     : null;
   injectOverlay(localScore, null, listing);
+  stampListBadgeForCurrentJob(listing, initialBlend);
 
   const backendData = await fetchEmployerScore(listing.companyName, {
     platform: 'linkedin',
@@ -1057,6 +1140,7 @@ async function processCurrentListing() {
       ? STJ.publishActiveListing(currentListingData, blended, 'linkedin')
       : lastPublishedScore;
     injectOverlay(localScore, backendData, listing);
+    stampListBadgeForCurrentJob(listing, blended);
   }
 
   isProcessing = false;
@@ -1107,14 +1191,19 @@ function startLinkedInListBadges() {
       const companyEl = card.querySelector(
         '.job-card-container__primary-description, .artdeco-entity-lockup__subtitle, .job-card-container__company-name'
       );
-      const dateEl = card.querySelector('time, .job-card-container__listed-time, .job-card-list__footer-wrapper');
-      const text = (card.innerText || '').toLowerCase();
+      const dateEl = card.querySelector(
+        'time, .job-card-container__listed-time, .job-card-list__footer-wrapper, .tvm__text'
+      );
+      const text = (card.innerText || card.textContent || '').toLowerCase();
+      const parseAge = STJ.parseLinkedInPostedAge || STJ.parseRelativeDays;
       return {
         title,
         companyName: companyEl ? companyEl.textContent.trim() : null,
-        daysOpen: STJ.daysOpenFromCard
-          ? STJ.daysOpenFromCard(card, dateEl, text)
-          : (STJ.parseRelativeDays ? STJ.parseRelativeDays(dateEl ? dateEl.textContent : text) : null),
+        daysOpen: parseAge && parseAge(text) != null
+          ? parseAge(text)
+          : (STJ.daysOpenFromCard
+            ? STJ.daysOpenFromCard(card, dateEl, text)
+            : null),
         isRepost: /reposted/.test(text),
         salaryListed: /\$\d/.test(text) ? true : undefined,
         applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,

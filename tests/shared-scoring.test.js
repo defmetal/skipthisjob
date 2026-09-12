@@ -127,6 +127,53 @@ test('parseRelativeDays reads LinkedIn compact month labels', () => {
   assert.equal(shared.parseRelativeDays('about 2 months ago'), 60);
 });
 
+test('LinkedIn live header strings become daysOpen that hit age floors', () => {
+  const batonHeader = 'San Francisco, CA · 5 months ago · Over 100 applicants';
+  const firstPointHeader = 'Cranston, RI · 3 months ago · Over 100 applicants';
+  const titanHeader = 'Torrance, CA · 1 day ago · Over 100 applicants';
+  const nbspHeader = 'San Francisco, CA · 5\u00a0months\u00a0ago · Over 100 applicants';
+  const polluted = [
+    'Senior Full-Stack Engineer',
+    'Baton AI',
+    'San Francisco, CA · 5 months ago · Over 100 applicants',
+    'Easy Apply',
+    'Scott Perry · 3d · Software Engineering Manager',
+    'Viewed 2 hours ago',
+  ].join('\n');
+
+  assert.equal(shared.parseLinkedInPostedAge(batonHeader), 150);
+  assert.equal(shared.parseLinkedInPostedAge(firstPointHeader), 90);
+  assert.equal(shared.parseLinkedInPostedAge(titanHeader), 1);
+  assert.equal(shared.parseLinkedInPostedAge(nbspHeader), 150);
+  assert.equal(shared.parseRelativeDays(polluted), 150, 'months must beat hiring-team 3d / hours ago');
+
+  const baton = shared.scoreListingSignals({
+    title: 'Senior Full-Stack Engineer',
+    daysOpen: shared.parseLinkedInPostedAge(batonHeader),
+    easyApply: true,
+    salaryListed: false,
+    description: 'A long specific JD about React and Node on AWS. Reports to the CTO. Team of 6.',
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(baton.score >= 88, 'Baton-like 5 months must hit 120d floor, got ' + baton.score);
+  assert.equal(baton.label, 'very_high');
+
+  const firstPoint = shared.scoreListingSignals({
+    title: 'Software Engineer / Analyst',
+    daysOpen: shared.parseLinkedInPostedAge(firstPointHeader),
+    salaryListed: false,
+    description: 'A long specific JD about React and Node on AWS. Reports to the CTO. Team of 6.',
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(firstPoint.score >= 75, 'First Point-like 3 months must hit 90d floor, got ' + firstPoint.score);
+
+  const badge = shared.scoreListPreview({
+    title: 'Senior Full-Stack Engineer',
+    daysOpen: shared.parseLinkedInPostedAge(batonHeader),
+    easyApply: true,
+  });
+  assert.ok(badge.score >= 88, 'list badge for 5 months cannot stay 18, got ' + badge.score);
+  assert.notEqual(badge.score, 18);
+});
+
 test('age floors: 60→50, 90→75, 120→88 (harsh-biased high end)', () => {
   assert.equal(shared.ageFloorForDays(59), 0);
   assert.equal(shared.ageFloorForDays(60), 50);
@@ -227,7 +274,7 @@ test('engagement credit is capped on 60–120+ day listings', () => {
   assert.equal(mid.score, 68);
 });
 
-test('detailed description credit is only -1 and cannot beat an age floor', () => {
+test('detailed description does not discount and cannot beat an age floor', () => {
   const signals = [];
   const result = shared.applyDescriptionQuality(20, signals, 0.05);
   assert.equal(result.score, 20, 'detailed JD must not discount under 0.2.2 bias');
