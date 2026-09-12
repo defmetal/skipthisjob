@@ -112,10 +112,323 @@ test('Indeed combo penalties do not stack when engagementSignals has actively_re
   assert.equal(score, 42, 'reviewing listings must not eat stale/no-review combo penalties');
 });
 
+test('list badge memory keeps a detail score when a rescan has null age', () => {
+  shared.clearListBadgeMemory();
+  const detail = shared.scoreListingSignals({
+    title: 'Senior Full-Stack Engineer',
+    daysOpen: 150,
+    easyApply: true,
+    salaryListed: false,
+  }, { platform: 'linkedin' });
+  assert.ok(detail.score >= 88);
+  shared.rememberListBadgeScore('baton-job', detail, { source: 'detail', daysOpen: 150 });
+
+  const weakPreview = shared.scoreListPreview({
+    title: 'Senior Full-Stack Engineer',
+    // Promoted card: no visible date
+  });
+  assert.ok(weakPreview.score < 20, 'no-age preview should be low, got ' + weakPreview.score);
+
+  const resolved = shared.resolveListBadge(
+    weakPreview,
+    { title: 'Senior Full-Stack Engineer', daysOpen: null },
+    shared.lookupListBadgeScore('baton-job')
+  );
+  assert.equal(resolved.kept, true);
+  assert.equal(resolved.result.score, detail.score);
+  assert.ok(resolved.result.score >= 88);
+  assert.notEqual(resolved.result.score, 0);
+
+  const solid = shared.scoreListPreview({
+    title: 'Senior Full-Stack Engineer',
+    daysOpen: 150,
+    easyApply: true,
+  });
+  const fromSolid = shared.resolveListBadge(
+    solid,
+    { title: 'Senior Full-Stack Engineer', daysOpen: 150 },
+    shared.lookupListBadgeScore('baton-job')
+  );
+  assert.ok(fromSolid.result.score >= 88);
+  shared.clearListBadgeMemory();
+});
+
 test('scoreListPreview stays conservative without description penalties', () => {
   const fresh = shared.scoreListPreview({ title: 'Engineer', daysOpen: 1, salaryListed: true });
   const stale = shared.scoreListPreview({ title: 'Engineer', daysOpen: 45, isRepost: true, salaryListed: false });
   assert.ok(fresh.score < 30);
   assert.ok(stale.score > fresh.score);
   assert.ok(stale.score < 90, 'list preview must not stack full-detail missing-field penalties');
+});
+
+test('parseRelativeDays reads LinkedIn compact month labels', () => {
+  assert.equal(shared.parseRelativeDays('3mo ago'), 90);
+  assert.equal(shared.parseRelativeDays('Posted 5 mo ago'), 150);
+  assert.equal(shared.parseRelativeDays('3 months ago'), 90);
+  assert.equal(shared.parseRelativeDays('about 2 months ago'), 60);
+});
+
+test('LinkedIn live header strings become daysOpen that hit age floors', () => {
+  const batonHeader = 'San Francisco, CA · 5 months ago · Over 100 applicants';
+  const firstPointHeader = 'Cranston, RI · 3 months ago · Over 100 applicants';
+  const titanHeader = 'Torrance, CA · 1 day ago · Over 100 applicants';
+  const nbspHeader = 'San Francisco, CA · 5\u00a0months\u00a0ago · Over 100 applicants';
+  const polluted = [
+    'Senior Full-Stack Engineer',
+    'Baton AI',
+    'San Francisco, CA · 5 months ago · Over 100 applicants',
+    'Easy Apply',
+    'Scott Perry · 3d · Software Engineering Manager',
+    'Viewed 2 hours ago',
+  ].join('\n');
+
+  assert.equal(shared.parseLinkedInPostedAge(batonHeader), 150);
+  assert.equal(shared.parseLinkedInPostedAge(firstPointHeader), 90);
+  assert.equal(shared.parseLinkedInPostedAge(titanHeader), 1);
+  assert.equal(shared.parseLinkedInPostedAge(nbspHeader), 150);
+  assert.equal(shared.parseRelativeDays(polluted), 150, 'months must beat hiring-team 3d / hours ago');
+
+  const baton = shared.scoreListingSignals({
+    title: 'Senior Full-Stack Engineer',
+    daysOpen: shared.parseLinkedInPostedAge(batonHeader),
+    easyApply: true,
+    salaryListed: false,
+    description: 'A long specific JD about React and Node on AWS. Reports to the CTO. Team of 6.',
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(baton.score >= 88, 'Baton-like 5 months must hit 120d floor, got ' + baton.score);
+  assert.equal(baton.label, 'very_high');
+
+  const firstPoint = shared.scoreListingSignals({
+    title: 'Software Engineer / Analyst',
+    daysOpen: shared.parseLinkedInPostedAge(firstPointHeader),
+    salaryListed: false,
+    description: 'A long specific JD about React and Node on AWS. Reports to the CTO. Team of 6.',
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(firstPoint.score >= 75, 'First Point-like 3 months must hit 90d floor, got ' + firstPoint.score);
+
+  const badge = shared.scoreListPreview({
+    title: 'Senior Full-Stack Engineer',
+    daysOpen: shared.parseLinkedInPostedAge(batonHeader),
+    easyApply: true,
+  });
+  assert.ok(badge.score >= 88, 'list badge for 5 months cannot stay 18, got ' + badge.score);
+  assert.notEqual(badge.score, 18);
+});
+
+test('age floors: 60→50, 90→75, 120→88 (harsh-biased high end)', () => {
+  assert.equal(shared.ageFloorForDays(59), 0);
+  assert.equal(shared.ageFloorForDays(60), 50);
+  assert.equal(shared.ageFloorForDays(90), 75);
+  assert.equal(shared.ageFloorForDays(120), 88);
+  assert.equal(shared.ageFloorForDays(150), 88);
+});
+
+test('age floors hold after detailed description + actively reviewing', () => {
+  const specific = [
+    'Build React and Node services on AWS. Reports to the VP of Engineering.',
+    'Team of 8. Python, SQL, 5 years. Compensation $140,000.',
+    'You will own features end to end, review PRs, and participate in on-call.',
+  ].join(' ');
+
+  const hilton = shared.scoreListingSignals({
+    title: 'Software Engineer Android',
+    daysOpen: 150,
+    engagementSignals: ['actively_reviewing'],
+    salaryListed: false,
+    description: specific,
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(hilton.score >= 88, '5-month listing must not fall below 88, got ' + hilton.score);
+  assert.equal(hilton.label, 'very_high');
+
+  const popular = shared.scoreListingSignals({
+    title: 'Shopify Web Developer',
+    daysOpen: 90,
+    applicantCount: 100,
+    easyApply: true,
+    salaryListed: false,
+    hiringContactVisible: false,
+    description: specific,
+  }, {
+    platform: 'linkedin',
+    vagueness: 0.1,
+    afterShared(score, signals) {
+      score += 10;
+      signals.push('No hiring contact — no one to follow up with');
+      return { score, signals };
+    },
+  });
+  assert.ok(popular.score >= 85, '3-month Easy Apply + 100 apps must feel costly, got ' + popular.score);
+  assert.equal(popular.label, 'very_high');
+
+  const hum = shared.scoreListingSignals({
+    title: 'Full Stack Engineer',
+    daysOpen: 60,
+    applicantCount: 100,
+    salaryListed: false,
+    description: specific,
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(hum.score >= 50, '2-month + 100 apps must be ≥50, got ' + hum.score);
+  assert.ok(hum.score >= 55, 'crowded 60-day listing should be costly to ignore, got ' + hum.score);
+
+  const mentium = shared.scoreListingSignals({
+    title: 'Lead Software Engineer',
+    daysOpen: 60,
+    engagementSignals: ['actively_reviewing'],
+    salaryListed: false,
+    description: specific,
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(mentium.score >= 50);
+  assert.ok(mentium.score < 75, '2-month reviewing role should not jump to 90d floor, got ' + mentium.score);
+});
+
+test('Easy Apply + 100 apps is not swallowed by the age floor', () => {
+  const bare = shared.scoreListPreview({ title: 'Engineer', daysOpen: 90 });
+  const crowded = shared.scoreListPreview({
+    title: 'Engineer',
+    daysOpen: 90,
+    easyApply: true,
+    applicantCount: 100,
+  });
+  assert.ok(bare.score >= 75);
+  assert.ok(crowded.score > bare.score, 'crowded Easy Apply 90d must beat bare 90d (' + crowded.score + ' vs ' + bare.score + ')');
+  assert.equal(crowded.label, 'very_high');
+});
+
+test('engagement credit is capped on 60–120+ day listings', () => {
+  assert.equal(shared.engagementCreditForAge(21), 8);
+  assert.equal(shared.engagementCreditForAge(60), 3);
+  assert.equal(shared.engagementCreditForAge(90), 2);
+  assert.equal(shared.engagementCreditForAge(120), 0);
+
+  const old = shared.applyEngagementScoring(
+    { engagementSignals: ['actively_reviewing'], daysOpen: 150 },
+    50,
+    []
+  );
+  assert.equal(old.score, 50, '120+ day reviewing badge must not discount');
+
+  const mid = shared.applyEngagementScoring(
+    { engagementSignals: ['actively_reviewing'], daysOpen: 90 },
+    70,
+    []
+  );
+  assert.equal(mid.score, 68);
+});
+
+test('detailed description does not discount and cannot beat an age floor', () => {
+  const signals = [];
+  const result = shared.applyDescriptionQuality(20, signals, 0.05);
+  assert.equal(result.score, 20, 'detailed JD must not discount under 0.2.2 bias');
+  assert.ok(signals.some(s => /Detailed, specific/i.test(s)));
+
+  const floored = shared.scoreListingSignals({
+    title: 'Engineer',
+    daysOpen: 120,
+    description: 'React Node AWS. Reports to the director. Team of 6. $160,000. 5 years.',
+    engagementSignals: ['actively_reviewing'],
+    salaryListed: true,
+  }, { platform: 'linkedin', vagueness: 0.05 });
+  assert.ok(floored.score >= 88);
+});
+
+test('list badge and detail stay in the same band for the same card', () => {
+  const specific = 'React Node AWS. Reports to engineering. Team of 4. $120,000. 4 years.';
+
+  const freshCard = { title: 'Engineer', daysOpen: 3, salaryListed: true };
+  const freshPreview = shared.scoreListPreview(freshCard);
+  const freshDetail = shared.scoreListingSignals({
+    ...freshCard,
+    description: specific,
+    hiringContactVisible: true,
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(freshPreview.score < 25);
+  assert.ok(freshDetail.score < 25);
+  assert.ok(
+    Math.abs(freshPreview.score - freshDetail.score) <= 15,
+    'fresh badge ' + freshPreview.score + ' vs detail ' + freshDetail.score
+  );
+
+  const oldCard = { title: 'Engineer', daysOpen: 90 };
+  const oldPreview = shared.scoreListPreview(oldCard);
+  const oldDetail = shared.scoreListingSignals({
+    ...oldCard,
+    description: specific,
+    engagementSignals: ['actively_reviewing'],
+    salaryListed: false,
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(oldPreview.score >= 75);
+  assert.ok(oldDetail.score >= 75);
+  assert.ok(
+    Math.abs(oldPreview.score - oldDetail.score) <= 20,
+    'stale badge ' + oldPreview.score + ' vs detail ' + oldDetail.score
+  );
+});
+
+test('responses managed off LinkedIn is a consistent +10', () => {
+  const a = shared.scoreListingSignals({
+    title: 'Senior Software Engineer',
+    daysOpen: 30,
+    responseManagedOffsite: true,
+    salaryListed: false,
+  }, { platform: 'linkedin' });
+  const b = shared.scoreListingSignals({
+    title: 'Senior Software Engineer',
+    daysOpen: 30,
+    responseManagedOffsite: true,
+    salaryListed: false,
+  }, { platform: 'linkedin' });
+  assert.equal(a.score, b.score);
+  assert.ok(a.signals.some(s => /managed off LinkedIn/i.test(s)));
+  assert.ok(a.score >= 30);
+});
+
+test('broken template text is a low-effort risk chip', () => {
+  assert.equal(shared.hasBrokenTemplate('Join {:companyName} as an engineer'), true);
+  assert.equal(shared.hasBrokenTemplate('We are a real company with a real JD'), false);
+  const scored = shared.scoreListingSignals({
+    title: 'Engineer',
+    daysOpen: 10,
+    description: 'Work at {:companyName} in {{location}}',
+    salaryListed: true,
+  }, { platform: 'linkedin' });
+  assert.ok(scored.signals.some(s => /placeholder/i.test(s)));
+});
+
+test('Indeed shared path keeps a typical 7-day role low and still floors 60d', () => {
+  const specific = 'C++ Python Linux real-time systems. Reports to the engineering director. Team of 6. $120,000.';
+  const fresh = shared.scoreListingSignals({
+    title: 'Staff Engineer',
+    daysOpen: 7,
+    salaryListed: true,
+    description: specific,
+    employerResponsive: true,
+  }, {
+    platform: 'indeed',
+    vagueness: 0.1,
+    afterShared(score, signals) {
+      score -= 5;
+      signals.push('✓ Employer responds quickly');
+      return { score, signals };
+    },
+  });
+  assert.ok(fresh.score < 30, 'Indeed 7-day typical scored ' + fresh.score);
+
+  const stale = shared.scoreListingSignals({
+    title: 'Staff Engineer',
+    daysOpen: 60,
+    salaryListed: false,
+    description: specific,
+  }, { platform: 'indeed', vagueness: 0.1 });
+  assert.ok(stale.score >= 50, 'Indeed 60-day must honor age floor, got ' + stale.score);
+});
+
+test('fresh 3-day role stays Worth Applying', () => {
+  const fresh = shared.scoreListingSignals({
+    title: 'Engineer',
+    daysOpen: 3,
+    salaryListed: true,
+    description: 'React Node AWS. Reports to the director. Team of 5. $130,000. 3 years.',
+  }, { platform: 'linkedin', vagueness: 0.1 });
+  assert.ok(fresh.score < 25, 'fresh role scored ' + fresh.score);
+  assert.equal(fresh.label, 'low');
 });

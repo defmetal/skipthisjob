@@ -65,6 +65,25 @@
   }
 
   /**
+   * “Actively reviewing” on LinkedIn can linger for months. Full -8 is
+   * fine on fresh posts; on 60–120+ day listings it must not erase age
+   * floors (Hilton / Baton calibration).
+   *
+   *   <60d   −8
+   *   60–89  −3
+   *   90–119 −2
+   *   ≥120   −0
+   */
+  function engagementCreditForAge(daysOpen) {
+    if (daysOpen == null || Number.isNaN(Number(daysOpen))) return 8;
+    const days = Number(daysOpen);
+    if (days >= 120) return 0;
+    if (days >= 90) return 2;
+    if (days >= 60) return 3;
+    return 8;
+  }
+
+  /**
    * Apply the shared engagement credit / stale-no-review penalty.
    * Mutates `signals` and returns the updated numeric score plus a boolean
    * the Indeed combo penalties can reuse.
@@ -72,10 +91,18 @@
   function applyEngagementScoring(listing, score, signals) {
     const reviewing = isActivelyReviewing(listing);
     const out = Array.isArray(signals) ? signals : [];
+    const days = listing && listing.daysOpen;
 
     if (reviewing) {
-      score -= 8;
-      out.push('✓ Employer actively reviewing applications');
+      const credit = engagementCreditForAge(days);
+      score -= credit;
+      if (credit <= 0) {
+        out.push('“Actively reviewing” on a 120+ day listing — not treated as fresh intent');
+      } else if (days != null && Number(days) >= 60) {
+        out.push('✓ Employer actively reviewing (capped — badge can linger on old posts)');
+      } else {
+        out.push('✓ Employer actively reviewing applications');
+      }
     } else if (listing && listing.daysOpen != null && listing.daysOpen >= 14) {
       score += 10;
       out.push('No active review signals on older listing');
@@ -111,70 +138,422 @@
     return 'low';
   }
 
-  /**
-   * Lightweight SERP-card score. Full scoreLocally() treats missing
-   * description / contact as red flags; cards do not have those fields,
-   * so we only score signals the card actually shows.
-   */
-  function scoreListPreview(card) {
-    let score = 18;
-    const signals = [];
-    const days = card && card.daysOpen != null ? Number(card.daysOpen) : null;
+  // --- Shared listing heuristic (0.2.2) ---------------------------------
+  // LinkedIn detail, Indeed detail, and SERP badges share this path so a
+  // 90-day card cannot badge 16–18 while the overlay says 2.
+  //
+  // Product bias (Austin, lock for 0.2.2): prefer harsher over more
+  // lenient. False positives (flagging a maybe) beat false negatives
+  // (calling a stale listing “Worth Applying”). Do not soften floors
+  // to protect slow-hiring employers. Apply energy is scarce.
+  //
+  // Age floors (applied AFTER discounts, and again after backend blend).
+  // High end of the suggested 40/65/80 ranges — 90–150 day Easy Apply
+  // posts still looked soft at 65/80 vs harsh ~80/~90:
+  //   ≥60 days  → minimum 50  (Proceed with Caution — not Worth Applying)
+  //   ≥90 days  → minimum 75  (Skip This Job)
+  //   ≥120 days → minimum 88  (Skip This Job, Hilton/Baton band)
+  // Easy Apply + 100+ applicants are applied AFTER the floor so they
+  // cannot be swallowed (a crowded 90-day card must feel worse than a
+  // bare 90-day card).
 
-    if (days != null && !Number.isNaN(days)) {
-      if (days <= 2) {
-        score -= 6;
-        signals.push('Posted in last 48 hours');
-      } else if (days <= 7) {
-        score += 4;
-      } else if (days <= 14) {
+  const AGE_FLOORS = [
+    { minDays: 120, floor: 88 },
+    { minDays: 90, floor: 75 },
+    { minDays: 60, floor: 50 },
+  ];
+
+  function ageFloorForDays(daysOpen) {
+    if (daysOpen == null || Number.isNaN(Number(daysOpen))) return 0;
+    const days = Number(daysOpen);
+    for (let i = 0; i < AGE_FLOORS.length; i++) {
+      if (days >= AGE_FLOORS[i].minDays) return AGE_FLOORS[i].floor;
+    }
+    return 0;
+  }
+
+  function enforceAgeFloor(score, daysOpen, signals) {
+    const floor = ageFloorForDays(daysOpen);
+    const out = Array.isArray(signals) ? signals : [];
+    if (floor > 0 && score < floor) {
+      out.push('Age floor: open ' + daysOpen + ' days → minimum ghost risk ' + floor);
+      return { score: floor, signals: out, applied: true, floor: floor };
+    }
+    return { score: score, signals: out, applied: false, floor: floor };
+  }
+
+  /**
+   * Additive age points. Caps around 25 at 90d (matches the documented
+   * 0.1.x comment). Recency credit is negative in the first 48 hours.
+   */
+  function ageContribution(daysOpen, opts) {
+    const options = opts || {};
+    let delta = 0;
+    const signals = [];
+    if (daysOpen == null || Number.isNaN(Number(daysOpen))) {
+      if (options.unknownPenalty) {
+        delta = options.unknownPenalty;
+        signals.push('Posting age unknown');
+      }
+      return { delta: delta, signals: signals };
+    }
+    const days = Number(daysOpen);
+    const recency = options.recencyCredit != null ? options.recencyCredit : 10;
+
+    if (days <= 2) {
+      delta = -recency;
+      signals.push('Posted in last 48 hours — highest visibility window');
+    } else if (days <= 7) {
+      delta = Math.round((days - 2) * 0.8);
+    } else if (days <= 14) {
+      delta = 4 + Math.round((days - 7) * (4 / 7));
+    } else if (days <= 30) {
+      delta = 8 + Math.round((days - 14) * (7 / 16));
+    } else if (days <= 60) {
+      delta = 15 + Math.round((days - 30) * (5 / 30));
+    } else if (days <= 90) {
+      delta = 20 + Math.round((days - 60) * (5 / 30));
+    } else {
+      delta = 25;
+    }
+
+    if (options.isHighTurnover) delta = Math.round(delta * 0.4);
+    if (days > 2) signals.push('Open ' + days + ' days');
+    return { delta: delta, signals: signals };
+  }
+
+  function applicantContribution(count, isHighTurnover) {
+    if (count == null) return { delta: 0, signal: null };
+    let delta = 0;
+    let signal = null;
+    if (count >= 500) {
+      delta = 15;
+      signal = count + '+ applicants — virtually zero chance of being seen';
+    } else if (count >= 200) {
+      delta = 10;
+      signal = count + '+ applicants — your resume is in a large pile';
+    } else if (count >= 100) {
+      delta = 8;
+      signal = count + '+ applicants — crowded listing';
+    }
+    if (isHighTurnover) delta = Math.round(delta * 0.6);
+    return { delta: delta, signal: signal };
+  }
+
+  function hasBrokenTemplate(text) {
+    if (!text || typeof text !== 'string') return false;
+    return /\{:[a-zA-Z_]\w*\}|\{\{[a-zA-Z_]\w*\}\}|\{(?:companyName|jobTitle|company|location)\}|\[\s*(?:company(?:\s*name)?|job\s*title|insert\s+\w+)\s*\]/i.test(text);
+  }
+
+  function hasWorkArrangementConflict(listing) {
+    if (!listing) return false;
+    if (listing.workArrangementConflict === true) return true;
+    const arr = listing.workArrangement;
+    const text = String(listing.description || '').toLowerCase();
+    if (!arr || !text) return false;
+    const descRemote = /fully remote|100%\s*remote|remote[ -]only|work from home/.test(text);
+    const descOnsite = /on-?site only|in-?office only|must (be|work) on-?site/.test(text);
+    const descHybrid = /\bhybrid\b/.test(text);
+    if (arr === 'onsite' && descRemote) return true;
+    if (arr === 'remote' && descOnsite) return true;
+    if (arr === 'hybrid' && descOnsite && descRemote) return true;
+    if (arr === 'onsite' && descHybrid && /remote/.test(text)) return true;
+    return false;
+  }
+
+  /**
+   * Description quality. Vague copy still adds risk. A specific JD is
+   * only −1 (was −3/−4) so it cannot dominate an old listing to 0–12.
+   */
+  function applyDescriptionQuality(score, signals, vagueness, opts) {
+    const options = opts || {};
+    const out = Array.isArray(signals) ? signals : [];
+    if (vagueness == null || Number.isNaN(Number(vagueness))) {
+      return { score: score, signals: out };
+    }
+    if (vagueness >= 0.65) {
+      score += options.vagueHigh != null ? options.vagueHigh : 12;
+      out.push('Vague or generic description');
+    } else if (vagueness >= 0.45) {
+      score += options.vagueMid != null ? options.vagueMid : 7;
+      out.push('Some generic language in description');
+    } else if (vagueness <= 0.15) {
+      // 0.2.2 bias: a specific JD is informational only — never a discount.
+      const credit = options.detailedCredit != null ? options.detailedCredit : 0;
+      score -= credit;
+      out.push('Detailed, specific job description');
+    }
+    return { score: score, signals: out };
+  }
+
+  /**
+   * After-floor tax so old + Easy Apply + high applicants stay costly
+   * to ignore instead of collapsing onto the same age floor.
+   */
+  function applyLowIntentTax(score, listing, signals) {
+    const row = listing || {};
+    const days = row.daysOpen;
+    const out = Array.isArray(signals) ? signals : [];
+    if (days == null || Number.isNaN(Number(days))) {
+      return { score: score, signals: out };
+    }
+    // Idempotent — blendGhostScore may re-run this after a backend pull-down.
+    const alreadyEasy = out.some(function (s) { return /Easy Apply on a \d+\+ day/.test(s); });
+    const alreadyCrowd = out.some(function (s) { return /with 100\+ applicants/.test(s); });
+    if (row.easyApply && !alreadyEasy) {
+      if (days >= 120) {
+        score += 12;
+        out.push('Easy Apply on a 120+ day listing — apply energy is almost certainly wasted');
+      } else if (days >= 90) {
         score += 10;
-        signals.push('Open ' + days + ' days');
-      } else if (days <= 30) {
-        score += 22;
-        signals.push('Open ' + days + ' days');
-      } else {
-        score += 34;
-        signals.push('Open ' + days + ' days');
+        out.push('Easy Apply on a 90+ day listing — low-intent signal');
+      } else if (days >= 60) {
+        score += 8;
+        out.push('Easy Apply on a 60+ day listing — low-intent signal');
+      }
+    }
+    if (row.applicantCount >= 100 && !alreadyCrowd) {
+      if (days >= 120) {
+        score += 12;
+        out.push('120+ days old with 100+ applicants — crowded dead listing');
+      } else if (days >= 90) {
+        score += 10;
+        out.push('90+ days old with 100+ applicants — crowded stale listing');
+      } else if (days >= 60) {
+        score += 8;
+        out.push('60+ days old with 100+ applicants — low chance of being seen');
+      }
+    }
+    return { score: score, signals: out };
+  }
+
+  function finalizeHeuristicScore(score, listing, signals, extras) {
+    const extra = extras || {};
+    const floored = enforceAgeFloor(score, listing && listing.daysOpen, signals);
+    const taxed = applyLowIntentTax(floored.score, listing, floored.signals);
+    score = Math.min(100, Math.max(0, Math.round(taxed.score)));
+    return {
+      score: score,
+      label: labelForScore(score),
+      signals: taxed.signals,
+      isHighTurnover: !!extra.isHighTurnover,
+      daysOpen: listing && listing.daysOpen,
+      easyApply: !!listing && !!listing.easyApply,
+      applicantCount: listing && listing.applicantCount,
+    };
+  }
+
+  /**
+   * Shared listing heuristic used by LinkedIn, Indeed, and SERP badges.
+   * `preview: true` skips missing-field penalties cards cannot observe
+   * (description / hiring contact) so badges stay in the same band as
+   * detail for the signals they share (age, repost, applicants, salary).
+   */
+  function scoreListingSignals(listing, opts) {
+    const options = opts || {};
+    const row = listing || {};
+    const preview = options.preview === true;
+    const platform = options.platform || row.platform || 'linkedin';
+    const isHighTurnover = options.isHighTurnover === true;
+    const signals = [];
+    let score = 0;
+
+    if (!preview && platform === 'indeed') {
+      score += 10;
+    }
+
+    const age = ageContribution(row.daysOpen, {
+      unknownPenalty: !preview && platform === 'indeed' ? 15 : 0,
+      recencyCredit: platform === 'indeed' ? 8 : (preview ? 8 : 10),
+      isHighTurnover: isHighTurnover,
+    });
+    score += age.delta;
+    for (let i = 0; i < age.signals.length; i++) signals.push(age.signals[i]);
+
+    if (row.isRepost) {
+      let repost = 24;
+      if (isHighTurnover) repost = Math.round(repost * 0.4);
+      score += repost;
+      signals.push('Recycled listing — marked as reposted');
+    }
+
+    const apps = applicantContribution(row.applicantCount, isHighTurnover);
+    if (apps.delta) {
+      score += apps.delta;
+      signals.push(apps.signal);
+    }
+
+    if (preview) {
+      if (row.salaryListed === false) score += 4;
+      else if (row.salaryListed === true) score -= 2;
+    } else if (!row.salaryListed) {
+      score += 5;
+      signals.push('No salary listed');
+    }
+
+    if (row.isThirdParty) {
+      score += preview ? 10 : 12;
+      signals.push(preview ? 'Staffing / aggregator' : 'Middleman — staffing agency or job board');
+    }
+
+    if (!preview && platform === 'linkedin') {
+      if (!row.description || row.description.length < 200) {
+        score += 12;
+        signals.push('No or very weak job description');
+      } else if (row.description.length < 500) {
+        score += 6;
+        signals.push('Short or limited job description');
       }
     }
 
-    if (card && card.isRepost) {
-      score += 16;
-      signals.push('Reposted');
-    }
-    if (card && card.salaryListed === false) {
-      score += 4;
-    } else if (card && card.salaryListed === true) {
-      score -= 2;
-    }
-    if (card && card.isThirdParty) {
-      score += 10;
-      signals.push('Staffing / aggregator');
+    if (!preview && platform === 'indeed' && !row.description) {
+      score += 7;
+      signals.push('No description available');
     }
 
-    score = Math.min(100, Math.max(0, Math.round(score)));
-    const label = labelForScore(score);
-    return { score, label, signals, isHighTurnover: false };
+    if (!preview && row.description && options.vagueness != null) {
+      const desc = applyDescriptionQuality(score, signals, options.vagueness, {
+        vagueHigh: platform === 'indeed' ? 11 : 12,
+        vagueMid: platform === 'indeed' ? 6 : 7,
+        detailedCredit: 1,
+      });
+      score = desc.score;
+    }
+
+    if (hasBrokenTemplate(row.description) || hasBrokenTemplate(row.title)) {
+      score += 10;
+      signals.push('Broken template / placeholder text — low-effort listing');
+    }
+
+    if (row.responseManagedOffsite) {
+      score += 10;
+      signals.push('Responses managed off LinkedIn — less accountability');
+    }
+
+    if (hasWorkArrangementConflict(row)) {
+      score += 8;
+      signals.push('Work arrangement contradiction (e.g. remote vs on-site)');
+    }
+
+    const engagement = applyEngagementScoring(row, score, signals);
+    score = engagement.score;
+
+    if (typeof options.afterShared === 'function') {
+      const extra = options.afterShared(score, signals, {
+        activelyReviewing: engagement.activelyReviewing,
+        preview: preview,
+      }) || {};
+      if (extra.score != null) score = extra.score;
+    }
+
+    return finalizeHeuristicScore(score, row, signals, { isHighTurnover: isHighTurnover });
   }
 
+  /**
+   * SERP-card score. Same age floors / repost / applicant math as detail;
+   * does not invent missing-description or no-contact penalties.
+   */
+  function scoreListPreview(card) {
+    return scoreListingSignals(card || {}, {
+      preview: true,
+      platform: (card && card.platform) || 'preview',
+      isHighTurnover: false,
+    });
+  }
+
+  function normalizeAgeText(text) {
+    return String(text || '')
+      .replace(/[\u00a0\u202f\u2007\u2009\u200a\u2060]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .toLowerCase()
+      .trim();
+  }
+
+  /**
+   * Parse a relative posting age. Months/weeks/days are checked BEFORE
+   * freshness phrases so a LinkedIn detail dump that also contains
+   * "2 hours ago" (sidebar, hiring-team activity) cannot zero out
+   * "5 months ago" in the top card.
+   *
+   * Live 0.2.2 failure: Baton "5 months ago" / First Point "3 months ago"
+   * never became daysOpen, so age floors never ran and the overlay
+   * stayed 6 Worth Applying.
+   */
   function parseRelativeDays(text) {
     if (!text) return null;
-    const t = String(text).toLowerCase().trim();
-    if (/just posted|posted today|moments? ago|active\s+today/.test(t)) return 0;
-    if (/(few |a few )?(hours?|mins?|minutes?) ago/.test(t)) return 0;
-    if (/\btoday\b/.test(t) && t.length < 24) return 0;
-    const months = t.match(/(\d+)\s*months?\s*ago/);
-    if (months) return parseInt(months[1], 10) * 30;
-    // "2w ago", "2 weeks ago", "Posted 3 weeks ago"
-    let m = t.match(/(\d+)\s*w(?:eeks?)?\s*ago/);
+    const t = normalizeAgeText(text);
+    if (!t) return null;
+
+    // LinkedIn header: "San Francisco, CA · 5 months ago · Over 100 applicants"
+    let m = t.match(/(\d+)\s*(?:months?|mos\.?|mo)\s+ago/);
+    if (m) return parseInt(m[1], 10) * 30;
+
+    m = t.match(/(\d+)\s*w(?:ee)?k?s?\.?\s+ago/);
     if (m) return parseInt(m[1], 10) * 7;
-    // "30+ days ago", "5d ago", "Posted 12 days ago"
-    m = t.match(/(\d+)\+?\s*(?:days?|d)\s*ago/);
+
+    m = t.match(/(\d+)\+?\s*(?:days?|d)\s+ago/);
     if (m) return parseInt(m[1], 10);
+
     m = t.match(/active\s+(\d+)\+?\s*(?:days?|d)/);
     if (m) return parseInt(m[1], 10);
+
+    if (/just posted|posted today|moments? ago|active\s+today/.test(t)) return 0;
+    if (/(?:few |a few )?(?:hours?|mins?|minutes?) ago/.test(t)) return 0;
     if (/\byesterday\b/.test(t)) return 1;
+    if (/\btoday\b/.test(t) && t.length < 40) return 0;
+    return null;
+  }
+
+  // Explicit alias for tests / LinkedIn header strings.
+  function parseLinkedInPostedAge(text) {
+    return parseRelativeDays(text);
+  }
+
+  function daysOpenFromIso(iso, nowMs) {
+    if (!iso) return null;
+    const posted = Date.parse(iso);
+    if (Number.isNaN(posted)) return null;
+    const now = nowMs != null ? nowMs : Date.now();
+    const days = Math.round((now - posted) / (1000 * 60 * 60 * 24));
+    if (Number.isNaN(days)) return null;
+    return Math.max(0, days);
+  }
+
+  function parseApplicantCount(text) {
+    if (!text) return null;
+    const m = String(text).match(/(?:over\s+)?(\d[\d,]*)\+?\s*(?:applicants?|people\s+clicked\s+apply)/i);
+    if (!m) return null;
+    const n = parseInt(m[1].replace(/,/g, ''), 10);
+    return Number.isNaN(n) ? null : n;
+  }
+
+  /**
+   * Card age: prefer visible "N months ago" on the whole card (LinkedIn
+   * headers / footers) over a random <time datetime> (hiring-team "3d"
+   * was winning and wiping floors).
+   */
+  function daysOpenFromCard(card, dateEl, fallbackText) {
+    const blob = [
+      fallbackText,
+      dateEl && dateEl.textContent,
+      card && (card.innerText || card.textContent),
+    ].filter(Boolean).join(' · ');
+    const fromText = parseRelativeDays(blob);
+    if (fromText != null) return fromText;
+
+    if (dateEl && dateEl.getAttribute) {
+      const iso = daysOpenFromIso(dateEl.getAttribute('datetime'));
+      if (iso != null) return iso;
+    }
+    if (card && card.querySelectorAll) {
+      const times = card.querySelectorAll('time[datetime], time');
+      for (let i = 0; i < times.length; i++) {
+        const fromTime = parseRelativeDays(times[i].textContent);
+        if (fromTime != null) return fromTime;
+        const iso = daysOpenFromIso(times[i].getAttribute('datetime'));
+        if (iso != null) return iso;
+      }
+    }
     return null;
   }
 
@@ -633,13 +1012,122 @@
 
   function badgeHtml(result) {
     const color = LABEL_COLORS[result.label] || LABEL_COLORS.moderate;
+    const daysAttr = result.daysOpen != null ? String(result.daysOpen) : '';
+    const source = result.source || 'preview';
     return (
       '<span class="stj-list-badge stj-list-badge--' + result.label + '" ' +
+      'data-stj-score="' + result.score + '" data-stj-label="' + result.label + '" ' +
+      'data-stj-days="' + daysAttr + '" data-stj-source="' + source + '" ' +
       'title="Skip This Job preview: ' + result.score + '/100 — ' + (LABEL_TEXT[result.label] || '') + '" ' +
       'style="background:' + color.bg + ';color:' + color.text + ';border:1px solid ' + color.border + ';">' +
       color.icon + ' ' + result.score +
       '</span>'
     );
+  }
+
+  // Detail-visit / solid-preview scores keyed by job id so a later
+  // MutationObserver rescan (Promoted card, no visible date → preview 0)
+  // cannot wipe Baton/First Point badges back to 0.
+  const listBadgeMemory = {};
+
+  function listBadgeKey(card, parsed) {
+    if (parsed && (parsed.platformJobId || parsed.jobId)) {
+      return String(parsed.platformJobId || parsed.jobId);
+    }
+    if (card && card.getAttribute) {
+      const direct = card.getAttribute('data-job-id') || card.getAttribute('data-occludable-job-id') ||
+        card.getAttribute('data-jk');
+      if (direct) return String(direct);
+      const host = card.closest
+        ? (card.closest('[data-job-id]') || card.closest('[data-occludable-job-id]') || card.closest('[data-jk]'))
+        : null;
+      if (host) {
+        return host.getAttribute('data-job-id') ||
+          host.getAttribute('data-occludable-job-id') ||
+          host.getAttribute('data-jk');
+      }
+    }
+    if (parsed && parsed.title) {
+      return normalizeTitle(parsed.title) + '|' + normalizeTitle(parsed.companyName || '');
+    }
+    return null;
+  }
+
+  function rememberListBadgeScore(key, result, meta) {
+    if (!key || !result || result.score == null) return null;
+    const extra = meta || {};
+    const row = {
+      score: result.score,
+      label: result.label || labelForScore(result.score),
+      signals: result.signals || [],
+      daysOpen: extra.daysOpen != null ? extra.daysOpen : result.daysOpen,
+      source: extra.source || result.source || 'preview',
+      isHighTurnover: !!result.isHighTurnover,
+      updatedAt: Date.now(),
+    };
+    listBadgeMemory[String(key)] = row;
+    return row;
+  }
+
+  function lookupListBadgeScore(key) {
+    if (!key) return null;
+    return listBadgeMemory[String(key)] || null;
+  }
+
+  function clearListBadgeMemory() {
+    const keys = Object.keys(listBadgeMemory);
+    for (let i = 0; i < keys.length; i++) delete listBadgeMemory[keys[i]];
+  }
+
+  function readExistingBadge(card) {
+    if (!card || !card.querySelector) return null;
+    const el = card.querySelector('.stj-list-badge');
+    if (!el) return null;
+    const score = Number(el.getAttribute('data-stj-score'));
+    if (Number.isNaN(score)) return null;
+    const daysRaw = el.getAttribute('data-stj-days');
+    const daysOpen = daysRaw === '' || daysRaw == null ? null : Number(daysRaw);
+    return {
+      score: score,
+      label: el.getAttribute('data-stj-label') || labelForScore(score),
+      signals: [],
+      daysOpen: daysOpen != null && !Number.isNaN(daysOpen) ? daysOpen : null,
+      source: el.getAttribute('data-stj-source') || 'preview',
+    };
+  }
+
+  /**
+   * Keep a known badge when the rescan has weaker/null age (Promoted
+   * cards) or would otherwise drop a detail-stamped score to ~0.
+   */
+  function resolveListBadge(preview, parsed, remembered) {
+    const next = preview || { score: 0, label: 'low', signals: [] };
+    if (!remembered || remembered.score == null) {
+      return { result: next, kept: false };
+    }
+    const newDays = parsed && parsed.daysOpen != null && !Number.isNaN(Number(parsed.daysOpen))
+      ? Number(parsed.daysOpen) : null;
+    const oldDays = remembered.daysOpen != null && !Number.isNaN(Number(remembered.daysOpen))
+      ? Number(remembered.daysOpen) : null;
+    const newScore = next.score != null ? next.score : 0;
+    const oldScore = remembered.score;
+    const ageMissing = newDays == null;
+    const keepDetail = remembered.source === 'detail' && newScore < oldScore &&
+      (ageMissing || oldDays == null || newDays === oldDays);
+    if ((ageMissing && oldScore > newScore) || keepDetail) {
+      return {
+        result: {
+          score: remembered.score,
+          label: remembered.label || labelForScore(remembered.score),
+          signals: remembered.signals || next.signals || [],
+          daysOpen: remembered.daysOpen,
+          source: remembered.source || 'remembered',
+          isHighTurnover: !!remembered.isHighTurnover,
+        },
+        kept: true,
+      };
+    }
+    return { result: next, kept: false };
   }
 
   function injectListBadge(card, result, anchor) {
@@ -686,14 +1174,23 @@
           continue;
         }
         if (!parsed || !parsed.title) continue;
-        const result = scoreListPreview(parsed);
+        const preview = scoreListPreview(parsed);
+        const key = listBadgeKey(card, parsed);
+        const remembered = lookupListBadgeScore(key) || readExistingBadge(card);
+        const resolved = resolveListBadge(preview, parsed, remembered);
+        if (key && !resolved.kept) {
+          rememberListBadgeScore(key, resolved.result, {
+            source: 'preview',
+            daysOpen: parsed.daysOpen,
+          });
+        }
         let anchor = null;
         try {
           anchor = options.anchor ? options.anchor(card) : card;
         } catch (e) {
           anchor = card;
         }
-        injectListBadge(card, result, anchor);
+        injectListBadge(card, resolved.result, anchor);
       }
     };
     const schedule = function () {
@@ -730,12 +1227,29 @@
   api.extractLinkedInJobId = extractLinkedInJobId;
   api.hasEngagementSignal = hasEngagementSignal;
   api.isActivelyReviewing = isActivelyReviewing;
+  api.engagementCreditForAge = engagementCreditForAge;
   api.applyEngagementScoring = applyEngagementScoring;
   api.hashDescription = hashDescription;
   api.normalizeTitle = normalizeTitle;
   api.labelForScore = labelForScore;
+  api.AGE_FLOORS = AGE_FLOORS;
+  api.ageFloorForDays = ageFloorForDays;
+  api.enforceAgeFloor = enforceAgeFloor;
+  api.ageContribution = ageContribution;
+  api.applicantContribution = applicantContribution;
+  api.hasBrokenTemplate = hasBrokenTemplate;
+  api.hasWorkArrangementConflict = hasWorkArrangementConflict;
+  api.applyDescriptionQuality = applyDescriptionQuality;
+  api.finalizeHeuristicScore = finalizeHeuristicScore;
+  api.applyLowIntentTax = applyLowIntentTax;
+  api.scoreListingSignals = scoreListingSignals;
   api.scoreListPreview = scoreListPreview;
   api.parseRelativeDays = parseRelativeDays;
+  api.parseLinkedInPostedAge = parseLinkedInPostedAge;
+  api.normalizeAgeText = normalizeAgeText;
+  api.daysOpenFromIso = daysOpenFromIso;
+  api.parseApplicantCount = parseApplicantCount;
+  api.daysOpenFromCard = daysOpenFromCard;
   api.buildTrackPayload = buildTrackPayload;
   api.mergeApplyPayload = mergeApplyPayload;
   api.applyPayloadIsComplete = applyPayloadIsComplete;
@@ -747,6 +1261,12 @@
   api.installPopupBridge = installPopupBridge;
   api.watchListBadges = watchListBadges;
   api.injectListBadge = injectListBadge;
+  api.listBadgeKey = listBadgeKey;
+  api.rememberListBadgeScore = rememberListBadgeScore;
+  api.lookupListBadgeScore = lookupListBadgeScore;
+  api.clearListBadgeMemory = clearListBadgeMemory;
+  api.resolveListBadge = resolveListBadge;
+  api.readExistingBadge = readExistingBadge;
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
