@@ -711,175 +711,81 @@ function detectSeniorityMismatch(title, description) {
 // --- End imported analysis helpers ---
 
 function scoreLocally(listing) {
-  let score = 0;
-  const signals = [];
-  const isHighTurnover = listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title));
+  const isHighTurnover = !!(listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title)));
+  const vagueness = listing.description ? analyzeDescriptionVagueness(listing.description) : null;
+  const seniorityMismatch = !!(listing.seniorityMismatch ||
+    detectSeniorityMismatch(listing.title || '', listing.description || ''));
 
-  // === INDEED PLATFORM BASELINE ===
-  score += 10;
+  if (STJ.scoreListingSignals) {
+    return STJ.scoreListingSignals(listing, {
+      platform: 'indeed',
+      isHighTurnover: isHighTurnover,
+      vagueness: vagueness,
+      afterShared: function (score, signals, ctx) {
+        const activelyReviewing = ctx && ctx.activelyReviewing;
 
-  // === POSTING AGE (0.1.8 curve) ===
-  let agePenalty = 0;
+        if (listing.employerResponsive) {
+          score -= 5;
+          signals.push('✓ Employer responds quickly');
+        } else {
+          score += 8;
+          signals.push('No employer response data');
+        }
 
-  if (listing.daysOpen != null) {
-    if (listing.daysOpen <= 2) {
-      agePenalty = -8;
-      signals.push('Posted in last 48 hours — highest visibility window');
-    } else if (listing.daysOpen <= 7) {
-      agePenalty = (listing.daysOpen - 2) * 2;
-    } else if (listing.daysOpen <= 14) {
-      agePenalty = 10 + (listing.daysOpen - 7) * 3;
-    } else if (listing.daysOpen <= 21) {
-      agePenalty = 31 + (listing.daysOpen - 14) * 4;
-    } else if (listing.daysOpen <= 30) {
-      agePenalty = 59 + (listing.daysOpen - 21) * 5;
-    } else {
-      agePenalty = 104 + (listing.daysOpen - 30) * 6;
-    }
-  } else {
-    // 0.1.8 - Significantly heavier penalty for unknown posting age
-    // (we now have good structured data via mosaic in most cases)
-    agePenalty = 15;
-    signals.push('Posting age unknown');
-  }
-  if (isHighTurnover) agePenalty = Math.round(agePenalty * 0.4);
-  score += agePenalty;
+        if (listing.appliesOffsite) {
+          score += 5;
+          signals.push('Applies redirect off Indeed');
+        }
 
-  if (listing.daysOpen > 2) {
-    signals.push(`Open ${listing.daysOpen} days`);
-  }
+        if (listing.indeedRating != null) {
+          if (listing.indeedRating < 2.5) {
+            score += 10;
+            signals.push(`Indeed rating: ${listing.indeedRating}/5`);
+          } else if (listing.indeedRating < 3.0) {
+            score += 5;
+            signals.push(`Indeed rating: ${listing.indeedRating}/5`);
+          } else if (listing.indeedRating >= 4.0) {
+            score -= 3;
+          }
+        }
 
-  // === REPOST ===
-  let repostPenalty = 0;
-  if (listing.isRepost) {
-    repostPenalty = 20;
-    signals.push('Recycled listing — marked as reposted');
-    signals.push('High Volume Repost');
-  }
-  if (isHighTurnover) repostPenalty = Math.round(repostPenalty * 0.4);
-  score += repostPenalty;
+        if (listing.description && listing.descriptionLength < 280) {
+          score += 5;
+          signals.push('Very short job description');
+        }
 
-  // === SALARY ===
-  if (!listing.salaryListed) {
-    score += 5;
-    signals.push('No salary listed');
-  }
+        if (seniorityMismatch) {
+          score += 13;
+          signals.push('⚠️ Seniority mismatch — title and requirements conflict');
+        }
 
-  // === THIRD PARTY ===
-  if (listing.isThirdParty) {
-    score += 12;
-    signals.push('Middleman — staffing agency or job board');
-  }
-
-  // === EMPLOYER RESPONSIVENESS ===
-  if (listing.employerResponsive) {
-    score -= 5;
-    signals.push('✓ Employer responds quickly');
-  } else {
-    score += 8;
-    signals.push('No employer response data');
-  }
-
-  // === APPLY METHOD ===
-  if (listing.appliesOffsite) {
-    score += 5;
-    signals.push('Applies redirect off Indeed');
-  }
-
-  // === INDEED EMPLOYER RATING ===
-  if (listing.indeedRating != null) {
-    if (listing.indeedRating < 2.5) {
-      score += 10;
-      signals.push(`Indeed rating: ${listing.indeedRating}/5`);
-    } else if (listing.indeedRating < 3.0) {
-      score += 5;
-      signals.push(`Indeed rating: ${listing.indeedRating}/5`);
-    } else if (listing.indeedRating >= 4.0) {
-      score -= 3;
-    }
+        const isOld = listing.daysOpen >= 14;
+        const missingBasics = !listing.salaryListed && !listing.employerResponsive && !activelyReviewing;
+        if (isOld && missingBasics) {
+          score += 24;
+          signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
+        }
+        if (listing.daysOpen >= 30 && !activelyReviewing) {
+          score += 14;
+          signals.push('30+ days old with no active review signals — very low chance');
+        }
+        if (listing.daysOpen >= 30 && !activelyReviewing &&
+            !listing.employerResponsive && !listing.salaryListed) {
+          score += 12;
+          signals.push('🚩 Stale listing: old, no engagement, no salary — classic dead end');
+        }
+        if (listing.isRepost) {
+          signals.push('High Volume Repost');
+        }
+        if (isHighTurnover) {
+          signals.push('⚡ High turnover role — expect frequent reposting');
+        }
+        return { score: score, signals: signals };
+      },
+    });
   }
 
-  // === DESCRIPTION QUALITY ===
-  if (listing.description) {
-    const vagueness = analyzeDescriptionVagueness(listing.description);
-    if (vagueness >= 0.65) {
-      score += 11;
-      signals.push('Vague or generic description');
-    } else if (vagueness >= 0.45) {
-      score += 6;
-      signals.push('Some generic language in description');
-    } else if (vagueness <= 0.15) {
-      score -= 3;
-      signals.push('Detailed, specific job description');
-    }
-    if (listing.descriptionLength < 280) {
-      score += 5;
-      signals.push('Very short job description');
-    }
-  } else {
-    score += 7;
-    signals.push('No description available');
-  }
-
-  // === SENIORITY MISMATCH ===
-  if (listing.seniorityMismatch || detectSeniorityMismatch(listing.title || '', listing.description || '')) {
-    score += 13;
-    signals.push('⚠️ Seniority mismatch — title and requirements conflict');
-  }
-
-  // === ENGAGEMENT SIGNALS ===
-  // Parsers store snake_case keys in engagementSignals. Older builds looked
-  // at listing.activelyReviewing (never set), so credit never applied.
-  let activelyReviewing = false;
-  if (STJ.applyEngagementScoring) {
-    const engagement = STJ.applyEngagementScoring(listing, score, signals);
-    score = engagement.score;
-    activelyReviewing = engagement.activelyReviewing;
-  } else {
-    activelyReviewing = listing.activelyReviewing === true ||
-      (Array.isArray(listing.engagementSignals) && listing.engagementSignals.includes('actively_reviewing'));
-    if (activelyReviewing) {
-      score -= 8;
-      signals.push('✓ Employer actively reviewing applications');
-    } else if (listing.daysOpen != null && listing.daysOpen >= 14) {
-      score += 10;
-      signals.push('No active review signals on older listing');
-    }
-  }
-
-  // === 0.1.8: STRONG COMBO PENALTIES (adapted for Indeed) ===
-  const isOld = listing.daysOpen >= 14;
-  const missingBasics = !listing.salaryListed && !listing.employerResponsive && !activelyReviewing;
-
-  if (isOld && missingBasics) {
-    score += 24;
-    signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
-  }
-
-  if (listing.daysOpen >= 30 && !activelyReviewing) {
-    score += 14;
-    signals.push('30+ days old with no active review signals — very low chance');
-  }
-
-  if (listing.daysOpen >= 30 && !activelyReviewing &&
-      !listing.employerResponsive && !listing.salaryListed) {
-    score += 12;
-    signals.push('🚩 Stale listing: old, no engagement, no salary — classic dead end');
-  }
-
-  // === HIGH TURNOVER ROLE ===
-  if (isHighTurnover) {
-    signals.push('⚡ High turnover role — expect frequent reposting');
-  }
-
-  score = Math.min(100, Math.max(0, score));
-
-  let label = 'low';
-  if (score >= 75) label = 'very_high';
-  else if (score >= 55) label = 'high';
-  else if (score >= 35) label = 'moderate';
-
-  return { score, label, signals, isHighTurnover };
+  return { score: 10, label: 'low', signals: [], isHighTurnover: isHighTurnover, daysOpen: listing.daysOpen };
 }
 
 
@@ -1000,7 +906,12 @@ function blendGhostScore(localScore, backendData) {
   const local = localScore.score;
 
   if (!backendData || backendData.score == null) {
-    return { score: local, label: localScore.label, signals: localScore.signals };
+    return {
+      score: local,
+      label: localScore.label,
+      signals: localScore.signals,
+      daysOpen: localScore.daysOpen,
+    };
   }
 
   const backend = backendData.score;
@@ -1021,11 +932,15 @@ function blendGhostScore(localScore, backendData) {
   const wUp = Math.max(wDown, 0.30);
 
   const w = backend >= local ? wUp : wDown;
-  const score = Math.round(local * (1 - w) + backend * w);
-  const label =
-    score >= 75 ? 'very_high' : score >= 50 ? 'high' : score >= 25 ? 'moderate' : 'low';
+  let score = Math.round(local * (1 - w) + backend * w);
   const signals = [...new Set([...localScore.signals, ...(backendData.signals || [])])];
-  return { score, label, signals };
+  if (STJ.enforceAgeFloor) {
+    const floored = STJ.enforceAgeFloor(score, localScore.daysOpen, signals);
+    score = floored.score;
+  }
+  const label = STJ.labelForScore ? STJ.labelForScore(score)
+    : (score >= 75 ? 'very_high' : score >= 55 ? 'high' : score >= 35 ? 'moderate' : 'low');
+  return { score, label, signals, daysOpen: localScore.daysOpen };
 }
 
 function injectOverlay(localScore, backendData, listing) {
@@ -1354,9 +1269,15 @@ function startIndeedListBadges() {
       return {
         title,
         companyName: companyEl ? companyEl.textContent.trim() : null,
-        daysOpen: STJ.parseRelativeDays ? STJ.parseRelativeDays(dateEl ? dateEl.textContent : text) : null,
+        daysOpen: STJ.daysOpenFromCard
+          ? STJ.daysOpenFromCard(card, dateEl, text)
+          : (STJ.parseRelativeDays ? STJ.parseRelativeDays(dateEl ? dateEl.textContent : text) : null),
         isRepost: /repost/.test(text),
         salaryListed: /\$\d/.test(text) ? true : undefined,
+        applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,
+        engagementSignals: /actively reviewing|reviewing applicants/.test(text)
+          ? ['actively_reviewing'] : [],
+        platform: 'indeed',
       };
     },
     anchor(card) {

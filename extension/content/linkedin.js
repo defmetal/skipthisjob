@@ -31,6 +31,7 @@ function parseLinkedInListing() {
     isThirdParty: false,        // posted by staffing agency / job board
     noResponseData: false,      // LinkedIn says "no response insights"
     responseManagedOffsite: false, // "responses managed off LinkedIn"
+    easyApply: false,
     engagementSignals: [],      // new for 0.1.8
     employerResponseTime: null, // new for 0.1.8
     userClickedApply: false,    // new for 0.1.8
@@ -100,10 +101,11 @@ function parseLinkedInListing() {
   // Find the job detail panel text (NOT the sidebar)
   // Strategy: find the container near the job title link, then read its text
   let detailText = '';
+  let container = null;
   const titleLink = document.querySelector('a[href*="/jobs/view/"]');
   if (titleLink) {
     // Walk up to find the detail panel container (usually 5-8 levels up)
-    let container = titleLink;
+    container = titleLink;
     for (let i = 0; i < 10; i++) {
       container = container.parentElement;
       if (!container) break;
@@ -126,18 +128,38 @@ function parseLinkedInListing() {
     console.log('[GhostDetector] Detected: Reposted');
   }
 
-  // Match date patterns - prefer "reposted X ago" over generic "X ago"
-  const monthsMatch = detailText.match(/reposted\s+(\d+)\s*months?\s*ago/) || detailText.match(/(\d+)\s*months?\s*ago/);
-  const weeksMatch = detailText.match(/reposted\s+(\d+)\s*weeks?\s*ago/) || detailText.match(/(\d+)\s*weeks?\s*ago/);
-  const daysMatch = detailText.match(/reposted\s+(\d+)\s*days?\s*ago/) || detailText.match(/(\d+)\s*days?\s*ago/);
-  const hoursMatch = detailText.match(/(\d+)\s*hours?\s*ago/);
-
-  if (monthsMatch) data.daysOpen = parseInt(monthsMatch[1]) * 30;
-  else if (weeksMatch) data.daysOpen = parseInt(weeksMatch[1]) * 7;
-  else if (daysMatch) data.daysOpen = parseInt(daysMatch[1]);
-  else if (hoursMatch) data.daysOpen = 0;
+  // Prefer <time datetime> in the detail panel, then shared relative
+  // parser (handles "3mo ago" / "3 months ago"). Last-resort regexes
+  // still prefer "reposted X ago" / months over a sidebar "2 days ago".
+  const detailTime = container && container.querySelector
+    ? (container.querySelector('.job-details-jobs-unified-top-card time[datetime]') ||
+       container.querySelector('time[datetime]') ||
+       container.querySelector('time'))
+    : null;
+  if (STJ.daysOpenFromIso && detailTime && detailTime.getAttribute('datetime')) {
+    data.daysOpen = STJ.daysOpenFromIso(detailTime.getAttribute('datetime'));
+  }
+  if (data.daysOpen == null && STJ.parseRelativeDays) {
+    data.daysOpen = STJ.parseRelativeDays(detailTime ? detailTime.textContent : '') ||
+                    STJ.parseRelativeDays(detailText);
+  }
+  if (data.daysOpen == null) {
+    const monthsMatch = detailText.match(/reposted\s+(\d+)\s*mo(?:nths?)?\s*ago/) ||
+                        detailText.match(/(\d+)\s*mo(?:nths?)?\s*ago/);
+    const weeksMatch = detailText.match(/reposted\s+(\d+)\s*weeks?\s*ago/) ||
+                       detailText.match(/(\d+)\s*weeks?\s*ago/);
+    const daysMatch = detailText.match(/reposted\s+(\d+)\s*days?\s*ago/) ||
+                      detailText.match(/(\d+)\s*days?\s*ago/);
+    const hoursMatch = detailText.match(/(\d+)\s*hours?\s*ago/);
+    if (monthsMatch) data.daysOpen = parseInt(monthsMatch[1], 10) * 30;
+    else if (weeksMatch) data.daysOpen = parseInt(weeksMatch[1], 10) * 7;
+    else if (daysMatch) data.daysOpen = parseInt(daysMatch[1], 10);
+    else if (hoursMatch) data.daysOpen = 0;
+  }
 
   if (data.daysOpen != null) console.log('[GhostDetector] Days open:', data.daysOpen);
+
+  data.easyApply = /easy apply/.test(detailText);
 
   // Applicant count  
   const applicantMatch = detailText.match(/(?:over\s+)?(\d[\d,]*)\+?\s*(?:applicants?|people\s+clicked\s+apply)/i);
@@ -448,192 +470,59 @@ function detectSeniorityMismatch(title, description, seniorityLevel) {
 //   50–74 Likely a Waste of Time — stale, oversaturated, or opaque
 //   75–100 Skip This Job        — overwhelming evidence this won't lead anywhere
 //
-// Max possible heuristic-only score (all flags firing):
-//   25 (60d age) + 20 (repost) + 15 (500+ applicants) + 5 (no salary)
-//   + 8 (no contact) + 12 (third-party) + 8 (no response data)
-//   + 8 (responses offsite) + 5 (100+ apps no engagement) = 106 → capped 100
-// Realistic worst case without repost or third-party:
-//   25 + 15 + 5 + 8 + 8 + 8 + 5 = 74 (Likely a Waste of Time)
+// 0.2.2: age / engagement / description / floors live in shared.js
+// (scoreListingSignals) so Indeed and list badges stay aligned.
+// LinkedIn-only extras (hiring contact, no-response chip, combos) stay here.
 function scoreLocally(listing) {
-  let score = 0;
-  const signals = [];
-  const isHighTurnover = listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title));
+  const isHighTurnover = !!(listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title)));
+  const vagueness = listing.description ? analyzeDescriptionVagueness(listing.description) : null;
+  const seniorityMismatch = detectSeniorityMismatch(
+    listing.title, listing.description || '', listing.seniorityLevel
+  );
 
-  // ============================================================
-  // POSTING AGE (0.1.8 curve)
-  // ============================================================
-  let agePenalty = 0;
-
-  if (listing.daysOpen != null) {
-    if (listing.daysOpen <= 2) {
-      // Strong recency benefit only in the first 48 hours
-      agePenalty = -10;
-      signals.push('Posted in last 48 hours — highest visibility window');
-    } else if (listing.daysOpen <= 7) {
-      agePenalty = (listing.daysOpen - 2) * 2;
-    } else if (listing.daysOpen <= 14) {
-      agePenalty = 10 + (listing.daysOpen - 7) * 3;
-    } else if (listing.daysOpen <= 21) {
-      agePenalty = 31 + (listing.daysOpen - 14) * 4;
-    } else if (listing.daysOpen <= 30) {
-      agePenalty = 59 + (listing.daysOpen - 21) * 5;
-    } else {
-      agePenalty = 104 + (listing.daysOpen - 30) * 6;
-    }
+  if (STJ.scoreListingSignals) {
+    return STJ.scoreListingSignals(listing, {
+      platform: 'linkedin',
+      isHighTurnover: isHighTurnover,
+      vagueness: vagueness,
+      afterShared: function (score, signals) {
+        if (!listing.hiringContactVisible) {
+          score += 10;
+          signals.push('No hiring contact — no one to follow up with');
+        }
+        if (listing.noResponseData) {
+          score += 8;
+          signals.push('No employer response data on LinkedIn');
+        }
+        const isOld = listing.daysOpen >= 14;
+        const missingBasics = !listing.hiringContactVisible &&
+                              (!listing.description || listing.description.length < 300) &&
+                              !listing.salaryListed;
+        if (isOld && missingBasics) {
+          score += 20;
+          signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
+        }
+        if (listing.isRepost && listing.applicantCount >= 100) {
+          score += 16;
+          signals.push('High Volume Repost (Easy Apply + high applicants)');
+        }
+        if (listing.daysOpen >= 30 && listing.applicantCount >= 200) {
+          score += 16;
+          signals.push('30+ days old with 200+ applicants — very low chance of being seen');
+        }
+        if (seniorityMismatch) {
+          score += 14;
+          signals.push('⚠️ Seniority mismatch — title and requirements conflict');
+        }
+        if (isHighTurnover) {
+          signals.push('⚡ High turnover role — expect frequent reposting');
+        }
+        return { score: score, signals: signals };
+      },
+    });
   }
 
-  // High-turnover role reduction (~60%)
-  if (isHighTurnover) agePenalty = Math.round(agePenalty * 0.4);
-  score += agePenalty;
-
-  if (listing.daysOpen > 2) {
-    signals.push(`Open ${listing.daysOpen} days`);
-  }
-
-  // ============================================================
-  // REPOST / RECYCLED LISTING
-  // ============================================================
-  let repostPenalty = 0;
-  if (listing.isRepost) {
-    repostPenalty = 20;
-    signals.push('Recycled listing — marked as reposted');
-  }
-  if (isHighTurnover) repostPenalty = Math.round(repostPenalty * 0.4);
-  score += repostPenalty;
-
-  // ============================================================
-  // APPLICANT COUNT
-  // ============================================================
-  let applicantPenalty = 0;
-  if (listing.applicantCount != null) {
-    if (listing.applicantCount >= 500) {
-      applicantPenalty = 15;
-      signals.push(`${listing.applicantCount}+ applicants — virtually zero chance of being seen`);
-    } else if (listing.applicantCount >= 200) {
-      applicantPenalty = 10;
-      signals.push(`${listing.applicantCount}+ applicants — your resume is in a large pile`);
-    }
-  }
-  if (isHighTurnover) applicantPenalty = Math.round(applicantPenalty * 0.6);
-  score += applicantPenalty;
-
-  // ============================================================
-  // MISSING BASICS
-  // ============================================================
-  if (!listing.salaryListed) {
-    score += 5;
-    signals.push('No salary listed');
-  }
-
-  if (!listing.hiringContactVisible) {
-    score += 10;
-    signals.push('No hiring contact — no one to follow up with');
-  }
-
-  if (!listing.description || listing.description.length < 200) {
-    score += 12;
-    signals.push('No or very weak job description');
-  } else if (listing.description.length < 500) {
-    score += 6;
-    signals.push('Short or limited job description');
-  }
-
-  // ============================================================
-  // OTHER RED FLAGS
-  // ============================================================
-  if (listing.isThirdParty) {
-    score += 12;
-    signals.push('Middleman — staffing agency or job board');
-  }
-
-  if (listing.noResponseData) {
-    score += 8;
-    signals.push('No employer response data on LinkedIn');
-  }
-
-  if (listing.responseManagedOffsite) {
-    score += 8;
-    signals.push('Responses managed off LinkedIn — less accountability');
-  }
-
-  // ============================================================
-  // 0.1.8: STRONG COMBO PENALTIES
-  // ============================================================
-  const isOld = listing.daysOpen >= 14;
-  const missingBasics = !listing.hiringContactVisible &&
-                        (!listing.description || listing.description.length < 300) &&
-                        !listing.salaryListed;
-
-  // Old + multiple missing basics
-  if (isOld && missingBasics) {
-    score += 20;
-    signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
-  }
-
-  // High Volume Repost (Recycled + Easy Apply + high applicants)
-  if (listing.isRepost && listing.applicantCount >= 100) {
-    score += 16;
-    signals.push('High Volume Repost (Easy Apply + high applicants)');
-  }
-
-  // Very old + high applicants
-  if (listing.daysOpen >= 30 && listing.applicantCount >= 200) {
-    score += 16;
-    signals.push('30+ days old with 200+ applicants — very low chance of being seen');
-  }
-
-  // ============================================================
-  // DESCRIPTION QUALITY + SENIORITY MISMATCH
-  // ============================================================
-  // Absent / very-weak descriptions are already scored above
-  // ("No or very weak job description"). Only analyze vagueness when a
-  // description actually exists, so a missing one isn't penalized twice.
-  if (listing.description) {
-    const vagueness = analyzeDescriptionVagueness(listing.description);
-    if (vagueness >= 0.65) {
-      score += 12;
-      signals.push('Vague or generic description');
-    } else if (vagueness >= 0.45) {
-      score += 7;
-      signals.push('Some generic language in description');
-    } else if (vagueness <= 0.15) {
-      score -= 4;
-      signals.push('Detailed, specific job description');
-    }
-  }
-
-  if (detectSeniorityMismatch(listing.title, listing.description || '', listing.seniorityLevel)) {
-    score += 14;
-    signals.push('⚠️ Seniority mismatch — title and requirements conflict');
-  }
-
-  // ============================================================
-  // ENGAGEMENT (shared helper — reads engagementSignals, not a
-  // never-set activelyReviewing boolean)
-  // ============================================================
-  if (STJ.applyEngagementScoring) {
-    const engagement = STJ.applyEngagementScoring(listing, score, signals);
-    score = engagement.score;
-  }
-
-  // ============================================================
-  // HIGH TURNOVER ROLE (informational)
-  // ============================================================
-  if (isHighTurnover) {
-    signals.push('⚡ High turnover role — expect frequent reposting');
-  }
-
-  // ============================================================
-  // FINALIZE + TIER LABELS
-  // ============================================================
-  score = Math.min(100, Math.max(0, score));
-
-  let label = 'low';
-  if (score >= 75) label = 'very_high';
-  else if (score >= 55) label = 'high';
-  else if (score >= 35) label = 'moderate';
-
-  return { score, label, signals, isHighTurnover };
+  return { score: 0, label: 'low', signals: [], isHighTurnover: isHighTurnover, daysOpen: listing.daysOpen };
 }
 
 
@@ -754,7 +643,12 @@ function blendGhostScore(localScore, backendData) {
   const local = localScore.score;
 
   if (!backendData || backendData.score == null) {
-    return { score: local, label: localScore.label, signals: localScore.signals };
+    return {
+      score: local,
+      label: localScore.label,
+      signals: localScore.signals,
+      daysOpen: localScore.daysOpen,
+    };
   }
 
   const backend = backendData.score;
@@ -771,11 +665,15 @@ function blendGhostScore(localScore, backendData) {
   const wUp = Math.max(wDown, 0.30);
 
   const w = backend >= local ? wUp : wDown;
-  const score = Math.round(local * (1 - w) + backend * w);
-  const label =
-    score >= 75 ? 'very_high' : score >= 50 ? 'high' : score >= 25 ? 'moderate' : 'low';
+  let score = Math.round(local * (1 - w) + backend * w);
   const signals = [...new Set([...localScore.signals, ...(backendData.signals || [])])];
-  return { score, label, signals };
+  if (STJ.enforceAgeFloor) {
+    const floored = STJ.enforceAgeFloor(score, localScore.daysOpen, signals);
+    score = floored.score;
+  }
+  const label = STJ.labelForScore ? STJ.labelForScore(score)
+    : (score >= 75 ? 'very_high' : score >= 55 ? 'high' : score >= 35 ? 'moderate' : 'low');
+  return { score, label, signals, daysOpen: localScore.daysOpen };
 }
 
 function injectOverlay(localScore, backendData, listing) {
@@ -1202,9 +1100,15 @@ function startLinkedInListBadges() {
       return {
         title,
         companyName: companyEl ? companyEl.textContent.trim() : null,
-        daysOpen: STJ.parseRelativeDays ? STJ.parseRelativeDays(dateEl ? dateEl.textContent : text) : null,
+        daysOpen: STJ.daysOpenFromCard
+          ? STJ.daysOpenFromCard(card, dateEl, text)
+          : (STJ.parseRelativeDays ? STJ.parseRelativeDays(dateEl ? dateEl.textContent : text) : null),
         isRepost: /reposted/.test(text),
         salaryListed: /\$\d/.test(text) ? true : undefined,
+        applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,
+        easyApply: /easy apply/.test(text),
+        engagementSignals: /actively reviewing/.test(text) ? ['actively_reviewing'] : [],
+        platform: 'linkedin',
       };
     },
     anchor(card) {

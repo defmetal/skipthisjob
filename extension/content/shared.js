@@ -65,6 +65,25 @@
   }
 
   /**
+   * “Actively reviewing” on LinkedIn can linger for months. Full -8 is
+   * fine on fresh posts; on 60–120+ day listings it must not erase age
+   * floors (Hilton / Baton calibration).
+   *
+   *   <60d   −8
+   *   60–89  −3
+   *   90–119 −2
+   *   ≥120   −0
+   */
+  function engagementCreditForAge(daysOpen) {
+    if (daysOpen == null || Number.isNaN(Number(daysOpen))) return 8;
+    const days = Number(daysOpen);
+    if (days >= 120) return 0;
+    if (days >= 90) return 2;
+    if (days >= 60) return 3;
+    return 8;
+  }
+
+  /**
    * Apply the shared engagement credit / stale-no-review penalty.
    * Mutates `signals` and returns the updated numeric score plus a boolean
    * the Indeed combo penalties can reuse.
@@ -72,10 +91,18 @@
   function applyEngagementScoring(listing, score, signals) {
     const reviewing = isActivelyReviewing(listing);
     const out = Array.isArray(signals) ? signals : [];
+    const days = listing && listing.daysOpen;
 
     if (reviewing) {
-      score -= 8;
-      out.push('✓ Employer actively reviewing applications');
+      const credit = engagementCreditForAge(days);
+      score -= credit;
+      if (credit <= 0) {
+        out.push('“Actively reviewing” on a 120+ day listing — not treated as fresh intent');
+      } else if (days != null && Number(days) >= 60) {
+        out.push('✓ Employer actively reviewing (capped — badge can linger on old posts)');
+      } else {
+        out.push('✓ Employer actively reviewing applications');
+      }
     } else if (listing && listing.daysOpen != null && listing.daysOpen >= 14) {
       score += 10;
       out.push('No active review signals on older listing');
@@ -111,51 +138,286 @@
     return 'low';
   }
 
-  /**
-   * Lightweight SERP-card score. Full scoreLocally() treats missing
-   * description / contact as red flags; cards do not have those fields,
-   * so we only score signals the card actually shows.
-   */
-  function scoreListPreview(card) {
-    let score = 18;
-    const signals = [];
-    const days = card && card.daysOpen != null ? Number(card.daysOpen) : null;
+  // --- Shared listing heuristic (0.2.2) ---------------------------------
+  // LinkedIn detail, Indeed detail, and SERP badges share this path so a
+  // 90-day card cannot badge 16–18 while the overlay says 2.
+  //
+  // Age floors (applied AFTER discounts, and again after backend blend):
+  //   ≥60 days  → minimum 40  (Proceed with Caution)
+  //   ≥90 days  → minimum 65  (Likely a Waste of Time)
+  //   ≥120 days → minimum 80  (Skip This Job)
+  // Chosen to match Austin's harsh grades on 0.2.1: Popular Demand (3mo)
+  // ~80, Hilton/Baton (5mo) ~90, Hum (2mo) ~60, Mentium (2mo+reviewing) ~45.
+  // Additive age points stay modest (~25 at 90d) so floors do the work
+  // instead of the old runaway curve that hit 100+ by day 30.
 
-    if (days != null && !Number.isNaN(days)) {
-      if (days <= 2) {
-        score -= 6;
-        signals.push('Posted in last 48 hours');
-      } else if (days <= 7) {
-        score += 4;
-      } else if (days <= 14) {
-        score += 10;
-        signals.push('Open ' + days + ' days');
-      } else if (days <= 30) {
-        score += 22;
-        signals.push('Open ' + days + ' days');
-      } else {
-        score += 34;
-        signals.push('Open ' + days + ' days');
+  const AGE_FLOORS = [
+    { minDays: 120, floor: 80 },
+    { minDays: 90, floor: 65 },
+    { minDays: 60, floor: 40 },
+  ];
+
+  function ageFloorForDays(daysOpen) {
+    if (daysOpen == null || Number.isNaN(Number(daysOpen))) return 0;
+    const days = Number(daysOpen);
+    for (let i = 0; i < AGE_FLOORS.length; i++) {
+      if (days >= AGE_FLOORS[i].minDays) return AGE_FLOORS[i].floor;
+    }
+    return 0;
+  }
+
+  function enforceAgeFloor(score, daysOpen, signals) {
+    const floor = ageFloorForDays(daysOpen);
+    const out = Array.isArray(signals) ? signals : [];
+    if (floor > 0 && score < floor) {
+      out.push('Age floor: open ' + daysOpen + ' days → minimum ghost risk ' + floor);
+      return { score: floor, signals: out, applied: true, floor: floor };
+    }
+    return { score: score, signals: out, applied: false, floor: floor };
+  }
+
+  /**
+   * Additive age points. Caps around 25 at 90d (matches the documented
+   * 0.1.x comment). Recency credit is negative in the first 48 hours.
+   */
+  function ageContribution(daysOpen, opts) {
+    const options = opts || {};
+    let delta = 0;
+    const signals = [];
+    if (daysOpen == null || Number.isNaN(Number(daysOpen))) {
+      if (options.unknownPenalty) {
+        delta = options.unknownPenalty;
+        signals.push('Posting age unknown');
+      }
+      return { delta: delta, signals: signals };
+    }
+    const days = Number(daysOpen);
+    const recency = options.recencyCredit != null ? options.recencyCredit : 10;
+
+    if (days <= 2) {
+      delta = -recency;
+      signals.push('Posted in last 48 hours — highest visibility window');
+    } else if (days <= 7) {
+      delta = Math.round((days - 2) * 0.8);
+    } else if (days <= 14) {
+      delta = 4 + Math.round((days - 7) * (4 / 7));
+    } else if (days <= 30) {
+      delta = 8 + Math.round((days - 14) * (7 / 16));
+    } else if (days <= 60) {
+      delta = 15 + Math.round((days - 30) * (5 / 30));
+    } else if (days <= 90) {
+      delta = 20 + Math.round((days - 60) * (5 / 30));
+    } else {
+      delta = 25;
+    }
+
+    if (options.isHighTurnover) delta = Math.round(delta * 0.4);
+    if (days > 2) signals.push('Open ' + days + ' days');
+    return { delta: delta, signals: signals };
+  }
+
+  function applicantContribution(count, isHighTurnover) {
+    if (count == null) return { delta: 0, signal: null };
+    let delta = 0;
+    let signal = null;
+    if (count >= 500) {
+      delta = 15;
+      signal = count + '+ applicants — virtually zero chance of being seen';
+    } else if (count >= 200) {
+      delta = 10;
+      signal = count + '+ applicants — your resume is in a large pile';
+    } else if (count >= 100) {
+      delta = 8;
+      signal = count + '+ applicants — crowded listing';
+    }
+    if (isHighTurnover) delta = Math.round(delta * 0.6);
+    return { delta: delta, signal: signal };
+  }
+
+  function hasBrokenTemplate(text) {
+    if (!text || typeof text !== 'string') return false;
+    return /\{:[a-zA-Z_]\w*\}|\{\{[a-zA-Z_]\w*\}\}|\{(?:companyName|jobTitle|company|location)\}|\[\s*(?:company(?:\s*name)?|job\s*title|insert\s+\w+)\s*\]/i.test(text);
+  }
+
+  function hasWorkArrangementConflict(listing) {
+    if (!listing) return false;
+    if (listing.workArrangementConflict === true) return true;
+    const arr = listing.workArrangement;
+    const text = String(listing.description || '').toLowerCase();
+    if (!arr || !text) return false;
+    const descRemote = /fully remote|100%\s*remote|remote[ -]only|work from home/.test(text);
+    const descOnsite = /on-?site only|in-?office only|must (be|work) on-?site/.test(text);
+    const descHybrid = /\bhybrid\b/.test(text);
+    if (arr === 'onsite' && descRemote) return true;
+    if (arr === 'remote' && descOnsite) return true;
+    if (arr === 'hybrid' && descOnsite && descRemote) return true;
+    if (arr === 'onsite' && descHybrid && /remote/.test(text)) return true;
+    return false;
+  }
+
+  /**
+   * Description quality. Vague copy still adds risk. A specific JD is
+   * only −1 (was −3/−4) so it cannot dominate an old listing to 0–12.
+   */
+  function applyDescriptionQuality(score, signals, vagueness, opts) {
+    const options = opts || {};
+    const out = Array.isArray(signals) ? signals : [];
+    if (vagueness == null || Number.isNaN(Number(vagueness))) {
+      return { score: score, signals: out };
+    }
+    if (vagueness >= 0.65) {
+      score += options.vagueHigh != null ? options.vagueHigh : 12;
+      out.push('Vague or generic description');
+    } else if (vagueness >= 0.45) {
+      score += options.vagueMid != null ? options.vagueMid : 7;
+      out.push('Some generic language in description');
+    } else if (vagueness <= 0.15) {
+      const credit = options.detailedCredit != null ? options.detailedCredit : 1;
+      score -= credit;
+      out.push('Detailed, specific job description');
+    }
+    return { score: score, signals: out };
+  }
+
+  function finalizeHeuristicScore(score, listing, signals, extras) {
+    const extra = extras || {};
+    const floored = enforceAgeFloor(score, listing && listing.daysOpen, signals);
+    score = Math.min(100, Math.max(0, Math.round(floored.score)));
+    return {
+      score: score,
+      label: labelForScore(score),
+      signals: floored.signals,
+      isHighTurnover: !!extra.isHighTurnover,
+      daysOpen: listing && listing.daysOpen,
+    };
+  }
+
+  /**
+   * Shared listing heuristic used by LinkedIn, Indeed, and SERP badges.
+   * `preview: true` skips missing-field penalties cards cannot observe
+   * (description / hiring contact) so badges stay in the same band as
+   * detail for the signals they share (age, repost, applicants, salary).
+   */
+  function scoreListingSignals(listing, opts) {
+    const options = opts || {};
+    const row = listing || {};
+    const preview = options.preview === true;
+    const platform = options.platform || row.platform || 'linkedin';
+    const isHighTurnover = options.isHighTurnover === true;
+    const signals = [];
+    let score = 0;
+
+    if (!preview && platform === 'indeed') {
+      score += 10;
+    }
+
+    const age = ageContribution(row.daysOpen, {
+      unknownPenalty: !preview && platform === 'indeed' ? 15 : 0,
+      recencyCredit: platform === 'indeed' ? 8 : (preview ? 8 : 10),
+      isHighTurnover: isHighTurnover,
+    });
+    score += age.delta;
+    for (let i = 0; i < age.signals.length; i++) signals.push(age.signals[i]);
+
+    if (row.isRepost) {
+      let repost = 24;
+      if (isHighTurnover) repost = Math.round(repost * 0.4);
+      score += repost;
+      signals.push('Recycled listing — marked as reposted');
+    }
+
+    const apps = applicantContribution(row.applicantCount, isHighTurnover);
+    if (apps.delta) {
+      score += apps.delta;
+      signals.push(apps.signal);
+    }
+
+    if (preview) {
+      if (row.salaryListed === false) score += 4;
+      else if (row.salaryListed === true) score -= 2;
+    } else if (!row.salaryListed) {
+      score += 5;
+      signals.push('No salary listed');
+    }
+
+    if (row.isThirdParty) {
+      score += preview ? 10 : 12;
+      signals.push(preview ? 'Staffing / aggregator' : 'Middleman — staffing agency or job board');
+    }
+
+    if (!preview && platform === 'linkedin') {
+      if (!row.description || row.description.length < 200) {
+        score += 12;
+        signals.push('No or very weak job description');
+      } else if (row.description.length < 500) {
+        score += 6;
+        signals.push('Short or limited job description');
       }
     }
 
-    if (card && card.isRepost) {
-      score += 16;
-      signals.push('Reposted');
-    }
-    if (card && card.salaryListed === false) {
-      score += 4;
-    } else if (card && card.salaryListed === true) {
-      score -= 2;
-    }
-    if (card && card.isThirdParty) {
-      score += 10;
-      signals.push('Staffing / aggregator');
+    if (!preview && platform === 'indeed' && !row.description) {
+      score += 7;
+      signals.push('No description available');
     }
 
-    score = Math.min(100, Math.max(0, Math.round(score)));
-    const label = labelForScore(score);
-    return { score, label, signals, isHighTurnover: false };
+    if (!preview && row.description && options.vagueness != null) {
+      const desc = applyDescriptionQuality(score, signals, options.vagueness, {
+        vagueHigh: platform === 'indeed' ? 11 : 12,
+        vagueMid: platform === 'indeed' ? 6 : 7,
+        detailedCredit: 1,
+      });
+      score = desc.score;
+    }
+
+    if (hasBrokenTemplate(row.description) || hasBrokenTemplate(row.title)) {
+      score += 10;
+      signals.push('Broken template / placeholder text — low-effort listing');
+    }
+
+    if (row.responseManagedOffsite) {
+      score += 10;
+      signals.push('Responses managed off LinkedIn — less accountability');
+    }
+
+    if (hasWorkArrangementConflict(row)) {
+      score += 8;
+      signals.push('Work arrangement contradiction (e.g. remote vs on-site)');
+    }
+
+    if (row.easyApply && row.daysOpen != null && row.daysOpen >= 60) {
+      score += 8;
+      signals.push('Easy Apply on a 60+ day listing — low-intent signal');
+    }
+
+    if (row.daysOpen != null && row.daysOpen >= 60 && row.applicantCount >= 100) {
+      score += 12;
+      signals.push('60+ days old with 100+ applicants — low chance of being seen');
+    }
+
+    const engagement = applyEngagementScoring(row, score, signals);
+    score = engagement.score;
+
+    if (typeof options.afterShared === 'function') {
+      const extra = options.afterShared(score, signals, {
+        activelyReviewing: engagement.activelyReviewing,
+        preview: preview,
+      }) || {};
+      if (extra.score != null) score = extra.score;
+    }
+
+    return finalizeHeuristicScore(score, row, signals, { isHighTurnover: isHighTurnover });
+  }
+
+  /**
+   * SERP-card score. Same age floors / repost / applicant math as detail;
+   * does not invent missing-description or no-contact penalties.
+   */
+  function scoreListPreview(card) {
+    return scoreListingSignals(card || {}, {
+      preview: true,
+      platform: (card && card.platform) || 'preview',
+      isHighTurnover: false,
+    });
   }
 
   function parseRelativeDays(text) {
@@ -164,10 +426,12 @@
     if (/just posted|posted today|moments? ago|active\s+today/.test(t)) return 0;
     if (/(few |a few )?(hours?|mins?|minutes?) ago/.test(t)) return 0;
     if (/\btoday\b/.test(t) && t.length < 24) return 0;
-    const months = t.match(/(\d+)\s*months?\s*ago/);
-    if (months) return parseInt(months[1], 10) * 30;
+    // LinkedIn compact: "3mo ago", "5 mo ago", "Posted 3 months ago"
+    let m = t.match(/(\d+)\s*mo(?:nths?|s)?\.?\s+ago/);
+    if (!m) m = t.match(/(\d+)\s*mo(?:nths?|s)?\.?\s*ago/);
+    if (m) return parseInt(m[1], 10) * 30;
     // "2w ago", "2 weeks ago", "Posted 3 weeks ago"
-    let m = t.match(/(\d+)\s*w(?:eeks?)?\s*ago/);
+    m = t.match(/(\d+)\s*w(?:eeks?)?\s*ago/);
     if (m) return parseInt(m[1], 10) * 7;
     // "30+ days ago", "5d ago", "Posted 12 days ago"
     m = t.match(/(\d+)\+?\s*(?:days?|d)\s*ago/);
@@ -176,6 +440,48 @@
     if (m) return parseInt(m[1], 10);
     if (/\byesterday\b/.test(t)) return 1;
     return null;
+  }
+
+  function daysOpenFromIso(iso, nowMs) {
+    if (!iso) return null;
+    const posted = Date.parse(iso);
+    if (Number.isNaN(posted)) return null;
+    const now = nowMs != null ? nowMs : Date.now();
+    const days = Math.round((now - posted) / (1000 * 60 * 60 * 24));
+    if (Number.isNaN(days)) return null;
+    return Math.max(0, days);
+  }
+
+  function parseApplicantCount(text) {
+    if (!text) return null;
+    const m = String(text).match(/(?:over\s+)?(\d[\d,]*)\+?\s*(?:applicants?|people\s+clicked\s+apply)/i);
+    if (!m) return null;
+    const n = parseInt(m[1].replace(/,/g, ''), 10);
+    return Number.isNaN(n) ? null : n;
+  }
+
+  /**
+   * Prefer <time datetime>, then compact "3mo ago" on the card, then
+   * a footer / fallback string. Used by list badges so they see the
+   * same age the detail overlay would.
+   */
+  function daysOpenFromCard(card, dateEl, fallbackText) {
+    if (dateEl && dateEl.getAttribute) {
+      const iso = daysOpenFromIso(dateEl.getAttribute('datetime'));
+      if (iso != null) return iso;
+      const fromEl = parseRelativeDays(dateEl.textContent);
+      if (fromEl != null) return fromEl;
+    }
+    if (card && card.querySelectorAll) {
+      const times = card.querySelectorAll('time[datetime], time');
+      for (let i = 0; i < times.length; i++) {
+        const iso = daysOpenFromIso(times[i].getAttribute('datetime'));
+        if (iso != null) return iso;
+        const fromTime = parseRelativeDays(times[i].textContent);
+        if (fromTime != null) return fromTime;
+      }
+    }
+    return parseRelativeDays(fallbackText);
   }
 
   // --- Indeed identity + path-consistent listing signals -----------------
@@ -730,12 +1036,26 @@
   api.extractLinkedInJobId = extractLinkedInJobId;
   api.hasEngagementSignal = hasEngagementSignal;
   api.isActivelyReviewing = isActivelyReviewing;
+  api.engagementCreditForAge = engagementCreditForAge;
   api.applyEngagementScoring = applyEngagementScoring;
   api.hashDescription = hashDescription;
   api.normalizeTitle = normalizeTitle;
   api.labelForScore = labelForScore;
+  api.AGE_FLOORS = AGE_FLOORS;
+  api.ageFloorForDays = ageFloorForDays;
+  api.enforceAgeFloor = enforceAgeFloor;
+  api.ageContribution = ageContribution;
+  api.applicantContribution = applicantContribution;
+  api.hasBrokenTemplate = hasBrokenTemplate;
+  api.hasWorkArrangementConflict = hasWorkArrangementConflict;
+  api.applyDescriptionQuality = applyDescriptionQuality;
+  api.finalizeHeuristicScore = finalizeHeuristicScore;
+  api.scoreListingSignals = scoreListingSignals;
   api.scoreListPreview = scoreListPreview;
   api.parseRelativeDays = parseRelativeDays;
+  api.daysOpenFromIso = daysOpenFromIso;
+  api.parseApplicantCount = parseApplicantCount;
+  api.daysOpenFromCard = daysOpenFromCard;
   api.buildTrackPayload = buildTrackPayload;
   api.mergeApplyPayload = mergeApplyPayload;
   api.applyPayloadIsComplete = applyPayloadIsComplete;
