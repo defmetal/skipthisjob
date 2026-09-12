@@ -160,16 +160,309 @@
 
   function parseRelativeDays(text) {
     if (!text) return null;
-    const t = String(text).toLowerCase();
-    if (/just posted|today|hours?\s+ago|minutes?\s+ago|active\s+today/i.test(t)) return 0;
+    const t = String(text).toLowerCase().trim();
+    if (/just posted|posted today|moments? ago|active\s+today/.test(t)) return 0;
+    if (/(few |a few )?(hours?|mins?|minutes?) ago/.test(t)) return 0;
+    if (/\btoday\b/.test(t) && t.length < 24) return 0;
     const months = t.match(/(\d+)\s*months?\s*ago/);
     if (months) return parseInt(months[1], 10) * 30;
-    const weeks = t.match(/(\d+)\s*weeks?\s*ago/);
-    if (weeks) return parseInt(weeks[1], 10) * 7;
-    const days = t.match(/(\d+)\s*days?\s*ago/);
-    if (days) return parseInt(days[1], 10);
+    // "2w ago", "2 weeks ago", "Posted 3 weeks ago"
+    let m = t.match(/(\d+)\s*w(?:eeks?)?\s*ago/);
+    if (m) return parseInt(m[1], 10) * 7;
+    // "30+ days ago", "5d ago", "Posted 12 days ago"
+    m = t.match(/(\d+)\+?\s*(?:days?|d)\s*ago/);
+    if (m) return parseInt(m[1], 10);
+    m = t.match(/active\s+(\d+)\+?\s*(?:days?|d)/);
+    if (m) return parseInt(m[1], 10);
     if (/\byesterday\b/.test(t)) return 1;
     return null;
+  }
+
+  // --- Indeed identity + path-consistent listing signals -----------------
+  // Search SPA (vjk= mosaic / right pane) and /viewjob?jk= must score the
+  // same job key from the same fields. Never let sibling list-card copy
+  // or a date-rich neighbor in mosaic win.
+
+  const INDEED_SIGNAL_CACHE_TTL_MS = 30 * 60 * 1000;
+
+  function mosaicJobIdentity(job, pageJobKey, pageTitle, pageCompany) {
+    if (!job) return { identity: 0, exactKey: false };
+    const thisJobKey = String(job.jobkey || '').toLowerCase();
+    const jobTitle = String(job.displayTitle || job.title || '').toLowerCase();
+    const jobCompany = String(job.company || '').toLowerCase();
+    const title = String(pageTitle || '').toLowerCase();
+    const company = String(pageCompany || '').toLowerCase();
+
+    let identity = 0;
+    const exactKey = !!(pageJobKey && thisJobKey && thisJobKey === String(pageJobKey).toLowerCase());
+    if (exactKey) identity += 100;
+    if (title && jobTitle && jobTitle.length >= 8 && title.includes(jobTitle.substring(0, 25))) {
+      identity += 35;
+    }
+    if (company && jobCompany && company.includes(jobCompany)) identity += 15;
+    return { identity: identity, exactKey: exactKey };
+  }
+
+  /**
+   * Pick the mosaic row for the listing being viewed.
+   * When a jk/vjk is known, ONLY an exact jobkey match is allowed —
+   * the old "URL contains pageJobKey" bonus applied to every row and
+   * let a neighbor's pubDate stamp the overlay.
+   */
+  function pickMosaicJobForListing(jobs, pageJobKey, pageTitle, pageCompany) {
+    const list = Array.isArray(jobs) ? jobs : [];
+    let best = null;
+    let bestScore = -1;
+
+    for (let i = 0; i < list.length; i++) {
+      const job = list[i];
+      if (!job) continue;
+      const ident = mosaicJobIdentity(job, pageJobKey, pageTitle, pageCompany);
+      if (pageJobKey) {
+        if (!ident.exactKey) continue;
+      } else if (ident.identity < 35) {
+        continue;
+      }
+      let score = ident.identity;
+      if (job.pubDate || job.createDate || job.formattedRelativeTime) score += 20;
+      if (job.formattedRelativeTime) score += 10;
+      if (job.pubDate || job.createDate) score += 5;
+      if (score > bestScore) {
+        bestScore = score;
+        best = job;
+      }
+    }
+    return best;
+  }
+
+  function flattenMosaicJobs(snapshot) {
+    const out = [];
+    const seen = {};
+    const add = function (job) {
+      if (!job) return;
+      const key = String(job.jobkey || '').toLowerCase();
+      if (key) {
+        if (seen[key]) return;
+        seen[key] = true;
+      }
+      out.push(job);
+    };
+    if (!snapshot) return out;
+    if (Array.isArray(snapshot.jobs)) snapshot.jobs.forEach(add);
+    const providers = snapshot.providers || {};
+    const keys = Object.keys(providers);
+    for (let i = 0; i < keys.length; i++) {
+      const provider = providers[keys[i]];
+      if (!provider) continue;
+      let results = [];
+      if (
+        provider.metaData &&
+        provider.metaData.mosaicProviderJobCardsModel &&
+        Array.isArray(provider.metaData.mosaicProviderJobCardsModel.results)
+      ) {
+        results = provider.metaData.mosaicProviderJobCardsModel.results;
+      } else if (Array.isArray(provider.results)) {
+        results = provider.results;
+      }
+      for (let j = 0; j < results.length; j++) add(results[j]);
+    }
+    return out;
+  }
+
+  function daysOpenFromMosaicJob(job) {
+    if (!job) return null;
+    if (job.formattedRelativeTime) {
+      const d = parseRelativeDays(job.formattedRelativeTime);
+      if (d != null) return d;
+    }
+    const ts = job.pubDate || job.createDate;
+    if (ts) {
+      const diff = Math.round((Date.now() - new Date(ts).getTime()) / (1000 * 60 * 60 * 24));
+      if (!Number.isNaN(diff)) return Math.max(0, diff);
+    }
+    return null;
+  }
+
+  function daysOpenFromJobPostingJsonLd(text, nowMs) {
+    if (!text) return null;
+    let parsed;
+    try {
+      parsed = typeof text === 'string' ? JSON.parse(text) : text;
+    } catch (e) {
+      return null;
+    }
+    const nodes = [];
+    const walk = function (n) {
+      if (!n) return;
+      if (Array.isArray(n)) {
+        for (let i = 0; i < n.length; i++) walk(n[i]);
+        return;
+      }
+      if (typeof n === 'object') {
+        nodes.push(n);
+        if (n['@graph']) walk(n['@graph']);
+      }
+    };
+    walk(parsed);
+    const now = nowMs || Date.now();
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const type = n['@type'];
+      const isJob = type === 'JobPosting' || (Array.isArray(type) && type.indexOf('JobPosting') !== -1);
+      if (!isJob || !n.datePosted) continue;
+      const posted = new Date(n.datePosted).getTime();
+      if (Number.isNaN(posted)) continue;
+      return Math.max(0, Math.round((now - posted) / (1000 * 60 * 60 * 24)));
+    }
+    return null;
+  }
+
+  function indeedDetailTextSignals(scopedText) {
+    const t = String(scopedText || '').toLowerCase();
+    const engagementSignals = [];
+    if (/actively reviewing|reviewing applicants|recently active/.test(t)) {
+      engagementSignals.push(ENGAGEMENT_ACTIVELY_REVIEWING);
+    }
+    if (/hiring multiple candidates/.test(t)) engagementSignals.push('hiring_multiple');
+    if (/urgently hiring/.test(t)) engagementSignals.push('urgently_hiring');
+    return {
+      employerResponsive: /often replies in/.test(t),
+      isRepost: /reposted|originally posted|this job was posted/.test(t),
+      appliesOffsite: /apply on company site/.test(t),
+      urgentlyHiring: /urgently hiring/.test(t),
+      hiringMultiple: /hiring multiple candidates/.test(t),
+      engagementSignals: engagementSignals,
+    };
+  }
+
+  function uniqueStrings(list) {
+    const out = [];
+    const seen = {};
+    for (let i = 0; i < (list || []).length; i++) {
+      const v = list[i];
+      if (!v || seen[v]) continue;
+      seen[v] = true;
+      out.push(v);
+    }
+    return out;
+  }
+
+  /**
+   * Path-independent Indeed listing fields for the detail overlay.
+   * `detailText` / `selectedCardText` must be scoped to THIS job
+   * (right pane / viewjob body, or the list card whose data-jk matches).
+   * Full-page body text is intentionally not accepted.
+   */
+  function collectIndeedListingSignals(input) {
+    const src = input || {};
+    const jobKey = src.jobKey ? String(src.jobKey).toLowerCase() : null;
+    const mosaicJobs = Array.isArray(src.mosaicJobs)
+      ? src.mosaicJobs
+      : flattenMosaicJobs(src.snapshot);
+    const mosaicJob = pickMosaicJobForListing(
+      mosaicJobs, jobKey, src.pageTitle, src.pageCompany
+    );
+    const detail = indeedDetailTextSignals(src.detailText);
+    const card = indeedDetailTextSignals(src.selectedCardText || '');
+    const mosaicResponsive = !!(
+      mosaicJob &&
+      (mosaicJob.employerResponsive === true || mosaicJob.oftenReplies === true)
+    );
+    const cached = src.cached || null;
+
+    let daysOpen = daysOpenFromMosaicJob(mosaicJob);
+    if (daysOpen == null && src.jsonLdText) {
+      daysOpen = daysOpenFromJobPostingJsonLd(src.jsonLdText, src.nowMs);
+    }
+    if (daysOpen == null && src.jsonLd) {
+      daysOpen = daysOpenFromJobPostingJsonLd(src.jsonLd, src.nowMs);
+    }
+    if (daysOpen == null && src.detailDateText) {
+      daysOpen = parseRelativeDays(src.detailDateText);
+    }
+    if (daysOpen == null && cached && cached.daysOpen != null) {
+      daysOpen = cached.daysOpen;
+    }
+
+    const employerResponsive = !!(
+      detail.employerResponsive ||
+      card.employerResponsive ||
+      mosaicResponsive ||
+      (cached && cached.employerResponsive)
+    );
+
+    return {
+      mosaicJob: mosaicJob,
+      daysOpen: daysOpen,
+      employerResponsive: employerResponsive,
+      isRepost: detail.isRepost || card.isRepost,
+      appliesOffsite: detail.appliesOffsite || card.appliesOffsite,
+      urgentlyHiring: detail.urgentlyHiring || card.urgentlyHiring,
+      hiringMultiple: detail.hiringMultiple || card.hiringMultiple,
+      engagementSignals: uniqueStrings(
+        [].concat(detail.engagementSignals, card.engagementSignals, src.engagementSignals || [])
+      ),
+    };
+  }
+
+  function lookupIndeedJobCache(map, jobKey, nowMs, ttlMs) {
+    if (!map || !jobKey) return null;
+    const row = map[String(jobKey).toLowerCase()] || map[jobKey];
+    if (!row) return null;
+    const ttl = ttlMs != null ? ttlMs : INDEED_SIGNAL_CACHE_TTL_MS;
+    if ((nowMs || Date.now()) - (row.cachedAt || 0) > ttl) return null;
+    return row;
+  }
+
+  function mergeIndeedJobCache(map, jobKey, fields, nowMs) {
+    const next = {};
+    const src = map || {};
+    const keys = Object.keys(src);
+    for (let i = 0; i < keys.length; i++) next[keys[i]] = src[keys[i]];
+    if (!jobKey) return next;
+    next[String(jobKey).toLowerCase()] = Object.assign({}, fields || {}, {
+      cachedAt: nowMs || Date.now(),
+    });
+    return next;
+  }
+
+  const INDEED_SIGNAL_CACHE_KEY = 'stjIndeedSignalsByJk';
+
+  function rememberIndeedJobSignals(jobKey, fields) {
+    if (!jobKey || typeof chrome === 'undefined' || !chrome.storage) return;
+    const store = chrome.storage.session || chrome.storage.local;
+    if (!store || !store.get) return;
+    try {
+      store.get(INDEED_SIGNAL_CACHE_KEY, function (data) {
+        const prev = (data && data[INDEED_SIGNAL_CACHE_KEY]) || {};
+        const next = mergeIndeedJobCache(prev, jobKey, fields, Date.now());
+        const payload = {};
+        payload[INDEED_SIGNAL_CACHE_KEY] = next;
+        store.set(payload);
+      });
+    } catch (e) { /* orphaned extension context */ }
+  }
+
+  function recallIndeedJobSignals(jobKey) {
+    return new Promise(function (resolve) {
+      if (!jobKey || typeof chrome === 'undefined' || !chrome.storage) {
+        resolve(null);
+        return;
+      }
+      const store = chrome.storage.session || chrome.storage.local;
+      if (!store || !store.get) {
+        resolve(null);
+        return;
+      }
+      try {
+        store.get(INDEED_SIGNAL_CACHE_KEY, function (data) {
+          const map = (data && data[INDEED_SIGNAL_CACHE_KEY]) || {};
+          resolve(lookupIndeedJobCache(map, jobKey, Date.now()));
+        });
+      } catch (e) {
+        resolve(null);
+      }
+    });
   }
 
   // --- Track / Apply payloads --------------------------------------------
@@ -422,6 +715,18 @@
   api.LABEL_TEXT = LABEL_TEXT;
   api.LABEL_COLORS = LABEL_COLORS;
   api.extractIndeedJobKey = extractIndeedJobKey;
+  api.mosaicJobIdentity = mosaicJobIdentity;
+  api.pickMosaicJobForListing = pickMosaicJobForListing;
+  api.flattenMosaicJobs = flattenMosaicJobs;
+  api.daysOpenFromMosaicJob = daysOpenFromMosaicJob;
+  api.daysOpenFromJobPostingJsonLd = daysOpenFromJobPostingJsonLd;
+  api.indeedDetailTextSignals = indeedDetailTextSignals;
+  api.collectIndeedListingSignals = collectIndeedListingSignals;
+  api.lookupIndeedJobCache = lookupIndeedJobCache;
+  api.mergeIndeedJobCache = mergeIndeedJobCache;
+  api.rememberIndeedJobSignals = rememberIndeedJobSignals;
+  api.recallIndeedJobSignals = recallIndeedJobSignals;
+  api.INDEED_SIGNAL_CACHE_TTL_MS = INDEED_SIGNAL_CACHE_TTL_MS;
   api.extractLinkedInJobId = extractLinkedInJobId;
   api.hasEngagementSignal = hasEngagementSignal;
   api.isActivelyReviewing = isActivelyReviewing;
