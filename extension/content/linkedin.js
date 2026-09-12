@@ -877,6 +877,9 @@ function injectOverlay(localScore, backendData, listing) {
   overlay.style.boxShadow = '0 4px 20px rgba(0,0,0,0.15)';
   overlay.style.borderRadius = '10px';
   document.body.appendChild(overlay);
+  if (typeof syncOverlayWithLinkedInDialogs === 'function') {
+    syncOverlayWithLinkedInDialogs();
+  }
 
   // Close button handler
   document.getElementById('ghost-close-btn')?.addEventListener('click', () => {
@@ -1016,6 +1019,23 @@ async function waitForLinkedInJobContent(maxWaitMs = 6500) {
  * Attach a MutationObserver to the job detail pane.
  * This catches cases where LinkedIn swaps the content without a URL change.
  */
+function linkedInDialogOpen() {
+  return !!(
+    document.querySelector('.jobs-easy-apply-modal') ||
+    document.querySelector('.jobs-easy-apply-content') ||
+    document.querySelector('.artdeco-modal-overlay') ||
+    document.querySelector('[data-test-modal-id*="easy-apply" i]')
+  );
+}
+
+function syncOverlayWithLinkedInDialogs() {
+  const overlay = document.getElementById('ghost-detector-overlay');
+  if (!overlay) return;
+  const open = linkedInDialogOpen();
+  overlay.style.visibility = open ? 'hidden' : '';
+  overlay.style.pointerEvents = open ? 'none' : '';
+}
+
 function setupJobDetailObserver() {
   const container =
     document.querySelector('.jobs-search__job-details') ||
@@ -1027,6 +1047,9 @@ function setupJobDetailObserver() {
 
   _ghostObserver = new MutationObserver(() => {
     if (!extensionAlive()) { teardownGhostDetector(); return; }
+    // Hide our z-index:99999 overlay while LinkedIn has a modal up so we
+    // cannot cover Easy Apply. Does not cancel clicks or mutate modal DOM.
+    syncOverlayWithLinkedInDialogs();
     const jobId = getCurrentJobId();
     if (jobId && jobId !== lastProcessedJobId && !isProcessing) {
       // Debounce rapid mutations
@@ -1223,6 +1246,8 @@ _ghostTimers.push(setInterval(() => {
 }, 800));
 
 // 0.1.8 - Track Apply clicks on LinkedIn (passive, reliable)
+// Capture-phase observer only — never preventDefault / stopPropagation.
+// LinkedIn Easy Apply must receive the original click.
 document.addEventListener('click', (e) => {
   const target = e.target.closest('button, a');
   if (!target) return;

@@ -46,8 +46,7 @@ function readBridgedMosaic() {
 function getIndeedJobFromMosaic() {
   try {
     const snapshot = readBridgedMosaic();
-    const providerData = snapshot?.providers;
-    if (!providerData) return null;
+    if (!snapshot) return null;
 
     const currentUrl = window.location.href.toLowerCase();
 
@@ -69,60 +68,49 @@ function getIndeedJobFromMosaic() {
                       document.querySelector('[data-testid="jobsearch-CompanyInfoContainer"]');
     if (companyEl) pageCompany = companyEl.textContent.trim().toLowerCase();
 
+    const jobs = STJ.flattenMosaicJobs
+      ? STJ.flattenMosaicJobs(snapshot)
+      : [];
+
+    if (STJ.pickMosaicJobForListing) {
+      // Exact jk/vjk match when the URL has a key. The old
+      // currentUrl.includes(pageJobKey) bonus applied to EVERY row
+      // and let a date-rich neighbor win.
+      return STJ.pickMosaicJobForListing(jobs, jobKey, pageTitle, pageCompany);
+    }
+
     let bestMatch = null;
     let bestScore = 0;
     let bestIdentity = 0;
 
-    const allProviders = Object.keys(providerData);
+    for (const job of jobs) {
+      if (!job) continue;
 
-    for (const providerKey of allProviders) {
-      const provider = providerData[providerKey];
-      if (!provider) continue;
+      const thisJobKey = (job.jobkey || '').toLowerCase();
+      const jobTitle = (job.displayTitle || job.title || '').toLowerCase();
+      const jobCompany = (job.company || '').toLowerCase();
 
-      let results = [];
-      if (provider.metaData?.mosaicProviderJobCardsModel?.results) {
-        results = provider.metaData.mosaicProviderJobCardsModel.results;
-      } else if (Array.isArray(provider.results)) {
-        results = provider.results;
-      }
+      let identity = 0;
+      const exactKey = !!(jobKey && thisJobKey === jobKey);
+      if (exactKey) identity += 100;
+      if (pageTitle && jobTitle && pageTitle.includes(jobTitle.substring(0, 25))) identity += 35;
+      if (pageCompany && jobCompany && pageCompany.includes(jobCompany)) identity += 15;
 
-      if (!Array.isArray(results) || results.length === 0) continue;
+      if (jobKey && !exactKey) continue;
 
-      for (const job of results) {
-        if (!job) continue;
+      let score = identity;
+      if (job.pubDate || job.formattedRelativeTime) score += 20;
+      if (job.formattedRelativeTime) score += 10;
+      if (job.pubDate) score += 5;
 
-        const thisJobKey = (job.jobkey || '').toLowerCase();
-        const jobTitle = (job.displayTitle || job.title || '').toLowerCase();
-        const jobCompany = (job.company || '').toLowerCase();
-
-        const hasDate = !!(job.pubDate || job.formattedRelativeTime);
-
-        // Identity signals — proof this row IS the job being viewed.
-        let identity = 0;
-        if (jobKey && thisJobKey === jobKey) identity += 100;            // exact jobkey
-        if (jobKey && currentUrl.includes(jobKey)) identity += 40;       // jobkey in URL
-        if (pageTitle && jobTitle && pageTitle.includes(jobTitle.substring(0, 25))) identity += 35; // title
-        if (pageCompany && jobCompany && pageCompany.includes(jobCompany)) identity += 15;          // company
-        if (jobTitle && currentUrl.includes(jobTitle.replace(/\s+/g, '').substring(0, 20))) identity += 10; // url frag
-
-        let score = identity;
-        if (hasDate) score += 20;
-        if (job.formattedRelativeTime) score += 10;
-        if (job.pubDate) score += 5;
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestMatch = job;
-          bestIdentity = identity;
-        }
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = job;
+        bestIdentity = identity;
       }
     }
 
-    // H2 - Require a real identity signal (exact jobkey, jobkey-in-URL, or a
-    // title match all reach 35). Date bonuses alone (max 35) must NOT be
-    // enough, or feed/list views with no selected job would stamp an
-    // arbitrary job's date onto the overlay.
-    if (bestMatch && bestIdentity >= 35) {
+    if (bestMatch && (jobKey || bestIdentity >= 35)) {
       return bestMatch;
     }
 
@@ -134,30 +122,14 @@ function getIndeedJobFromMosaic() {
 
 // Helper: parse Indeed relative time strings (very broad)
 function parseIndeedRelativeDate(text) {
+  if (STJ.parseRelativeDays) return STJ.parseRelativeDays(text);
   if (!text) return null;
   const t = String(text).toLowerCase().trim();
-
   if (/just posted|today|moments? ago|posted today/.test(t)) return 0;
-  if (/(few |a few )?(hours?|mins?|minutes?) ago/.test(t)) return 0;
-
-  // Abbreviated: "3d ago", "5d ago", "Posted 2d ago"
-  let m = t.match(/(?:posted|active)?\s*(\d+)\s*d\s*ago/);
+  let m = t.match(/(\d+)\+?\s*(?:days?|d)\s*ago/);
   if (m) return parseInt(m[1], 10);
-
-  // Weeks: "1w ago", "2 weeks ago", "Posted 3 weeks ago"
-  m = t.match(/(?:posted|active)?\s*(\d+)\s*w(?:eeks?)?\s*ago/);
+  m = t.match(/(\d+)\s*w(?:eeks?)?\s*ago/);
   if (m) return parseInt(m[1], 10) * 7;
-
-  // Standard days
-  m = t.match(/(?:posted|reposted|active)?\s*(\d+)\+?\s*days?\s*ago/);
-  if (m) return parseInt(m[1], 10);
-
-  m = t.match(/active\s+(\d+)\+?\s*days?/);
-  if (m) return parseInt(m[1], 10);
-
-  m = t.match(/(\d+)\+?\s*days?\s*ago/);
-  if (m) return parseInt(m[1], 10);
-
   return null;
 }
 
@@ -187,6 +159,7 @@ function extractConsistentDaysFromBlob(blob) {
 // over pubDate, and round pubDate math instead of ceil (ceil inflates
 // age by up to a full day, which inflates the ghost score).
 function mosaicJobToDays(job) {
+  if (STJ.daysOpenFromMosaicJob) return STJ.daysOpenFromMosaicJob(job);
   if (!job) return null;
   if (job.formattedRelativeTime) {
     const d = parseIndeedRelativeDate(job.formattedRelativeTime);
@@ -195,6 +168,52 @@ function mosaicJobToDays(job) {
   if (job.pubDate) {
     const diff = Math.round((Date.now() - new Date(job.pubDate)) / (1000 * 60 * 60 * 24));
     return Math.max(0, diff);
+  }
+  return null;
+}
+
+function getIndeedDetailRoot() {
+  // Never fall back to document.body / role=main — on search SPA those
+  // include the left-rail cards (sibling dates + "Often replies in").
+  const known = document.querySelector('#jobsearch-ViewjobPaneWrapper') ||
+         document.querySelector('#viewJobDescLinkTarget') ||
+         document.querySelector('#jobsearch-JobBody') ||
+         document.querySelector('.jobsearch-JobInfoWrapper') ||
+         document.querySelector('[data-testid="jobsearch-JobComponent"]') ||
+         document.querySelector('.jobsearch-RightPane') ||
+         document.querySelector('#jobsearch-ViewJobPage') ||
+         document.querySelector('[data-testid="viewJob-body"]');
+  if (known) return known;
+  const desc = document.querySelector('#jobDescriptionText');
+  if (!desc) return null;
+  let el = desc;
+  for (let i = 0; i < 8 && el.parentElement; i++) {
+    el = el.parentElement;
+    if (el.id === 'mosaic-provider-jobcards' || /LeftPane/i.test(el.className || '')) break;
+    if (el.offsetWidth > 400) return el;
+  }
+  return desc.parentElement || desc;
+}
+
+function readSelectedIndeedCardText(jobKey) {
+  if (!jobKey) return '';
+  const key = String(jobKey);
+  const card =
+    document.querySelector('[data-jk="' + key + '"]') ||
+    document.querySelector('[data-jk="' + key.toLowerCase() + '"]') ||
+    document.querySelector('a[id="job_' + key + '"]') ||
+    document.querySelector('a[data-jk="' + key + '"]');
+  if (!card) return '';
+  const root = card.closest('.job_seen_beacon, .resultContent, li, [data-jk]') || card;
+  return (root.innerText || '').trim();
+}
+
+function readIndeedJsonLdDatePosted() {
+  if (!STJ.daysOpenFromJobPostingJsonLd) return null;
+  const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+  for (const s of scripts) {
+    const days = STJ.daysOpenFromJobPostingJsonLd(s.textContent);
+    if (days != null) return days;
   }
   return null;
 }
@@ -360,217 +379,113 @@ async function parseIndeedListing() {
     data.location = locationEl.textContent.trim();
   }
 
-  // --- Page text for signal detection ---
-  const pageText = document.body.innerText.toLowerCase();
+  // Job ID first — every later signal is keyed to jk/vjk so SPA and
+  // /viewjob cannot score two different identities.
+  data.platformJobId = STJ.extractIndeedJobKey
+    ? STJ.extractIndeedJobKey(window.location.href)
+    : ((window.location.href.match(/[?&#](?:vjk|jk)=([a-f0-9]+)/i) || [])[1] || null);
 
-  // 0.1.8 - Targeted text from the main job detail pane only (avoids left sidebar job list dates)
-  const mainJobContainer =
-    document.querySelector('#jobsearch-JobBody') ||
-    document.querySelector('.jobsearch-JobInfoWrapper') ||
-    document.querySelector('[data-testid="jobsearch-JobComponent"]') ||
-    document.querySelector('div[role="main"]') ||
-    document.body;
-  const detailText = (mainJobContainer.innerText || '').toLowerCase();
+  // Detail pane only. Never document.body / role=main — those include
+  // left-rail cards on search SPA ("Often replies in", other jobs' ages).
+  const detailRoot = getIndeedDetailRoot();
+  const detailText = ((detailRoot && detailRoot.innerText) || '').toLowerCase();
+  const selectedCardText = readSelectedIndeedCardText(data.platformJobId);
 
-  // --- 0.1.8: Aggressive Posted date detection (visible text + mosaic jobDetailsSection) ---
-  // On many right-pane vjk= views, the date is not in pubDate/formattedRelativeTime,
-  // but it can be in the human-readable text inside jobDetailsSection.contents.
-
-  let dateText = '';
-
-  // 1. Try the js-match-insights-provider-job-details contents (often has the date as text)
-  try {
-    const sectionStr = readBridgedMosaic()?.jobDetailsSectionText || '';
-    if (sectionStr) {
-      // Only trust this blob when every date-like phrase agrees. Otherwise
-      // defer to the identity-matched mosaic job below — a wrong date here
-      // would pre-empt the reliable source.
-      const sectionDate = extractConsistentDaysFromBlob(sectionStr);
-      if (sectionDate != null) {
-        data.daysOpen = sectionDate;
-        console.log('[SkipThisJob] Days open from jobDetailsSection (unambiguous):', sectionDate);
-      }
-    }
-  } catch (e) {}
-
-  // 2. DOM-based extraction on the right pane
-  if (!data.daysOpen) {
-    const mainJobContainerForDate =
-      document.querySelector('#jobsearch-JobBody') ||
-      document.querySelector('.jobsearch-JobInfoWrapper') ||
-      document.querySelector('[data-testid="jobsearch-JobComponent"]') ||
-      document.querySelector('div[role="main"]') ||
-      document.body;
-
-    dateText = dateText || findIndeedDateText(mainJobContainerForDate);
-
-    // Fallback regex sweep on detailText
-    if (!dateText && !data.daysOpen) {
-      const patterns = [
-        /(posted|active|reposted)\s+(\d+)\+?\s*(?:d|days?)\s*ago/i,
-        /active\s+(\d+)\s*(?:d|days?)\s*ago/i,
-        /(\d+)\+?\s*(?:d|days?)\s*ago/i,
-        /just posted|posted today/i,
-        /(\d+)\+?\s*(?:h|hours?)\s*ago/i,
-        /(\d+)\s*w(?:eeks?)?\s*ago/i
-      ];
-      for (const p of patterns) {
-        const m = detailText.match(p);
-        if (m) {
-          dateText = m[0];
-          break;
-        }
-      }
+  let dateText = detailRoot ? findIndeedDateText(detailRoot) : '';
+  if (!dateText && detailText) {
+    const patterns = [
+      /(posted|active|reposted)\s+(\d+)\+?\s*(?:d|days?)\s*ago/i,
+      /(\d+)\+?\s*(?:d|days?)\s*ago/i,
+      /just posted|posted today/i,
+      /(\d+)\s*w(?:eeks?)?\s*ago/i
+    ];
+    for (const p of patterns) {
+      const m = detailText.match(p);
+      if (m) { dateText = m[0]; break; }
     }
   }
 
-  if (dateText) {
-    const parsed = parseIndeedRelativeDate(dateText);
-    if (parsed != null) {
-      data.daysOpen = parsed;
-    }
+  mosaicDateAttempts++;
+  window.SkipThisJob_MosaicStats.attempts = mosaicDateAttempts;
+
+  let mosaicJob = getIndeedJobFromMosaic();
+  const delays = [700, 900, 1100];
+  for (const delay of delays) {
+    if (mosaicJob && (mosaicJob.pubDate || mosaicJob.formattedRelativeTime || mosaicJob.jobkey)) break;
+    await new Promise(r => setTimeout(r, delay));
+    mosaicJob = getIndeedJobFromMosaic();
   }
 
-  if (data.daysOpen != null) {
-    console.log('[SkipThisJob] Days open (visible text):', data.daysOpen, 'from:', (dateText || '').substring(0, 60));
+  const snapshot = readBridgedMosaic();
+  let jsonLdText = '';
+  document.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
+    if (s.textContent) jsonLdText += s.textContent + '\n';
+  });
+
+  const cached = STJ.recallIndeedJobSignals
+    ? await STJ.recallIndeedJobSignals(data.platformJobId)
+    : null;
+
+  const collected = STJ.collectIndeedListingSignals
+    ? STJ.collectIndeedListingSignals({
+        jobKey: data.platformJobId,
+        snapshot: snapshot,
+        mosaicJobs: mosaicJob ? [mosaicJob].concat(STJ.flattenMosaicJobs ? STJ.flattenMosaicJobs(snapshot) : []) : undefined,
+        pageTitle: data.title,
+        pageCompany: data.companyName,
+        detailText: detailText,
+        selectedCardText: selectedCardText,
+        detailDateText: dateText,
+        jsonLdText: jsonLdText,
+        cached: cached,
+      })
+    : null;
+
+  if (collected) {
+    data.daysOpen = collected.daysOpen;
+    data.employerResponsive = collected.employerResponsive;
+    data.isRepost = collected.isRepost;
+    data.appliesOffsite = collected.appliesOffsite;
+    data.urgentlyHiring = collected.urgentlyHiring;
+    data.hiringMultiple = collected.hiringMultiple;
+    data.engagementSignals = collected.engagementSignals;
+    if (collected.mosaicJob) mosaicJob = collected.mosaicJob;
+  } else {
+    data.daysOpen = mosaicJobToDays(mosaicJob);
+    if (data.daysOpen == null && dateText) data.daysOpen = parseIndeedRelativeDate(dateText);
+    if (data.daysOpen == null) data.daysOpen = readIndeedJsonLdDatePosted();
   }
 
-  // 0.1.8 - Mosaic date extraction (primary source for right-pane jobs)
-  if (data.daysOpen == null) {
-    mosaicDateAttempts++;
-    window.SkipThisJob_MosaicStats.attempts = mosaicDateAttempts;
-
-    let mosaicJob = getIndeedJobFromMosaic();
-
-    // Multiple retries — Indeed is slow to populate jobcards on some pages
-    const delays = [700, 900, 1100];
-    for (const delay of delays) {
-      if (mosaicJob && (mosaicJob.pubDate || mosaicJob.formattedRelativeTime)) break;
-      await new Promise(r => setTimeout(r, delay));
-      mosaicJob = getIndeedJobFromMosaic();
+  if (data.daysOpen != null && mosaicJob && (mosaicJob.pubDate || mosaicJob.formattedRelativeTime)) {
+    mosaicDateSuccesses++;
+    window.SkipThisJob_MosaicStats.successes = mosaicDateSuccesses;
+    console.log(`[SkipThisJob] Mosaic date SUCCESS → ${data.daysOpen} days (${mosaicJob.formattedRelativeTime || 'from pubDate'})`);
+    if (mosaicJob.salarySnippet && mosaicJob.salarySnippet.text && !data.salaryListed) {
+      data.salaryListed = true;
     }
-
-    if (mosaicJob) {
-      const days = mosaicJobToDays(mosaicJob);
-
-      if (days != null) {
-        mosaicDateSuccesses++;
-        window.SkipThisJob_MosaicStats.successes = mosaicDateSuccesses;
-        data.daysOpen = days;
-
-        console.log(`[SkipThisJob] Mosaic date SUCCESS → ${days} days (${mosaicJob.formattedRelativeTime || 'from pubDate'})`);
-
-        if (mosaicJob.salarySnippet?.text && !data.salaryListed) {
-          data.salaryListed = true;
-        }
-      }
-    }
-
-    if (data.daysOpen == null) {
-      console.log(`[SkipThisJob] Mosaic date FAILED (attempts: ${mosaicDateAttempts}, successes: ${mosaicDateSuccesses})`);
-    }
+  } else if (data.daysOpen != null) {
+    console.log('[SkipThisJob] Days open:', data.daysOpen, 'from:', (dateText || 'json-ld/cache').substring(0, 60));
+  } else {
+    console.log(`[SkipThisJob] Mosaic date FAILED (attempts: ${mosaicDateAttempts}, successes: ${mosaicDateSuccesses})`);
   }
 
-  // Final fallback: one last sweep inside the main detail area only
-  if (data.daysOpen == null) {
-    const lastChance = detailText.match(/(\d+)\+?\s*days?\s*ago/);
-    if (lastChance) {
-      data.daysOpen = parseInt(lastChance[1], 10);
-      console.log('[SkipThisJob] Days open (last-chance detail area):', data.daysOpen);
-    }
-  }
-
-  // 0.1.8 - Late re-check + MutationObserver (true Option B)
-  // If we still have no date after normal flow, do a fixed late re-check.
-  // If that also fails, attach a MutationObserver on the job list.
-  // When new job cards appear, re-run date extraction.
+  // Late re-check stays scoped to the detail root + identity-matched mosaic.
+  // Do not scan document.body — that reintroduces sibling-card dates.
   if (data.daysOpen == null) {
     setTimeout(async () => {
       if (data.daysOpen != null) return;
-
       try {
-        const lateContainer =
-          document.querySelector('#jobsearch-JobBody') ||
-          document.querySelector('.jobsearch-JobInfoWrapper') ||
-          document.querySelector('[data-testid="jobsearch-JobComponent"]') ||
-          document.querySelector('div[role="main"]') ||
-          document.body;
-
-        let lateDateText = findIndeedDateText(lateContainer);
-        if (!lateDateText) {
-          const lateDetailText = (lateContainer.innerText || '').toLowerCase();
-          const lateMatch = lateDetailText.match(/(\d+)\+?\s*(?:d|days?|w|weeks?)\s*ago/);
-          if (lateMatch) lateDateText = lateMatch[0];
-        }
-
+        const lateRoot = getIndeedDetailRoot();
+        let lateDateText = lateRoot ? findIndeedDateText(lateRoot) : '';
         let lateDays = lateDateText ? parseIndeedRelativeDate(lateDateText) : null;
-
-        if (lateDays == null) {
-          lateDays = mosaicJobToDays(getIndeedJobFromMosaic());
-        }
-
+        if (lateDays == null) lateDays = mosaicJobToDays(getIndeedJobFromMosaic());
+        if (lateDays == null) lateDays = readIndeedJsonLdDatePosted();
         if (lateDays != null) {
           data.daysOpen = lateDays;
           console.log(`[SkipThisJob] Late re-check SUCCESS → ${lateDays} days`);
-          return;
         }
-
-        // Still no date → attach observer for when new jobcards arrive
-        attachJobcardsObserver(data, lateContainer);
       } catch (e) {}
     }, 5500);
-  }
-
-  function attachJobcardsObserver(listingData, rightPane) {
-    try {
-      const jobList = document.querySelector('.jobsearch-ResultsList') ||
-                      document.querySelector('[data-testid*="jobsearch-Results"]') ||
-                      document.body;
-
-      if (!jobList) return;
-
-      const obs = new MutationObserver(async () => {
-        if (listingData.daysOpen != null) {
-          obs.disconnect();
-          return;
-        }
-
-        let dt = findIndeedDateText(rightPane || document.body);
-        if (!dt) {
-          const dtxt = (rightPane || document.body).innerText.toLowerCase();
-          const m = dtxt.match(/(\d+)\+?\s*(?:d|days?|w|weeks?)\s*ago/);
-          if (m) dt = m[0];
-        }
-
-        let d = dt ? parseIndeedRelativeDate(dt) : null;
-
-        if (d == null) {
-          d = mosaicJobToDays(getIndeedJobFromMosaic());
-        }
-
-        if (d != null) {
-          listingData.daysOpen = d;
-          console.log(`[SkipThisJob] MutationObserver re-scan SUCCESS → ${d} days`);
-          obs.disconnect();
-        }
-      });
-
-      obs.observe(jobList, { childList: true, subtree: true });
-
-      // Safety net
-      setTimeout(() => {
-        if (listingData.daysOpen == null) {
-          obs.disconnect();
-          console.warn('[SkipThisJob] ⚠️  STILL NO DATE after MutationObserver. This job will get +15 unknown age penalty.');
-        }
-      }, 30000);
-    } catch (e) {}
-  }
-
-  // 0.1.8 - Repost detection (text + mosaic)
-  if (pageText.includes('reposted') || pageText.includes('originally posted') || pageText.includes('this job was posted')) {
-    data.isRepost = true;
-    console.log('[SkipThisJob] Repost detected on Indeed');
   }
 
   // 0.1.8 - Improved salary detection (structured fields + description)
@@ -586,8 +501,8 @@ async function parseIndeedListing() {
     console.log('[SkipThisJob] Salary found');
   }
 
-  // 0.1.8 - Detect work arrangement and employment type
-  const lowerPage = pageText.toLowerCase();
+  // Work arrangement / employment type from the detail pane only
+  const lowerPage = detailText;
   if (lowerPage.includes('remote') && !lowerPage.includes('hybrid')) {
     data.workArrangement = 'remote';
   } else if (lowerPage.includes('hybrid')) {
@@ -642,7 +557,7 @@ async function parseIndeedListing() {
     /contract.+through\s/i,
   ];
   for (const pattern of thirdPartyPatterns) {
-    if (pattern.test(pageText)) {
+    if (pattern.test(detailText) || (data.description && pattern.test(data.description))) {
       data.isThirdParty = true;
       break;
     }
@@ -660,54 +575,30 @@ async function parseIndeedListing() {
     console.log('[SkipThisJob] Known staffing/aggregator:', data.companyName);
   }
 
-  // --- Hiring insights ---
-  // Indeed shows employer responsiveness signals in the sidebar cards
-  if (pageText.includes('often replies in')) {
-    data.employerResponsive = true;
-    console.log('[SkipThisJob] Employer responsive');
-  }
-  if (pageText.includes('hiring multiple candidates')) {
-    data.hiringMultiple = true;
-  }
-
-  // 0.1.8 - Improved engagement signal detection
-  const engagementPatterns = [
-    { pattern: /actively reviewing|reviewing applicants|recently active/i, key: 'actively_reviewing' },
-    { pattern: /hiring multiple candidates/i, key: 'hiring_multiple' },
-    { pattern: /urgently hiring/i, key: 'urgently_hiring' },
-  ];
-
-  for (const { pattern, key } of engagementPatterns) {
-    if (pattern.test(pageText)) {
-      if (!data.engagementSignals.includes(key)) {
-        data.engagementSignals.push(key);
-      }
-    }
-  }
   data.activelyReviewing = STJ.isActivelyReviewing
     ? STJ.isActivelyReviewing(data)
     : data.engagementSignals.includes('actively_reviewing');
+  if (data.employerResponsive) console.log('[SkipThisJob] Employer responsive (this job only)');
 
-  // "Urgently hiring" — can be legitimate or evergreen bait
-  data.urgentlyHiring = pageText.includes('urgently hiring');
-
-  // "Apply on company site" — redirects off Indeed, less trackable
-  const applyBtn = document.querySelector('[data-testid="apply-button-container"]') ||
-                   document.querySelector('.jobsearch-IndeedApplyButton-newDesign') ||
-                   document.querySelector('button[id*="apply"], a[id*="apply"]');
+  // "Apply on company site" — detail apply button, not page-wide copy
+  const applyRoot = detailRoot || document;
+  const applyBtn = applyRoot.querySelector('[data-testid="apply-button-container"]') ||
+                   applyRoot.querySelector('.jobsearch-IndeedApplyButton-newDesign') ||
+                   applyRoot.querySelector('button[id*="apply"], a[id*="apply"]');
   const applyText = applyBtn ? applyBtn.textContent.toLowerCase() : '';
-  data.appliesOffsite = applyText.includes('company site') || applyText.includes('apply on') || 
-                        pageText.includes('apply on company site');
+  if (applyText.includes('company site') || applyText.includes('apply on')) {
+    data.appliesOffsite = true;
+  }
 
-  // Indeed employer rating (shown on the page like "3.5 ⭐")
-  const ratingEl = document.querySelector('[data-testid="inlineHeader-companyRating"]') ||
-                   document.querySelector('.jobsearch-CompanyInfoContainer .ratingsDisplay');
-  if (!ratingEl) {
-    const ratingMatch = pageText.match(/(\d\.\d)\s*(?:out of 5|★|star)/);
-    if (ratingMatch) data.indeedRating = parseFloat(ratingMatch[1]);
-  } else {
+  // Indeed employer rating from the detail header (not a sibling card)
+  const ratingEl = (detailRoot || document).querySelector('[data-testid="inlineHeader-companyRating"]') ||
+                   (detailRoot || document).querySelector('.jobsearch-CompanyInfoContainer .ratingsDisplay');
+  if (ratingEl) {
     const ratingText = ratingEl.textContent.match(/(\d\.\d)/);
     if (ratingText) data.indeedRating = parseFloat(ratingText[1]);
+  } else {
+    const ratingMatch = detailText.match(/(\d\.\d)\s*(?:out of 5|★|star)/);
+    if (ratingMatch) data.indeedRating = parseFloat(ratingMatch[1]);
   }
   if (data.indeedRating) console.log('[SkipThisJob] Indeed rating:', data.indeedRating);
 
@@ -727,19 +618,25 @@ async function parseIndeedListing() {
     }
   }
 
-  // --- Job ID from URL (jk= viewjob and vjk= right-pane) ---
-  data.platformJobId = STJ.extractIndeedJobKey
-    ? STJ.extractIndeedJobKey(window.location.href)
-    : ((window.location.href.match(/[?&#](?:vjk|jk)=([a-f0-9]+)/i) || [])[1] || null);
   data.descriptionHash = STJ.hashDescription ? STJ.hashDescription(data.description) : null;
+
+  if (data.platformJobId && STJ.rememberIndeedJobSignals) {
+    STJ.rememberIndeedJobSignals(data.platformJobId, {
+      daysOpen: data.daysOpen,
+      employerResponsive: data.employerResponsive,
+      engagementSignals: data.engagementSignals,
+      salaryListed: data.salaryListed,
+    });
+  }
 
   console.log('[SkipThisJob] Parsed:', JSON.stringify({
     title: data.title, company: data.companyName, days: data.daysOpen,
-    salary: data.salaryListed, thirdParty: data.isThirdParty
+    salary: data.salaryListed, thirdParty: data.isThirdParty,
+    jobKey: data.platformJobId, responsive: data.employerResponsive
   }));
 
   if (data.daysOpen == null) {
-    console.warn('[SkipThisJob] ⚠️  STILL NO DATE after all attempts (visible + mosaic + detailText fallback). This job will get +15 unknown age penalty.');
+    console.warn('[SkipThisJob] ⚠️  STILL NO DATE after all attempts (detail + identity mosaic + json-ld + cache). This job will get +15 unknown age penalty.');
   }
 
   return data;

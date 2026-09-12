@@ -26,18 +26,43 @@
 
   function pickJob(job) {
     if (!job || typeof job !== 'object') return null;
+    const jobkey = job.jobkey || job.jobKey || job.jk || '';
+    if (!jobkey && !job.displayTitle && !job.title) return null;
     return {
-      jobkey: job.jobkey || '',
+      jobkey: jobkey,
       displayTitle: job.displayTitle || '',
       title: job.title || '',
-      company: job.company || '',
+      company: job.company || job.companyName || '',
       link: job.link || '',
-      url: job.url || '',
-      pubDate: job.pubDate || null,
-      createDate: job.createDate || null,
-      formattedRelativeTime: job.formattedRelativeTime || '',
+      url: job.url || job.viewJobLink || '',
+      pubDate: job.pubDate || job.datePublished || null,
+      createDate: job.createDate || job.dateCreated || null,
+      formattedRelativeTime: job.formattedRelativeTime || job.relativeTimeAgo || '',
       salarySnippet: { text: (job.salarySnippet && job.salarySnippet.text) || '' },
+      employerResponsive: !!(job.employerResponsive || job.oftenReplies),
+      oftenReplies: !!job.oftenReplies,
+      urgentlyHiring: !!job.urgentlyHiring,
     };
+  }
+
+  function collectJobsDeep(node, out, seen, depth) {
+    if (!node || typeof node !== 'object' || depth > 14) return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (typeof node.jobkey === 'string' || typeof node.jobKey === 'string' || typeof node.jk === 'string') {
+      const picked = pickJob(node);
+      if (picked && picked.jobkey) out.push(picked);
+    }
+    if (Array.isArray(node)) {
+      const limit = Math.min(node.length, 80);
+      for (let i = 0; i < limit; i++) collectJobsDeep(node[i], out, seen, depth + 1);
+      return;
+    }
+    const keys = Object.keys(node);
+    for (let i = 0; i < keys.length && i < 60; i++) {
+      const v = node[keys[i]];
+      if (v && typeof v === 'object') collectJobsDeep(v, out, seen, depth + 1);
+    }
   }
 
   function buildSnapshot() {
@@ -46,7 +71,24 @@
     if (!providerData || typeof providerData !== 'object') return null;
 
     const providers = {};
+    const flat = [];
+    const seenKeys = {};
     let total = 0;
+
+    function addJob(job, providerKey) {
+      const p = pickJob(job);
+      if (!p || !p.jobkey) return;
+      const k = String(p.jobkey).toLowerCase();
+      if (seenKeys[k]) return;
+      seenKeys[k] = true;
+      if (total >= MAX_JOBS) return;
+      flat.push(p);
+      total++;
+      if (providerKey) {
+        if (!providers[providerKey]) providers[providerKey] = { results: [] };
+        providers[providerKey].results.push(p);
+      }
+    }
 
     for (const key of Object.keys(providerData)) {
       const provider = providerData[key];
@@ -63,18 +105,17 @@
         results = provider.results;
       }
 
-      if (!results || results.length === 0) continue;
-
-      const slim = [];
-      for (const job of results) {
-        if (total >= MAX_JOBS) break;
-        const p = pickJob(job);
-        if (p) {
-          slim.push(p);
-          total++;
-        }
+      if (results && results.length) {
+        for (const job of results) addJob(job, key);
       }
-      if (slim.length) providers[key] = { results: slim };
+    }
+
+    // /viewjob and some right-pane providers keep the selected job outside
+    // mosaicProviderJobCardsModel.results — walk the rest of the tree.
+    if (flat.length < MAX_JOBS) {
+      const deep = [];
+      collectJobsDeep(providerData, deep, new Set(), 0);
+      for (const job of deep) addJob(job, '_deep');
     }
 
     // Right-pane (vjk=) detail views keep the human-readable posting date
@@ -90,7 +131,7 @@
       }
     } catch (e) {}
 
-    if (Object.keys(providers).length === 0 && !jobDetailsSectionText) {
+    if (Object.keys(providers).length === 0 && flat.length === 0 && !jobDetailsSectionText) {
       return null;
     }
 
@@ -98,6 +139,7 @@
       ts: Date.now(),
       url: location.href,
       providers: providers,
+      jobs: flat,
       jobDetailsSectionText: jobDetailsSectionText,
     };
   }
@@ -126,6 +168,7 @@
       // change every tick, so compare everything except ts.
       const fingerprint =
         json.length + '|' + snap.url + '|' + JSON.stringify(snap.providers).length +
+        '|' + (snap.jobs ? snap.jobs.length : 0) +
         '|' + snap.jobDetailsSectionText.length;
       if (fingerprint === lastWritten) return;
       const node = getNode();
