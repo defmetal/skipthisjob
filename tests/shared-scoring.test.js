@@ -112,6 +112,47 @@ test('Indeed combo penalties do not stack when engagementSignals has actively_re
   assert.equal(score, 42, 'reviewing listings must not eat stale/no-review combo penalties');
 });
 
+test('list badge memory keeps a detail score when a rescan has null age', () => {
+  shared.clearListBadgeMemory();
+  const detail = shared.scoreListingSignals({
+    title: 'Senior Full-Stack Engineer',
+    daysOpen: 150,
+    easyApply: true,
+    salaryListed: false,
+  }, { platform: 'linkedin' });
+  assert.ok(detail.score >= 88);
+  shared.rememberListBadgeScore('baton-job', detail, { source: 'detail', daysOpen: 150 });
+
+  const weakPreview = shared.scoreListPreview({
+    title: 'Senior Full-Stack Engineer',
+    // Promoted card: no visible date
+  });
+  assert.ok(weakPreview.score < 20, 'no-age preview should be low, got ' + weakPreview.score);
+
+  const resolved = shared.resolveListBadge(
+    weakPreview,
+    { title: 'Senior Full-Stack Engineer', daysOpen: null },
+    shared.lookupListBadgeScore('baton-job')
+  );
+  assert.equal(resolved.kept, true);
+  assert.equal(resolved.result.score, detail.score);
+  assert.ok(resolved.result.score >= 88);
+  assert.notEqual(resolved.result.score, 0);
+
+  const solid = shared.scoreListPreview({
+    title: 'Senior Full-Stack Engineer',
+    daysOpen: 150,
+    easyApply: true,
+  });
+  const fromSolid = shared.resolveListBadge(
+    solid,
+    { title: 'Senior Full-Stack Engineer', daysOpen: 150 },
+    shared.lookupListBadgeScore('baton-job')
+  );
+  assert.ok(fromSolid.result.score >= 88);
+  shared.clearListBadgeMemory();
+});
+
 test('scoreListPreview stays conservative without description penalties', () => {
   const fresh = shared.scoreListPreview({ title: 'Engineer', daysOpen: 1, salaryListed: true });
   const stale = shared.scoreListPreview({ title: 'Engineer', daysOpen: 45, isRepost: true, salaryListed: false });

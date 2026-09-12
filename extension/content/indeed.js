@@ -1278,9 +1278,12 @@ function startIndeedListBadges() {
         '[data-testid="myJobsStateDate"], .date, span.date'
       );
       const text = (card.innerText || '').toLowerCase();
+      const jk = (card.getAttribute && (card.getAttribute('data-jk') || card.getAttribute('data-job-id'))) ||
+        (card.closest && card.closest('[data-jk]') && card.closest('[data-jk]').getAttribute('data-jk'));
       return {
         title,
         companyName: companyEl ? companyEl.textContent.trim() : null,
+        platformJobId: jk || null,
         daysOpen: STJ.daysOpenFromCard
           ? STJ.daysOpenFromCard(card, dateEl, text)
           : (STJ.parseRelativeDays ? STJ.parseRelativeDays(dateEl ? dateEl.textContent : text) : null),

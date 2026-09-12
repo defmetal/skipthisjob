@@ -91,6 +91,10 @@ function stampListBadgeForCurrentJob(listing, result) {
   if (!STJ.injectListBadge || !listing || !result) return;
   const jobId = listing.platformJobId;
   if (!jobId) return;
+  const stamped = Object.assign({}, result, { source: 'detail', daysOpen: listing.daysOpen });
+  if (STJ.rememberListBadgeScore) {
+    STJ.rememberListBadgeScore(jobId, stamped, { source: 'detail', daysOpen: listing.daysOpen });
+  }
   const card =
     document.querySelector('[data-job-id="' + jobId + '"]') ||
     document.querySelector('[data-occludable-job-id="' + jobId + '"]') ||
@@ -99,7 +103,7 @@ function stampListBadgeForCurrentJob(listing, result) {
   const anchor = card.querySelector(
     'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link'
   ) || card;
-  STJ.injectListBadge(card, result, anchor);
+  STJ.injectListBadge(card, stamped, anchor);
 }
 
 function parseLinkedInListing() {
@@ -1196,9 +1200,18 @@ function startLinkedInListBadges() {
       );
       const text = (card.innerText || card.textContent || '').toLowerCase();
       const parseAge = STJ.parseLinkedInPostedAge || STJ.parseRelativeDays;
+      const jobId = card.getAttribute && (card.getAttribute('data-job-id') ||
+        card.getAttribute('data-occludable-job-id')) ||
+        (card.closest && (card.closest('[data-job-id]') || card.closest('[data-occludable-job-id]')));
+      const platformJobId = typeof jobId === 'string'
+        ? jobId
+        : (jobId && jobId.getAttribute
+          ? (jobId.getAttribute('data-job-id') || jobId.getAttribute('data-occludable-job-id'))
+          : null);
       return {
         title,
         companyName: companyEl ? companyEl.textContent.trim() : null,
+        platformJobId: platformJobId,
         daysOpen: parseAge && parseAge(text) != null
           ? parseAge(text)
           : (STJ.daysOpenFromCard

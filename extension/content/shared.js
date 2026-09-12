@@ -1012,13 +1012,122 @@
 
   function badgeHtml(result) {
     const color = LABEL_COLORS[result.label] || LABEL_COLORS.moderate;
+    const daysAttr = result.daysOpen != null ? String(result.daysOpen) : '';
+    const source = result.source || 'preview';
     return (
       '<span class="stj-list-badge stj-list-badge--' + result.label + '" ' +
+      'data-stj-score="' + result.score + '" data-stj-label="' + result.label + '" ' +
+      'data-stj-days="' + daysAttr + '" data-stj-source="' + source + '" ' +
       'title="Skip This Job preview: ' + result.score + '/100 — ' + (LABEL_TEXT[result.label] || '') + '" ' +
       'style="background:' + color.bg + ';color:' + color.text + ';border:1px solid ' + color.border + ';">' +
       color.icon + ' ' + result.score +
       '</span>'
     );
+  }
+
+  // Detail-visit / solid-preview scores keyed by job id so a later
+  // MutationObserver rescan (Promoted card, no visible date → preview 0)
+  // cannot wipe Baton/First Point badges back to 0.
+  const listBadgeMemory = {};
+
+  function listBadgeKey(card, parsed) {
+    if (parsed && (parsed.platformJobId || parsed.jobId)) {
+      return String(parsed.platformJobId || parsed.jobId);
+    }
+    if (card && card.getAttribute) {
+      const direct = card.getAttribute('data-job-id') || card.getAttribute('data-occludable-job-id') ||
+        card.getAttribute('data-jk');
+      if (direct) return String(direct);
+      const host = card.closest
+        ? (card.closest('[data-job-id]') || card.closest('[data-occludable-job-id]') || card.closest('[data-jk]'))
+        : null;
+      if (host) {
+        return host.getAttribute('data-job-id') ||
+          host.getAttribute('data-occludable-job-id') ||
+          host.getAttribute('data-jk');
+      }
+    }
+    if (parsed && parsed.title) {
+      return normalizeTitle(parsed.title) + '|' + normalizeTitle(parsed.companyName || '');
+    }
+    return null;
+  }
+
+  function rememberListBadgeScore(key, result, meta) {
+    if (!key || !result || result.score == null) return null;
+    const extra = meta || {};
+    const row = {
+      score: result.score,
+      label: result.label || labelForScore(result.score),
+      signals: result.signals || [],
+      daysOpen: extra.daysOpen != null ? extra.daysOpen : result.daysOpen,
+      source: extra.source || result.source || 'preview',
+      isHighTurnover: !!result.isHighTurnover,
+      updatedAt: Date.now(),
+    };
+    listBadgeMemory[String(key)] = row;
+    return row;
+  }
+
+  function lookupListBadgeScore(key) {
+    if (!key) return null;
+    return listBadgeMemory[String(key)] || null;
+  }
+
+  function clearListBadgeMemory() {
+    const keys = Object.keys(listBadgeMemory);
+    for (let i = 0; i < keys.length; i++) delete listBadgeMemory[keys[i]];
+  }
+
+  function readExistingBadge(card) {
+    if (!card || !card.querySelector) return null;
+    const el = card.querySelector('.stj-list-badge');
+    if (!el) return null;
+    const score = Number(el.getAttribute('data-stj-score'));
+    if (Number.isNaN(score)) return null;
+    const daysRaw = el.getAttribute('data-stj-days');
+    const daysOpen = daysRaw === '' || daysRaw == null ? null : Number(daysRaw);
+    return {
+      score: score,
+      label: el.getAttribute('data-stj-label') || labelForScore(score),
+      signals: [],
+      daysOpen: daysOpen != null && !Number.isNaN(daysOpen) ? daysOpen : null,
+      source: el.getAttribute('data-stj-source') || 'preview',
+    };
+  }
+
+  /**
+   * Keep a known badge when the rescan has weaker/null age (Promoted
+   * cards) or would otherwise drop a detail-stamped score to ~0.
+   */
+  function resolveListBadge(preview, parsed, remembered) {
+    const next = preview || { score: 0, label: 'low', signals: [] };
+    if (!remembered || remembered.score == null) {
+      return { result: next, kept: false };
+    }
+    const newDays = parsed && parsed.daysOpen != null && !Number.isNaN(Number(parsed.daysOpen))
+      ? Number(parsed.daysOpen) : null;
+    const oldDays = remembered.daysOpen != null && !Number.isNaN(Number(remembered.daysOpen))
+      ? Number(remembered.daysOpen) : null;
+    const newScore = next.score != null ? next.score : 0;
+    const oldScore = remembered.score;
+    const ageMissing = newDays == null;
+    const keepDetail = remembered.source === 'detail' && newScore < oldScore &&
+      (ageMissing || oldDays == null || newDays === oldDays);
+    if ((ageMissing && oldScore > newScore) || keepDetail) {
+      return {
+        result: {
+          score: remembered.score,
+          label: remembered.label || labelForScore(remembered.score),
+          signals: remembered.signals || next.signals || [],
+          daysOpen: remembered.daysOpen,
+          source: remembered.source || 'remembered',
+          isHighTurnover: !!remembered.isHighTurnover,
+        },
+        kept: true,
+      };
+    }
+    return { result: next, kept: false };
   }
 
   function injectListBadge(card, result, anchor) {
@@ -1065,14 +1174,23 @@
           continue;
         }
         if (!parsed || !parsed.title) continue;
-        const result = scoreListPreview(parsed);
+        const preview = scoreListPreview(parsed);
+        const key = listBadgeKey(card, parsed);
+        const remembered = lookupListBadgeScore(key) || readExistingBadge(card);
+        const resolved = resolveListBadge(preview, parsed, remembered);
+        if (key && !resolved.kept) {
+          rememberListBadgeScore(key, resolved.result, {
+            source: 'preview',
+            daysOpen: parsed.daysOpen,
+          });
+        }
         let anchor = null;
         try {
           anchor = options.anchor ? options.anchor(card) : card;
         } catch (e) {
           anchor = card;
         }
-        injectListBadge(card, result, anchor);
+        injectListBadge(card, resolved.result, anchor);
       }
     };
     const schedule = function () {
@@ -1143,6 +1261,12 @@
   api.installPopupBridge = installPopupBridge;
   api.watchListBadges = watchListBadges;
   api.injectListBadge = injectListBadge;
+  api.listBadgeKey = listBadgeKey;
+  api.rememberListBadgeScore = rememberListBadgeScore;
+  api.lookupListBadgeScore = lookupListBadgeScore;
+  api.clearListBadgeMemory = clearListBadgeMemory;
+  api.resolveListBadge = resolveListBadge;
+  api.readExistingBadge = readExistingBadge;
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
