@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { corsResponse, corsOptions } from '@/lib/cors';
 import { supabaseAdmin } from '@/lib/supabase';
 import { recomputeEmployerScore } from '@/lib/employerScore';
+import { enforceRateLimit } from '@/lib/rateLimit';
 
 /**
  * POST /api/report
@@ -44,6 +45,15 @@ export async function POST(request: NextRequest) {
     flagReasons,
     outcome,
   } = body;
+
+  const limited = enforceRateLimit(
+    request,
+    'report',
+    8,
+    60_000,
+    anonymousUserHash ? String(anonymousUserHash) : undefined
+  );
+  if (!limited.ok) return limited.response;
 
   // Validate required fields
   if (!reportType || !companyName || !anonymousUserHash || !platform) {
@@ -158,30 +168,40 @@ export async function POST(request: NextRequest) {
     return corsResponse({ error: 'Failed to save report' }, 500);
   }
 
-  // --- Increment employer report count ---
-  await supabaseAdmin.rpc('increment_employer_reports', {
-    employer_uuid: employer.id,
-  });
+  const { count: totalReports } = await supabaseAdmin
+    .from('community_reports')
+    .select('id', { count: 'exact', head: true })
+    .eq('employer_id', employer.id);
 
-  // If the RPC doesn't exist yet, fall back to a manual count update.
   await supabaseAdmin
     .from('employers')
-    .update({
-      total_reports: (await supabaseAdmin
-        .from('community_reports')
-        .select('id', { count: 'exact', head: true })
-        .eq('employer_id', employer.id)
-      ).count || 0,
-    })
+    .update({ total_reports: totalReports || 0 })
     .eq('id', employer.id);
 
-  // Re-aggregate ghost_score now that report counts changed. Best-effort:
-  // a new report should never fail just because scoring did.
+  let listingReports = 0;
+  if (listingId) {
+    const { count } = await supabaseAdmin
+      .from('community_reports')
+      .select('id', { count: 'exact', head: true })
+      .eq('listing_id', listingId);
+    listingReports = count || 0;
+  }
+
+  let ghostScore: number | null = null;
+  let ghostLabel: string | null = null;
   try {
-    await recomputeEmployerScore(supabaseAdmin, employer.id, 'new_report');
+    const recomputed = await recomputeEmployerScore(supabaseAdmin, employer.id, 'new_report');
+    ghostScore = recomputed?.score ?? null;
+    ghostLabel = recomputed?.label ?? null;
   } catch (e) {
     console.error('recomputeEmployerScore (report) failed:', e);
   }
 
-  return corsResponse({ success: true });
+  return corsResponse({
+    success: true,
+    totalReports: totalReports || 0,
+    listingReports,
+    ghostScore,
+    ghostLabel,
+  });
 }

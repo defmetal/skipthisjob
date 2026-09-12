@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 import { corsResponse, corsOptions } from '@/lib/cors';
+import { enforceRateLimit } from '@/lib/rateLimit';
 
 // Simple in-memory cache for fresh employer scores (reduces DB load on repeated lookups)
 const freshScoreCache = new Map<string, { result: any; timestamp: number }>();
@@ -11,10 +12,17 @@ export async function OPTIONS() {
 }
 
 export async function GET(request: NextRequest) {
+  const limited = enforceRateLimit(request, 'score', 80, 60_000);
+  if (!limited.ok) return limited.response;
+
   const name = request.nextUrl.searchParams.get('name');
   if (!name) {
     return corsResponse({ error: 'Missing name parameter' }, 400);
   }
+
+  const platform = request.nextUrl.searchParams.get('platform');
+  const jobId = request.nextUrl.searchParams.get('jobId');
+  const bypassCache = request.nextUrl.searchParams.get('fresh') === '1';
 
   const selectFields = `
     id,
@@ -84,14 +92,31 @@ export async function GET(request: NextRequest) {
   const cacheKey = employer.id;
   const cached = freshScoreCache.get(cacheKey);
 
-  if (cached && Date.now() - cached.timestamp < FRESH_CACHE_TTL_MS) {
+  if (!bypassCache && cached && Date.now() - cached.timestamp < FRESH_CACHE_TTL_MS) {
     fresh = cached.result;
   } else {
     fresh = await computeFreshEmployerScore(employer.id, employer.ghost_score);
     freshScoreCache.set(cacheKey, { result: fresh, timestamp: Date.now() });
   }
 
-  return buildResponse(employer, fresh);
+  let listingReports = 0;
+  if (platform && jobId) {
+    const { data: listing } = await supabaseAdmin
+      .from('listings')
+      .select('id')
+      .eq('platform', platform)
+      .eq('platform_job_id', jobId)
+      .maybeSingle();
+    if (listing) {
+      const { count } = await supabaseAdmin
+        .from('community_reports')
+        .select('id', { count: 'exact', head: true })
+        .eq('listing_id', listing.id);
+      listingReports = count || 0;
+    }
+  }
+
+  return buildResponse(employer, fresh, listingReports);
 }
 
 /**
@@ -184,7 +209,8 @@ async function computeFreshEmployerScore(
 
 function buildResponse(
   employer: any,
-  fresh?: { score: number; signals: string[]; hasFreshData: boolean }
+  fresh?: { score: number; signals: string[]; hasFreshData: boolean },
+  listingReports = 0
 ) {
   const signals: string[] = [];
   let finalScore = employer.ghost_score ?? 40;
@@ -199,6 +225,12 @@ function buildResponse(
     if (employer.total_reports >= 10) {
       signals.push(`${employer.total_reports} community ghost reports`);
     }
+  }
+
+  if (listingReports > 0) {
+    signals.unshift(
+      `${listingReports} community report${listingReports === 1 ? '' : 's'} on this listing`
+    );
   }
 
   if (employer.glassdoor_rating && employer.glassdoor_rating < 3.0) {
@@ -229,6 +261,7 @@ function buildResponse(
     label,
     signals: Array.from(new Set(signals)), // dedupe
     totalReports: employer.total_reports,
+    listingReports,
     totalListings: employer.total_listings_tracked,
     glassdoor,
     found: true,
