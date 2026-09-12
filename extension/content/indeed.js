@@ -938,9 +938,21 @@ function blendGhostScore(localScore, backendData) {
     const floored = STJ.enforceAgeFloor(score, localScore.daysOpen, signals);
     score = floored.score;
   }
+  if (STJ.applyLowIntentTax) {
+    const taxed = STJ.applyLowIntentTax(score, localScore, signals);
+    score = taxed.score;
+  }
+  score = Math.min(100, Math.max(0, Math.round(score)));
   const label = STJ.labelForScore ? STJ.labelForScore(score)
     : (score >= 75 ? 'very_high' : score >= 55 ? 'high' : score >= 35 ? 'moderate' : 'low');
-  return { score, label, signals, daysOpen: localScore.daysOpen };
+  return {
+    score: score,
+    label: label,
+    signals: signals,
+    daysOpen: localScore.daysOpen,
+    easyApply: localScore.easyApply,
+    applicantCount: localScore.applicantCount,
+  };
 }
 
 function injectOverlay(localScore, backendData, listing) {

@@ -142,19 +142,25 @@
   // LinkedIn detail, Indeed detail, and SERP badges share this path so a
   // 90-day card cannot badge 16–18 while the overlay says 2.
   //
-  // Age floors (applied AFTER discounts, and again after backend blend):
-  //   ≥60 days  → minimum 40  (Proceed with Caution)
-  //   ≥90 days  → minimum 65  (Likely a Waste of Time)
-  //   ≥120 days → minimum 80  (Skip This Job)
-  // Chosen to match Austin's harsh grades on 0.2.1: Popular Demand (3mo)
-  // ~80, Hilton/Baton (5mo) ~90, Hum (2mo) ~60, Mentium (2mo+reviewing) ~45.
-  // Additive age points stay modest (~25 at 90d) so floors do the work
-  // instead of the old runaway curve that hit 100+ by day 30.
+  // Product bias (Austin, lock for 0.2.2): prefer harsher over more
+  // lenient. False positives (flagging a maybe) beat false negatives
+  // (calling a stale listing “Worth Applying”). Do not soften floors
+  // to protect slow-hiring employers. Apply energy is scarce.
+  //
+  // Age floors (applied AFTER discounts, and again after backend blend).
+  // High end of the suggested 40/65/80 ranges — 90–150 day Easy Apply
+  // posts still looked soft at 65/80 vs harsh ~80/~90:
+  //   ≥60 days  → minimum 50  (Proceed with Caution — not Worth Applying)
+  //   ≥90 days  → minimum 75  (Skip This Job)
+  //   ≥120 days → minimum 88  (Skip This Job, Hilton/Baton band)
+  // Easy Apply + 100+ applicants are applied AFTER the floor so they
+  // cannot be swallowed (a crowded 90-day card must feel worse than a
+  // bare 90-day card).
 
   const AGE_FLOORS = [
-    { minDays: 120, floor: 80 },
-    { minDays: 90, floor: 65 },
-    { minDays: 60, floor: 40 },
+    { minDays: 120, floor: 88 },
+    { minDays: 90, floor: 75 },
+    { minDays: 60, floor: 50 },
   ];
 
   function ageFloorForDays(daysOpen) {
@@ -272,9 +278,51 @@
       score += options.vagueMid != null ? options.vagueMid : 7;
       out.push('Some generic language in description');
     } else if (vagueness <= 0.15) {
-      const credit = options.detailedCredit != null ? options.detailedCredit : 1;
+      // 0.2.2 bias: a specific JD is informational only — never a discount.
+      const credit = options.detailedCredit != null ? options.detailedCredit : 0;
       score -= credit;
       out.push('Detailed, specific job description');
+    }
+    return { score: score, signals: out };
+  }
+
+  /**
+   * After-floor tax so old + Easy Apply + high applicants stay costly
+   * to ignore instead of collapsing onto the same age floor.
+   */
+  function applyLowIntentTax(score, listing, signals) {
+    const row = listing || {};
+    const days = row.daysOpen;
+    const out = Array.isArray(signals) ? signals : [];
+    if (days == null || Number.isNaN(Number(days))) {
+      return { score: score, signals: out };
+    }
+    // Idempotent — blendGhostScore may re-run this after a backend pull-down.
+    const alreadyEasy = out.some(function (s) { return /Easy Apply on a \d+\+ day/.test(s); });
+    const alreadyCrowd = out.some(function (s) { return /with 100\+ applicants/.test(s); });
+    if (row.easyApply && !alreadyEasy) {
+      if (days >= 120) {
+        score += 12;
+        out.push('Easy Apply on a 120+ day listing — apply energy is almost certainly wasted');
+      } else if (days >= 90) {
+        score += 10;
+        out.push('Easy Apply on a 90+ day listing — low-intent signal');
+      } else if (days >= 60) {
+        score += 8;
+        out.push('Easy Apply on a 60+ day listing — low-intent signal');
+      }
+    }
+    if (row.applicantCount >= 100 && !alreadyCrowd) {
+      if (days >= 120) {
+        score += 12;
+        out.push('120+ days old with 100+ applicants — crowded dead listing');
+      } else if (days >= 90) {
+        score += 10;
+        out.push('90+ days old with 100+ applicants — crowded stale listing');
+      } else if (days >= 60) {
+        score += 8;
+        out.push('60+ days old with 100+ applicants — low chance of being seen');
+      }
     }
     return { score: score, signals: out };
   }
@@ -282,13 +330,16 @@
   function finalizeHeuristicScore(score, listing, signals, extras) {
     const extra = extras || {};
     const floored = enforceAgeFloor(score, listing && listing.daysOpen, signals);
-    score = Math.min(100, Math.max(0, Math.round(floored.score)));
+    const taxed = applyLowIntentTax(floored.score, listing, floored.signals);
+    score = Math.min(100, Math.max(0, Math.round(taxed.score)));
     return {
       score: score,
       label: labelForScore(score),
-      signals: floored.signals,
+      signals: taxed.signals,
       isHighTurnover: !!extra.isHighTurnover,
       daysOpen: listing && listing.daysOpen,
+      easyApply: !!listing && !!listing.easyApply,
+      applicantCount: listing && listing.applicantCount,
     };
   }
 
@@ -382,16 +433,6 @@
     if (hasWorkArrangementConflict(row)) {
       score += 8;
       signals.push('Work arrangement contradiction (e.g. remote vs on-site)');
-    }
-
-    if (row.easyApply && row.daysOpen != null && row.daysOpen >= 60) {
-      score += 8;
-      signals.push('Easy Apply on a 60+ day listing — low-intent signal');
-    }
-
-    if (row.daysOpen != null && row.daysOpen >= 60 && row.applicantCount >= 100) {
-      score += 12;
-      signals.push('60+ days old with 100+ applicants — low chance of being seen');
     }
 
     const engagement = applyEngagementScoring(row, score, signals);
@@ -1050,6 +1091,7 @@
   api.hasWorkArrangementConflict = hasWorkArrangementConflict;
   api.applyDescriptionQuality = applyDescriptionQuality;
   api.finalizeHeuristicScore = finalizeHeuristicScore;
+  api.applyLowIntentTax = applyLowIntentTax;
   api.scoreListingSignals = scoreListingSignals;
   api.scoreListPreview = scoreListPreview;
   api.parseRelativeDays = parseRelativeDays;

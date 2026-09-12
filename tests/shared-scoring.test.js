@@ -127,18 +127,19 @@ test('parseRelativeDays reads LinkedIn compact month labels', () => {
   assert.equal(shared.parseRelativeDays('about 2 months ago'), 60);
 });
 
-test('age floors: 60→40, 90→65, 120→80', () => {
+test('age floors: 60→50, 90→75, 120→88 (harsh-biased high end)', () => {
   assert.equal(shared.ageFloorForDays(59), 0);
-  assert.equal(shared.ageFloorForDays(60), 40);
-  assert.equal(shared.ageFloorForDays(90), 65);
-  assert.equal(shared.ageFloorForDays(120), 80);
-  assert.equal(shared.ageFloorForDays(150), 80);
+  assert.equal(shared.ageFloorForDays(60), 50);
+  assert.equal(shared.ageFloorForDays(90), 75);
+  assert.equal(shared.ageFloorForDays(120), 88);
+  assert.equal(shared.ageFloorForDays(150), 88);
 });
 
 test('age floors hold after detailed description + actively reviewing', () => {
   const specific = [
     'Build React and Node services on AWS. Reports to the VP of Engineering.',
     'Team of 8. Python, SQL, 5 years. Compensation $140,000.',
+    'You will own features end to end, review PRs, and participate in on-call.',
   ].join(' ');
 
   const hilton = shared.scoreListingSignals({
@@ -148,7 +149,7 @@ test('age floors hold after detailed description + actively reviewing', () => {
     salaryListed: false,
     description: specific,
   }, { platform: 'linkedin', vagueness: 0.1 });
-  assert.ok(hilton.score >= 80, '5-month listing must not fall below 80, got ' + hilton.score);
+  assert.ok(hilton.score >= 88, '5-month listing must not fall below 88, got ' + hilton.score);
   assert.equal(hilton.label, 'very_high');
 
   const popular = shared.scoreListingSignals({
@@ -168,8 +169,8 @@ test('age floors hold after detailed description + actively reviewing', () => {
       return { score, signals };
     },
   });
-  assert.ok(popular.score >= 65, '3-month Easy Apply + 100 apps must be ≥65, got ' + popular.score);
-  assert.ok(popular.score >= 70, 'Popular Demand-like pattern should land ~70–85, got ' + popular.score);
+  assert.ok(popular.score >= 85, '3-month Easy Apply + 100 apps must feel costly, got ' + popular.score);
+  assert.equal(popular.label, 'very_high');
 
   const hum = shared.scoreListingSignals({
     title: 'Full Stack Engineer',
@@ -178,7 +179,8 @@ test('age floors hold after detailed description + actively reviewing', () => {
     salaryListed: false,
     description: specific,
   }, { platform: 'linkedin', vagueness: 0.1 });
-  assert.ok(hum.score >= 40, '2-month + 100 apps must be ≥40, got ' + hum.score);
+  assert.ok(hum.score >= 50, '2-month + 100 apps must be ≥50, got ' + hum.score);
+  assert.ok(hum.score >= 55, 'crowded 60-day listing should be costly to ignore, got ' + hum.score);
 
   const mentium = shared.scoreListingSignals({
     title: 'Lead Software Engineer',
@@ -187,8 +189,21 @@ test('age floors hold after detailed description + actively reviewing', () => {
     salaryListed: false,
     description: specific,
   }, { platform: 'linkedin', vagueness: 0.1 });
-  assert.ok(mentium.score >= 40);
-  assert.ok(mentium.score < 65, '2-month reviewing role should not jump to 90d floor, got ' + mentium.score);
+  assert.ok(mentium.score >= 50);
+  assert.ok(mentium.score < 75, '2-month reviewing role should not jump to 90d floor, got ' + mentium.score);
+});
+
+test('Easy Apply + 100 apps is not swallowed by the age floor', () => {
+  const bare = shared.scoreListPreview({ title: 'Engineer', daysOpen: 90 });
+  const crowded = shared.scoreListPreview({
+    title: 'Engineer',
+    daysOpen: 90,
+    easyApply: true,
+    applicantCount: 100,
+  });
+  assert.ok(bare.score >= 75);
+  assert.ok(crowded.score > bare.score, 'crowded Easy Apply 90d must beat bare 90d (' + crowded.score + ' vs ' + bare.score + ')');
+  assert.equal(crowded.label, 'very_high');
 });
 
 test('engagement credit is capped on 60–120+ day listings', () => {
@@ -215,7 +230,7 @@ test('engagement credit is capped on 60–120+ day listings', () => {
 test('detailed description credit is only -1 and cannot beat an age floor', () => {
   const signals = [];
   const result = shared.applyDescriptionQuality(20, signals, 0.05);
-  assert.equal(result.score, 19);
+  assert.equal(result.score, 20, 'detailed JD must not discount under 0.2.2 bias');
   assert.ok(signals.some(s => /Detailed, specific/i.test(s)));
 
   const floored = shared.scoreListingSignals({
@@ -225,7 +240,7 @@ test('detailed description credit is only -1 and cannot beat an age floor', () =
     engagementSignals: ['actively_reviewing'],
     salaryListed: true,
   }, { platform: 'linkedin', vagueness: 0.05 });
-  assert.ok(floored.score >= 80);
+  assert.ok(floored.score >= 88);
 });
 
 test('list badge and detail stay in the same band for the same card', () => {
@@ -253,8 +268,8 @@ test('list badge and detail stay in the same band for the same card', () => {
     engagementSignals: ['actively_reviewing'],
     salaryListed: false,
   }, { platform: 'linkedin', vagueness: 0.1 });
-  assert.ok(oldPreview.score >= 65);
-  assert.ok(oldDetail.score >= 65);
+  assert.ok(oldPreview.score >= 75);
+  assert.ok(oldDetail.score >= 75);
   assert.ok(
     Math.abs(oldPreview.score - oldDetail.score) <= 20,
     'stale badge ' + oldPreview.score + ' vs detail ' + oldDetail.score
@@ -316,7 +331,7 @@ test('Indeed shared path keeps a typical 7-day role low and still floors 60d', (
     salaryListed: false,
     description: specific,
   }, { platform: 'indeed', vagueness: 0.1 });
-  assert.ok(stale.score >= 40, 'Indeed 60-day must honor age floor, got ' + stale.score);
+  assert.ok(stale.score >= 50, 'Indeed 60-day must honor age floor, got ' + stale.score);
 });
 
 test('fresh 3-day role stays Worth Applying', () => {
