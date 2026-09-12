@@ -63,7 +63,7 @@ export default function Home() {
           {[
             { number: '40-60%', label: 'of listings may be ghost jobs' },
             { number: '6', label: 'heuristic signals analyzed' },
-            { number: '0', label: 'personal data collected' },
+            { number: '0', label: 'personal identifiers collected' },
             { number: '100%', label: 'free, no account needed' },
           ].map((stat, i) => (
             <div key={i}>
@@ -215,7 +215,7 @@ export default function Home() {
             Your time is worth more than ghost jobs.
           </h2>
           <p className="text-gray-400 mb-8 max-w-md mx-auto">
-            Free. No account. No data collected. Just install and browse.
+            Free. No account. No personal data — only anonymous listing signals to improve ghost scores.
           </p>
           <a
             href="https://chromewebstore.google.com/detail/nodldfdkjomniknohmejdimjlejfongd"

@@ -10,7 +10,7 @@ export default function Privacy() {
 
       <article className="max-w-3xl mx-auto px-6 py-12">
         <h1 className="text-3xl font-bold mb-2">Privacy Policy</h1>
-        <p className="text-sm text-gray-400 mb-10">Last updated: May 15, 2026</p>
+        <p className="text-sm text-gray-400 mb-10">Last updated: September 12, 2026</p>
 
         <div className="prose prose-gray max-w-none space-y-6 text-gray-600 leading-relaxed">
           <p>
@@ -78,7 +78,7 @@ export default function Privacy() {
             <li>Your LinkedIn or Indeed login credentials</li>
             <li>Your resume, profile information, or job applications</li>
             <li>Cookies or tracking pixels</li>
-            <li>Your IP address (our server does not log IPs)</li>
+            <li>Your IP address as a stored identifier (see Abuse Prevention below)</li>
           </ul>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">How We Use Data</h2>
@@ -93,6 +93,15 @@ export default function Privacy() {
             We may display aggregated statistics publicly, such as the total number of
             community reports or the employers with the highest ghost scores. No individual
             user data is ever made public.
+          </p>
+
+          <h2 className="text-xl font-semibold text-gray-900 mt-10">Abuse Prevention</h2>
+          <p>
+            Public write APIs (listing tracking and community reports) use a short-lived,
+            in-memory rate limit. The request IP may be hashed in memory for that window
+            so we can throttle floods. Hashes are not written to the database, are not
+            linked to your anonymous browser identifier, and are discarded when the
+            server instance recycles. We do not store raw IP addresses.
           </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Data Storage</h2>

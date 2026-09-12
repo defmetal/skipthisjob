@@ -4,7 +4,7 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      width: 300px;
+      width: 320px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 14px;
       color: #1a1a1a;
@@ -49,6 +49,28 @@
       text-decoration: none;
     }
     .links a:hover { text-decoration: underline; }
+    .score-card {
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .score-num {
+      font-size: 28px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .score-num span { font-size: 13px; font-weight: 600; opacity: 0.7; }
+    .score-label { font-size: 13px; font-weight: 600; margin: 4px 0 8px; }
+    .score-job { font-size: 12px; color: #333; line-height: 1.4; margin-bottom: 8px; }
+    .score-job div { color: #666; margin-top: 2px; }
+    .score-signals {
+      list-style: none;
+      font-size: 11px;
+      color: #555;
+      line-height: 1.45;
+    }
+    .score-signals li { margin-bottom: 3px; }
+    .score-signals li::before { content: "• "; color: #999; }
   </style>
 </head>
 <body>
@@ -57,12 +79,15 @@
     <h1>Skip This Job</h1>
   </div>
 
-  <div class="status">
-    Browse any job listing on <strong>LinkedIn</strong> or <strong>Indeed</strong> and a ghost risk score will appear automatically on the page.
-  </div>
+  <div id="stj-score" style="display:none;"></div>
 
-  <div class="hint">
-    Not seeing scores? Make sure you're on an actual job listing page, not just the search results.
+  <div id="stj-help">
+    <div class="status">
+      Browse any job listing on <strong>LinkedIn</strong> or <strong>Indeed</strong> and a ghost risk score will appear automatically on the page.
+    </div>
+    <div class="hint">
+      Not seeing scores? Open an actual job listing (search-result cards now show a preview badge too).
+    </div>
   </div>
 
   <div class="links">
@@ -70,5 +95,6 @@
     <a href="https://skipthisjob.com/#lookup" target="_blank">Employer Lookup</a>
     <a href="https://vibelabsmarketing.com" target="_blank">by Vibe Labs Marketing</a>
   </div>
+  <script src="popup.js"></script>
 </body>
 </html>

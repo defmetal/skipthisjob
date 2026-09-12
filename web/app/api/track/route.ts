@@ -2,16 +2,22 @@ import { NextRequest } from 'next/server';
 import { corsResponse, corsOptions } from '@/lib/cors';
 import { supabaseAdmin } from '@/lib/supabase';
 import { recomputeEmployerScore } from '@/lib/employerScore';
+import { enforceRateLimit } from '@/lib/rateLimit';
+import {
+  countSimilarRoles,
+  parseLocation,
+  persistListingSignals,
+  upsertRepostPattern,
+} from '@/lib/listingTrack';
 
 /**
  * POST /api/track
  *
- * Passively tracks job listing metadata + signals from extension views (0.1.8+).
+ * Passively tracks job listing metadata + signals from extension views.
+ * listingHeuristic is the extension pre-blend score (scoreLocally().score).
  *
- * Body now includes optional signals:
- * - userClickedApply
- * - engagementSignals
- * - employerResponseTime
+ * Apply-click events may arrive as a full listing payload or as a
+ * platform + platformJobId lookup (USER_CLICKED_APPLY fallback).
  */
 export async function OPTIONS() {
   return corsOptions();
@@ -25,6 +31,9 @@ export async function POST(request: NextRequest) {
     return corsResponse({ error: 'Invalid JSON' }, 400);
   }
 
+  const limited = enforceRateLimit(request, 'track', 40, 60_000);
+  if (!limited.ok) return limited.response;
+
   const {
     companyName,
     jobTitle,
@@ -34,25 +43,51 @@ export async function POST(request: NextRequest) {
     salaryListed,
     isRepost,
     daysOpen,
-    // 0.1.8 new signals
     engagementSignals,
     employerResponseTime,
     userClickedApply,
-    // Additional 0.1.8 signals
     workArrangement,
     employmentType,
-    // 0.1.9 — extension pre-blend heuristic (scoreLocally().score)
     listingHeuristic,
+    descriptionHash,
   } = body;
-
-  if (!companyName || !jobTitle || !platform) {
-    return corsResponse({ error: 'Missing required fields' }, 400);
-  }
 
   const heuristicScore =
     typeof listingHeuristic === 'number' && Number.isFinite(listingHeuristic)
       ? Math.max(0, Math.min(100, Math.round(listingHeuristic * 10) / 10))
       : null;
+
+  const postedDate =
+    daysOpen != null ? new Date(Date.now() - daysOpen * 86400000).toISOString().split('T')[0] : null;
+
+  // Apply-only fallback: resolve an existing listing by platform job id
+  // when the lightweight USER_CLICKED_APPLY path omitted company/title.
+  if (userClickedApply && platform && platformJobId && (!companyName || !jobTitle)) {
+    const { data: existing } = await supabaseAdmin
+      .from('listings')
+      .select('id, employer_id, title_normalized, location_city, location_state')
+      .eq('platform', platform)
+      .eq('platform_job_id', platformJobId)
+      .maybeSingle();
+
+    if (!existing) {
+      return corsResponse({ error: 'Missing required fields' }, 400);
+    }
+
+    await persistListingSignals(supabaseAdmin, existing.id, {
+      userClickedApply: true,
+      engagementSignals: engagementSignals || [],
+      employerResponseTime: employerResponseTime || null,
+      workArrangement: workArrangement || null,
+      employmentType: employmentType || null,
+    });
+
+    return corsResponse({ success: true, apply: true, deduped: true });
+  }
+
+  if (!companyName || !jobTitle || !platform) {
+    return corsResponse({ error: 'Missing required fields' }, 400);
+  }
 
   // Normalize company name (same logic as score API)
   let normalized = companyName.toLowerCase().trim().replace(/\.com\b/gi, '');
@@ -65,6 +100,7 @@ export async function POST(request: NextRequest) {
   normalized = normalized.replace(/\s+/g, ' ').trim();
 
   const normalizedTitle = jobTitle.toLowerCase().trim();
+  const { city, state } = parseLocation(location);
 
   // Upsert employer
   let { data: employer } = await supabaseAdmin
@@ -85,7 +121,6 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (insertError) {
-      // Race condition — try fetch again
       const { data: retry } = await supabaseAdmin
         .from('employers')
         .select('id, total_listings_tracked')
@@ -101,26 +136,18 @@ export async function POST(request: NextRequest) {
     return corsResponse({ error: 'Failed to resolve employer' }, 500);
   }
 
-  // Upsert listing (deduplicate by platform + platformJobId)
+  let listingId: string | null = null;
+  let isNewListing = false;
+
   if (platformJobId) {
     const { data: existing } = await supabaseAdmin
       .from('listings')
       .select('id')
       .eq('platform', platform)
       .eq('platform_job_id', platformJobId)
-      .single();
+      .maybeSingle();
 
     if (!existing) {
-      // Parse location into city/state
-      let city = null;
-      let state = null;
-      if (location) {
-        const parts = location.split(',').map((p: string) => p.trim());
-        city = parts[0]?.toLowerCase() || null;
-        state = parts[1]?.trim() || null;
-      }
-
-      // Insert new listing and capture the ID
       const { data: newListing, error: listingError } = await supabaseAdmin
         .from('listings')
         .insert({
@@ -130,105 +157,73 @@ export async function POST(request: NextRequest) {
           title_raw: jobTitle,
           title_normalized: normalizedTitle,
           location_raw: location || null,
-          location_city: city,
+          location_city: city || null,
           location_state: state,
           salary_listed: salaryListed ?? false,
           is_repost: isRepost ?? false,
-          posted_date: daysOpen != null ? new Date(Date.now() - daysOpen * 86400000).toISOString().split('T')[0] : null,
+          posted_date: postedDate,
           heuristic_score: heuristicScore,
+          description_hash: descriptionHash || null,
           source: 'extension',
         })
         .select('id')
         .single();
 
       if (!listingError && newListing) {
-        // Increment employer listing count
+        listingId = newListing.id;
+        isNewListing = true;
         await supabaseAdmin
           .from('employers')
           .update({
             total_listings_tracked: (employer.total_listings_tracked || 0) + 1,
           })
           .eq('id', employer.id);
-
-        // 0.1.8: Smarter similar roles count (title similarity)
-        const { data: otherListingsNew } = await supabaseAdmin
-          .from('listings')
-          .select('title_normalized')
-          .eq('employer_id', employer.id)
-          .eq('is_active', true)
-          .neq('id', newListing.id);
-
-        let similarCountNew = 0;
-        if (otherListingsNew && otherListingsNew.length > 0 && normalizedTitle) {
-          similarCountNew = otherListingsNew.filter(l => {
-            if (!l.title_normalized) return false;
-            const wordsA = new Set(normalizedTitle.split(/\s+/).filter((w: string) => w.length > 3));
-            const wordsB = new Set(l.title_normalized.split(/\s+/).filter((w: string) => w.length > 3));
-            let overlap = 0;
-            wordsA.forEach(w => { if (wordsB.has(w)) overlap++; });
-            return overlap >= 3; // stricter: at least 3 significant words
-          }).length;
-        }
-
-        await supabaseAdmin
-          .from('listing_signals')
-          .insert({
-            listing_id: newListing.id,
-            user_clicked_apply: userClickedApply ?? false,
-            engagement_signals: engagementSignals || [],
-            employer_response_time: employerResponseTime || null,
-            similar_roles_count: similarCountNew,
-            work_arrangement: workArrangement || null,
-            employment_type: employmentType || null,
-          });
       }
     } else {
-      // Update last_seen_at on existing listing (+ refresh heuristic if sent)
+      listingId = existing.id;
       await supabaseAdmin
         .from('listings')
         .update({
           last_seen_at: new Date().toISOString(),
           ...(heuristicScore != null ? { heuristic_score: heuristicScore } : {}),
+          ...(descriptionHash ? { description_hash: descriptionHash } : {}),
         })
         .eq('id', existing.id);
-
-      // 0.1.8: Smarter similar roles count (title similarity)
-      const { data: otherListingsExisting } = await supabaseAdmin
-        .from('listings')
-        .select('title_normalized')
-        .eq('employer_id', employer.id)
-        .eq('is_active', true)
-        .neq('id', existing.id);
-
-      let similarCountExisting = 0;
-      if (otherListingsExisting && otherListingsExisting.length > 0 && normalizedTitle) {
-        similarCountExisting = otherListingsExisting.filter(l => {
-          if (!l.title_normalized) return false;
-          const wordsA = new Set(normalizedTitle.split(/\s+/).filter((w: string) => w.length > 3));
-          const wordsB = new Set(l.title_normalized.split(/\s+/).filter((w: string) => w.length > 3));
-          let overlap = 0;
-          wordsA.forEach(w => { if (wordsB.has(w)) overlap++; });
-          return overlap >= 3; // stricter: at least 3 significant words
-        }).length;
-      }
-
-      await supabaseAdmin
-        .from('listing_signals')
-        .insert({
-          listing_id: existing.id,
-          user_clicked_apply: userClickedApply ?? false,
-          engagement_signals: engagementSignals || [],
-          employer_response_time: employerResponseTime || null,
-          similar_roles_count: similarCountExisting,
-          work_arrangement: workArrangement || null,
-          employment_type: employmentType || null,
-        });
     }
   }
 
-  // Re-aggregate this employer's ghost_score from stored listing heuristics
-  // so the leaderboard reflects what users actually see. Best-effort: a
-  // failure here (e.g. migration not yet applied) must not break tracking.
+  if (listingId) {
+    const similarCount = await countSimilarRoles(
+      supabaseAdmin,
+      employer.id,
+      listingId,
+      normalizedTitle
+    );
+
+    await persistListingSignals(supabaseAdmin, listingId, {
+      userClickedApply: userClickedApply ?? false,
+      engagementSignals: engagementSignals || [],
+      employerResponseTime: employerResponseTime || null,
+      similarRolesCount: similarCount,
+      workArrangement: workArrangement || null,
+      employmentType: employmentType || null,
+    });
+
+    try {
+      await upsertRepostPattern(supabaseAdmin, {
+        employerId: employer.id,
+        titleNormalized: normalizedTitle,
+        city,
+        state,
+        postedDate,
+        descriptionHash: descriptionHash || null,
+        isNewListing,
+      });
+    } catch (e) {
+      console.error('upsertRepostPattern failed:', e);
+    }
+  }
+
   if (heuristicScore != null) {
     try {
       await recomputeEmployerScore(supabaseAdmin, employer.id, 'new_listing');
@@ -237,5 +232,5 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return corsResponse({ success: true });
+  return corsResponse({ success: true, isNewListing });
 }

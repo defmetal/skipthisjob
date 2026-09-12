@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Skip This Job — Ghost Job Detector",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "minimum_chrome_version": "111",
   "description": "Detect ghost job listings on LinkedIn and Indeed. Get ghost risk scores, repost tracking, and employer transparency.",
   "permissions": [
@@ -19,7 +19,7 @@
         "*://*.linkedin.com/jobs/*",
         "*://*.linkedin.com/feed/*"
       ],
-      "js": ["content/linkedin.js"],
+      "js": ["content/shared.js", "content/linkedin.js"],
       "css": ["content/overlay.css"],
       "run_at": "document_idle"
     },
@@ -35,7 +35,7 @@
       "matches": [
         "*://*.indeed.com/*"
       ],
-      "js": ["content/indeed.js"],
+      "js": ["content/shared.js", "content/indeed.js"],
       "css": ["content/overlay.css"],
       "run_at": "document_idle"
     }

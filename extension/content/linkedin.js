@@ -3,10 +3,12 @@
 // ============================================================
 
 const API_BASE = 'https://skipthisjob.com/api';
+const STJ = globalThis.SkipThisJobShared || {};
 
 let lastProcessedJobId = null;
 let isProcessing = false;
 let currentListingData = null;   // 0.1.8 - store current listing for reliable Apply tracking
+let lastPublishedScore = null;
 
 // ============================================================
 // DOM PARSING
@@ -205,6 +207,9 @@ function parseLinkedInListing() {
       }
     }
   }
+  data.activelyReviewing = STJ.isActivelyReviewing
+    ? STJ.isActivelyReviewing(data)
+    : data.engagementSignals.includes('actively_reviewing');
 
   // Response time indicators
   const responseTimeMatch = detailText.match(/usually responds (?:within|in)\s+(.+?)(?:\.|$)/i);
@@ -340,9 +345,10 @@ function parseLinkedInListing() {
   else if (detailText.includes('executive')) data.seniorityLevel = 'c_suite';
 
   // Job ID from URL
-  const jobIdMatch = window.location.href.match(/currentJobId=(\d+)/) ||
-                     window.location.href.match(/\/jobs\/view\/(\d+)/);
-  if (jobIdMatch) data.platformJobId = jobIdMatch[1];
+  data.platformJobId = STJ.extractLinkedInJobId
+    ? STJ.extractLinkedInJobId(window.location.href)
+    : ((window.location.href.match(/currentJobId=(\d+)/) || window.location.href.match(/\/jobs\/view\/(\d+)/)) || [])[1] || null;
+  data.descriptionHash = STJ.hashDescription ? STJ.hashDescription(data.description) : null;
 
   console.log('[GhostDetector] Full parsed data:', JSON.stringify(data, null, 2));
 
@@ -602,6 +608,15 @@ function scoreLocally(listing) {
   }
 
   // ============================================================
+  // ENGAGEMENT (shared helper — reads engagementSignals, not a
+  // never-set activelyReviewing boolean)
+  // ============================================================
+  if (STJ.applyEngagementScoring) {
+    const engagement = STJ.applyEngagementScoring(listing, score, signals);
+    score = engagement.score;
+  }
+
+  // ============================================================
   // HIGH TURNOVER ROLE (informational)
   // ============================================================
   if (isHighTurnover) {
@@ -669,11 +684,18 @@ function safeSendMessage(message, callback) {
   }
 }
 
-async function fetchEmployerScore(companyName) {
+async function fetchEmployerScore(companyName, extras) {
   return new Promise(resolve => {
     if (!extensionAlive()) { teardownGhostDetector(); resolve(null); return; }
+    const extra = extras || {};
     safeSendMessage(
-      { type: 'FETCH_EMPLOYER_SCORE', name: companyName },
+      {
+        type: 'FETCH_EMPLOYER_SCORE',
+        name: companyName,
+        platform: extra.platform || 'linkedin',
+        jobId: extra.jobId || extra.platformJobId || null,
+        fresh: extra.fresh || false,
+      },
       response => resolve(response?.data || null)
     );
     // If the context dies mid-flight the callback never fires; make sure the
@@ -702,7 +724,7 @@ async function submitReport(reportData) {
         type: 'SUBMIT_REPORT',
         reportData: { ...reportData, anonymousUserHash: userHash, platform: 'linkedin' },
       },
-      response => resolve(response?.success || false)
+      response => resolve(response && response.success ? response : false)
     );
     setTimeout(() => resolve(false), 8000);
   });
@@ -805,13 +827,13 @@ function injectOverlay(localScore, backendData, listing) {
           ${backendData.glassdoor.url ? `<a href="${backendData.glassdoor.url}" target="_blank" rel="noopener">View →</a>` : ''}
         </div>
       ` : ''}
-      ${backendData && backendData.totalReports > 0 ? `
+      ${STJ.communityBlockHtml ? STJ.communityBlockHtml(backendData) : (backendData && backendData.totalReports > 0 ? `
         <div class="ghost-detector-community" style="background: #fff3e0; padding: 6px 10px; border-radius: 6px; border-left: 3px solid #ff9800;">
-          📊 ${backendData.live 
-            ? `${backendData.totalReports} recent community reports` 
+          📊 ${backendData.live
+            ? `${backendData.totalReports} recent community reports`
             : `${backendData.totalReports} other users have flagged this employer`}
         </div>
-      ` : ''}
+      ` : '')}
       ${backendData && backendData.found && backendData.totalListings ? `
         <div class="ghost-detector-community">📋 Based on ${backendData.totalListings} tracked listings for this employer</div>
       ` : ''}
@@ -839,7 +861,7 @@ function injectOverlay(localScore, backendData, listing) {
       </div>
       <div id="ghost-thanks" class="ghost-detector-community" style="display: none; color: #2e7d32; background: #e8f5e9; padding: 8px 10px; border-radius: 6px; margin-top: 8px; font-size: 12px;"></div>
       <div class="ghost-detector-footer">
-        <span>Skip This Job by <a href="https://vibedigitalmarketing.com" target="_blank" rel="noopener">Vibe Digital Marketing</a> · <a href="https://skipthisjob.com" target="_blank" rel="noopener">skipthisjob.com</a></span>
+        <span>${STJ.brandFooterHtml ? STJ.brandFooterHtml() : 'Skip This Job by <a href="https://vibelabsmarketing.com" target="_blank" rel="noopener">Vibe Labs Marketing</a> · <a href="https://skipthisjob.com" target="_blank" rel="noopener">skipthisjob.com</a>'}</span>
       </div>
     </div>
   `;
@@ -900,6 +922,7 @@ function injectOverlay(localScore, backendData, listing) {
           thanks.textContent = '🙏 Thanks for helping the community! Your anonymous report helps other job seekers.';
           thanks.style.display = 'block';
         }
+        if (STJ.applyReportFeedbackToOverlay) STJ.applyReportFeedbackToOverlay(success);
       } else {
         btn.textContent = '✗ Failed — try again';
         btn.disabled = false;
@@ -930,6 +953,7 @@ function injectOverlay(localScore, backendData, listing) {
           thanks.textContent = '🙏 Thanks! Your experience helps other job seekers avoid dead ends.';
           thanks.style.display = 'block';
         }
+        if (STJ.applyReportFeedbackToOverlay) STJ.applyReportFeedbackToOverlay(success);
       } else {
         btn.textContent = '✗ Failed — try again';
         btn.disabled = false;
@@ -945,6 +969,7 @@ function injectOverlay(localScore, backendData, listing) {
 // ============================================================
 
 function getCurrentJobId() {
+  if (STJ.extractLinkedInJobId) return STJ.extractLinkedInJobId(window.location.href);
   const match = window.location.href.match(/currentJobId=(\d+)/) ||
                 window.location.href.match(/\/jobs\/view\/(\d+)/);
   return match ? match[1] : null;
@@ -1052,14 +1077,15 @@ async function processCurrentListing() {
   // Store current listing data for reliable Apply tracking (0.1.8)
   currentListingData = {
     ...listing,
+    platform: 'linkedin',
     userClickedApply: false,
     listingHeuristic: localScore.score,
+    descriptionHash: listing.descriptionHash,
   };
 
-  // Passively track listing metadata + new signals (0.1.8)
-  safeSendMessage({
-    type: 'TRACK_LISTING',
-    listingData: {
+  const trackPayload = STJ.buildTrackPayload
+    ? STJ.buildTrackPayload(currentListingData, { platform: 'linkedin', listingHeuristic: localScore.score })
+    : {
       companyName: listing.companyName,
       jobTitle: listing.title,
       platform: 'linkedin',
@@ -1068,22 +1094,35 @@ async function processCurrentListing() {
       salaryListed: listing.salaryListed,
       isRepost: listing.isRepost,
       daysOpen: listing.daysOpen,
-      // New 0.1.8 signals
       engagementSignals: listing.engagementSignals,
       employerResponseTime: listing.employerResponseTime,
       userClickedApply: listing.userClickedApply,
       workArrangement: listing.workArrangement,
       employmentType: listing.employmentType,
-      // 0.1.9 — pre-blend heuristic for server-side employer aggregation
       listingHeuristic: localScore.score,
-    },
+      descriptionHash: listing.descriptionHash,
+    };
+
+  safeSendMessage({
+    type: 'TRACK_LISTING',
+    listingData: trackPayload,
   });
 
+  const initialBlend = typeof blendGhostScore === 'function' ? blendGhostScore(localScore, null) : localScore;
+  lastPublishedScore = STJ.publishActiveListing
+    ? STJ.publishActiveListing(currentListingData, initialBlend, 'linkedin')
+    : null;
   injectOverlay(localScore, null, listing);
 
-  // Backend fetch (non-blocking, updates overlay if data exists)
-  const backendData = await fetchEmployerScore(listing.companyName);
+  const backendData = await fetchEmployerScore(listing.companyName, {
+    platform: 'linkedin',
+    jobId: listing.platformJobId,
+  });
   if (backendData && backendData.found) {
+    const blended = blendGhostScore(localScore, backendData);
+    lastPublishedScore = STJ.publishActiveListing
+      ? STJ.publishActiveListing(currentListingData, blended, 'linkedin')
+      : lastPublishedScore;
     injectOverlay(localScore, backendData, listing);
   }
 
@@ -1113,11 +1152,52 @@ document.addEventListener('click', (e) => {
   }
 }, true);
 
+if (STJ.installPopupBridge) {
+  STJ.installPopupBridge(() => lastPublishedScore);
+}
+
+function startLinkedInListBadges() {
+  if (!STJ.watchListBadges) return;
+  STJ.watchListBadges({
+    listRootSelector: '.scaffold-layout__list, .jobs-search-results-list, .jobs-search-results__list',
+    findCards() {
+      return document.querySelectorAll(
+        'li.jobs-search-results__list-item, li.scaffold-layout__list-item, .job-card-container, [data-job-id]'
+      );
+    },
+    parseCard(card) {
+      const titleEl = card.querySelector(
+        'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link, strong'
+      );
+      const title = (titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!title || title.length < 3) return null;
+      const companyEl = card.querySelector(
+        '.job-card-container__primary-description, .artdeco-entity-lockup__subtitle, .job-card-container__company-name'
+      );
+      const dateEl = card.querySelector('time, .job-card-container__listed-time, .job-card-list__footer-wrapper');
+      const text = (card.innerText || '').toLowerCase();
+      return {
+        title,
+        companyName: companyEl ? companyEl.textContent.trim() : null,
+        daysOpen: STJ.parseRelativeDays ? STJ.parseRelativeDays(dateEl ? dateEl.textContent : text) : null,
+        isRepost: /reposted/.test(text),
+        salaryListed: /\$\d/.test(text) ? true : undefined,
+      };
+    },
+    anchor(card) {
+      return card.querySelector(
+        'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link'
+      ) || card;
+    },
+  });
+}
+
 // Initial run — only if we're on a job page
 if (isOnJobPage()) {
   processCurrentListing();
   setupJobDetailObserver();
 }
+startLinkedInListBadges();
 
 // Handle navigation within LinkedIn (SPA)
 let lastObserverUrl = location.href;
@@ -1158,23 +1238,20 @@ document.addEventListener('click', (e) => {
   ) {
     // If we have a current listing and the user is still on the same job, update it
     const currentJobId = getCurrentJobId();
-    if (currentListingData && currentListingData.platformJobId === currentJobId) {
+    if (currentListingData && (!currentJobId || currentListingData.platformJobId === currentJobId)) {
       currentListingData.userClickedApply = true;
-
-      // Re-send the full enriched payload so the signal is properly linked
-      safeSendMessage({
-        type: 'TRACK_LISTING',
-        listingData: {
-          ...currentListingData,
-          userClickedApply: true,
-        },
-      });
+      const listingData = STJ.buildTrackPayload
+        ? STJ.buildTrackPayload(currentListingData, { platform: 'linkedin', userClickedApply: true })
+        : { ...currentListingData, jobTitle: currentListingData.title, userClickedApply: true };
+      safeSendMessage({ type: 'TRACK_LISTING', listingData });
     } else {
-      // Fallback: send lightweight update
       safeSendMessage({
         type: 'USER_CLICKED_APPLY',
         platform: 'linkedin',
         url: window.location.href,
+        companyName: currentListingData && currentListingData.companyName,
+        jobTitle: currentListingData && (currentListingData.title || currentListingData.jobTitle),
+        platformJobId: currentJobId || (currentListingData && currentListingData.platformJobId),
       });
     }
   }
