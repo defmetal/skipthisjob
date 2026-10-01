@@ -78,6 +78,35 @@
     }
   }
 
+  // --- Site access banner -------------------------------------------------
+  const accessRoot = document.getElementById('stj-access');
+  const enableBtn = document.getElementById('stj-enable');
+  const accessMsg = document.getElementById('stj-access-msg');
+  const Access = globalThis.SkipThisJobAccess;
+
+  function showAccessBanner(missing) {
+    if (accessRoot) accessRoot.style.display = missing ? 'block' : 'none';
+  }
+
+  if (Access) {
+    Access.refreshAccessState().then((granted) => showAccessBanner(!granted));
+  }
+
+  if (enableBtn && Access) {
+    // chrome.permissions.request must be invoked from this click handler.
+    enableBtn.addEventListener('click', () => {
+      enableBtn.disabled = true;
+      Access.requestSiteAccess().then((res) => {
+        if (res.granted) {
+          showAccessBanner(false);
+        } else {
+          enableBtn.disabled = false;
+          if (accessMsg) accessMsg.textContent = 'Access was not granted. Try again, or use chrome://extensions → Skip This Job → Site access.';
+        }
+      });
+    });
+  }
+
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tab = tabs && tabs[0];
     const tabUrl = (tab && tab.url) || '';
