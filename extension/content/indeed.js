@@ -2,7 +2,7 @@
 // Indeed Content Script — Skip This Job
 // ============================================================
 
-const API_BASE = 'https://skipthisjob.com/api';
+const API_BASE = 'https://www.skipthisjob.com/api';
 const STJ = globalThis.SkipThisJobShared || {};
 
 // ============================================================
@@ -340,12 +340,15 @@ async function parseIndeedListing() {
   // --- Job title ---
   const titleEl =
     document.querySelector('[data-testid="jobsearch-JobInfoHeader-title"]') ||
+    document.querySelector('h1[data-testid="jobTitle"]') ||
     document.querySelector('h2.jobsearch-JobInfoHeader-title') ||
     document.querySelector('h1.jobsearch-JobInfoHeader-title') ||
     document.querySelector('.jobsearch-JobInfoHeader-title') ||
-    document.querySelector('h2.jobTitle') ||
+    // Bare h2.jobTitle matches the FIRST RESULT CARD in the left rail on a
+    // SERP, so only accept it inside the detail pane.
+    (getIndeedDetailRoot() && getIndeedDetailRoot().querySelector('h2.jobTitle')) ||
     document.querySelector('h1');
-  if (titleEl) {
+  if (titleEl && !(STJ.resolveIndeedIdentity && /\bjobs?\s+(in|near|hiring)\b/i.test(titleEl.textContent))) {
     // Indeed appends "- job post" via a nested span — grab just the first text
     const firstSpan = titleEl.querySelector('span');
     data.title = (firstSpan || titleEl).textContent.trim().replace(/\s*-\s*job post$/i, '');
@@ -355,13 +358,18 @@ async function parseIndeedListing() {
   }
 
   // --- Company name ---
+  // [data-testid="company-name"] also matches every result card on the SERP,
+  // so only trust it inside the detail pane (or on a standalone /viewjob).
+  const paneForCompany = getIndeedDetailRoot();
   const companyEl =
     document.querySelector('[data-testid="jobsearch-CompanyInfoContainer"] a') ||
     document.querySelector('[data-testid="inlineHeader-companyName"] a') ||
     document.querySelector('[data-testid="inlineHeader-companyName"]') ||
     document.querySelector('[data-testid="jobsearch-CompanyInfoContainer"]') ||
     document.querySelector('.jobsearch-InlineCompanyRating a') ||
-    document.querySelector('.jobsearch-CompanyInfoContainer a');
+    document.querySelector('.jobsearch-CompanyInfoContainer a') ||
+    (paneForCompany && paneForCompany.querySelector('[data-testid="company-name"]')) ||
+    (/\/viewjob/.test(window.location.pathname) ? document.querySelector('[data-testid="company-name"]') : null);
   if (companyEl) {
     data.companyName = companyEl.textContent.trim();
     console.log('[SkipThisJob] Company:', data.companyName);
@@ -384,6 +392,51 @@ async function parseIndeedListing() {
   data.platformJobId = STJ.extractIndeedJobKey
     ? STJ.extractIndeedJobKey(window.location.href)
     : ((window.location.href.match(/[?&#](?:vjk|jk)=([a-f0-9]+)/i) || [])[1] || null);
+
+  // Identity fallback (title/company) when detail-pane selectors miss or the
+  // pane lives in another frame: bridged mosaic row by jk, selected [data-jk]
+  // card, then (standalone /viewjob only) JSON-LD / og:title / document.title.
+  if (!data.title || !data.companyName) {
+    const k = data.platformJobId;
+    const snap = readBridgedMosaic();
+    const isViewjob = /\/viewjob/.test(window.location.pathname);
+    let card = null;
+    const cardEl = k && document.querySelector('[data-jk="' + k + '"]');
+    const cardRoot = cardEl && (cardEl.closest('.job_seen_beacon, li') || cardEl);
+    if (cardRoot) {
+      const t = cardRoot.querySelector('h2.jobTitle span[title], h2.jobTitle a span, h2.jobTitle, [data-testid="jobTitle"]');
+      const c = cardRoot.querySelector('[data-testid="company-name"], .companyName');
+      card = {
+        title: t && t.textContent.trim() || null,
+        companyName: c && c.textContent.trim() || null,
+      };
+    }
+    const jsonLd = [];
+    if (isViewjob || !k) {
+      document.querySelectorAll('script[type="application/ld+json"]').forEach((el) => {
+        if (el.textContent) jsonLd.push(el.textContent);
+      });
+    }
+    const ogEl = document.querySelector('meta[property="og:title"]');
+    const resolved = STJ.resolveIndeedIdentity
+      ? STJ.resolveIndeedIdentity({
+          current: { title: data.title, companyName: data.companyName },
+          jobKey: k,
+          mosaicJobs: snap && STJ.flattenMosaicJobs ? STJ.flattenMosaicJobs(snap) : [],
+          card: card,
+          jsonLd: jsonLd,
+          ogTitle: isViewjob && ogEl ? ogEl.getAttribute('content') : '',
+          docTitle: isViewjob ? document.title : '',
+        })
+      : null;
+    if (resolved) {
+      if (!data.title && resolved.title) data.title = resolved.title;
+      if (!data.companyName && resolved.companyName) data.companyName = resolved.companyName;
+      if (resolved.sources.length) {
+        console.log('[SkipThisJob] Identity fallback via', resolved.sources.join(', '), '→', data.title, '@', data.companyName);
+      }
+    }
+  }
 
   // Detail pane only. Never document.body / role=main — those include
   // left-rail cards on search SPA ("Often replies in", other jobs' ages).
@@ -1171,17 +1224,27 @@ async function processCurrentListing() {
   if (isProcessing) return;
 
   isProcessing = true;
-  lastVjk = vjk;
+  try {
+    await processCurrentListingInner(vjk);
+  } catch (e) {
+    console.warn('[SkipThisJob] processCurrentListing failed', e);
+    lastVjk = null; // allow retry on next poll
+  } finally {
+    isProcessing = false;
+  }
+}
 
+async function processCurrentListingInner(vjk) {
   // Wait for page to render (Indeed is slow — date/Hiring Insights often appears late)
   await new Promise(resolve => setTimeout(resolve, 2300));
 
   const listing = await parseIndeedListing();
   if (!listing.title || !listing.companyName) {
-    console.log('[SkipThisJob] Could not parse Indeed listing, skipping');
-    isProcessing = false;
+    console.log('[SkipThisJob] Could not parse Indeed listing, will retry');
+    lastVjk = null; // do not latch a failed parse; poll retries every 1.5s
     return;
   }
+  lastVjk = vjk;
 
   // Compute the pre-blend heuristic up front so it can be persisted server
   // side (powers the employer leaderboard). Pre-blend on purpose: the
@@ -1248,8 +1311,6 @@ async function processCurrentListing() {
       : lastPublishedScore;
   }
   injectOverlay(localScore, mergedBackend, listing);
-
-  isProcessing = false;
 }
 
 if (STJ.installPopupBridge) {

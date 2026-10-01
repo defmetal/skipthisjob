@@ -71,6 +71,30 @@
       line-height: 1.45;
     }
     .score-signals li { margin-bottom: 3px; }
+    .access-banner {
+      background: #fff4e5;
+      border: 1px solid #f5b971;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      line-height: 1.45;
+      color: #5a3b00;
+    }
+    .access-banner button {
+      margin-top: 8px;
+      width: 100%;
+      font-size: 13px;
+      font-weight: 600;
+      background: #7c3aed;
+      color: #fff;
+      border: 0;
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+    .access-banner button[disabled] { opacity: .6; cursor: default; }
+    .access-banner .access-msg { margin-top: 6px; font-size: 12px; }
     .score-signals li::before { content: "\2022\00a0"; color: #999; }
   </style>
 </head>
@@ -78,6 +102,13 @@
   <div class="header">
     <img src="../icons/icon-48.png" alt="Skip This Job">
     <h1>Skip This Job</h1>
+  </div>
+
+  <div id="stj-access" class="access-banner" style="display:none;" role="alert">
+    <strong>Chrome is blocking Skip This Job on LinkedIn &amp; Indeed.</strong>
+    Scores can't appear until you allow access.
+    <button id="stj-enable" type="button">Enable on LinkedIn &amp; Indeed</button>
+    <div class="access-msg" id="stj-access-msg"></div>
   </div>
 
   <div id="stj-score" style="display:none;"></div>
@@ -96,6 +127,7 @@
     <a href="https://skipthisjob.com/#lookup" target="_blank">Employer Lookup</a>
     <a href="https://vibelabsmarketing.com" target="_blank">by Vibe Labs Marketing</a>
   </div>
+  <script src="../lib/access.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

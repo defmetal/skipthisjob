@@ -2,7 +2,7 @@
 // LinkedIn Content Script — Skip This Job
 // ============================================================
 
-const API_BASE = 'https://skipthisjob.com/api';
+const API_BASE = 'https://www.skipthisjob.com/api';
 const STJ = globalThis.SkipThisJobShared || {};
 
 let lastProcessedJobId = null;

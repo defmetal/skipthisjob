@@ -4,7 +4,29 @@
 // Handles API calls and company scans on behalf of content scripts.
 // ============================================================
 
-const API_BASE = 'https://skipthisjob.com/api';
+importScripts('../lib/access.js');
+
+const API_BASE = 'https://www.skipthisjob.com/api';
+
+// Content scripts (untrusted contexts) read/write chrome.storage.session for
+// the Indeed per-job signal cache. Without this, Chrome throws "Access to
+// storage is not allowed from this context". shared.js also falls back to
+// storage.local if this call is unavailable.
+try {
+  if (chrome.storage.session && chrome.storage.session.setAccessLevel) {
+    chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
+  }
+} catch (e) { /* ignore */ }
+
+// --- Site access (host permission) monitoring ---
+// If Chrome withholds LinkedIn/Indeed access, content scripts never run. Flag
+// it with a "!" badge and open the onboarding page on install/update.
+chrome.runtime.onInstalled.addListener((details) => {
+  SkipThisJobAccess.handleInstalled(details);
+});
+chrome.runtime.onStartup.addListener(() => { SkipThisJobAccess.refreshAccessState(); });
+if (chrome.permissions && chrome.permissions.onAdded) chrome.permissions.onAdded.addListener(() => { SkipThisJobAccess.refreshAccessState(); });
+if (chrome.permissions && chrome.permissions.onRemoved) chrome.permissions.onRemoved.addListener(() => { SkipThisJobAccess.refreshAccessState(); });
 
 // Cache company scans to avoid re-fetching (expires after 1 hour)
 const scanCache = new Map();

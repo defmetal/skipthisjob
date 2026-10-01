@@ -807,41 +807,190 @@
 
   const INDEED_SIGNAL_CACHE_KEY = 'stjIndeedSignalsByJk';
 
-  function rememberIndeedJobSignals(jobKey, fields) {
-    if (!jobKey || typeof chrome === 'undefined' || !chrome.storage) return;
-    const store = chrome.storage.session || chrome.storage.local;
-    if (!store || !store.get) return;
-    try {
-      store.get(INDEED_SIGNAL_CACHE_KEY, function (data) {
-        const prev = (data && data[INDEED_SIGNAL_CACHE_KEY]) || {};
-        const next = mergeIndeedJobCache(prev, jobKey, fields, Date.now());
-        const payload = {};
-        payload[INDEED_SIGNAL_CACHE_KEY] = next;
-        store.set(payload);
-      });
-    } catch (e) { /* orphaned extension context */ }
-  }
+  const STORAGE_CALL_TIMEOUT_MS = 1500;
 
-  function recallIndeedJobSignals(jobKey) {
+  /**
+   * Promise wrapper for one chrome.storage area call that can never hang or
+   * throw into the caller. Content scripts hit "Access to storage is not
+   * allowed from this context" on chrome.storage.session unless the service
+   * worker called setAccessLevel(TRUSTED_AND_UNTRUSTED_CONTEXTS); in that case
+   * (or on timeout / lastError) this resolves { ok:false } so the caller can
+   * fall back to chrome.storage.local.
+   */
+  function storageCall(area, method, arg, timeoutMs, chromeApi) {
+    const c = chromeApi || (typeof chrome !== 'undefined' ? chrome : null);
     return new Promise(function (resolve) {
-      if (!jobKey || typeof chrome === 'undefined' || !chrome.storage) {
-        resolve(null);
-        return;
-      }
-      const store = chrome.storage.session || chrome.storage.local;
-      if (!store || !store.get) {
-        resolve(null);
-        return;
-      }
+      let done = false;
+      const finish = function (res) {
+        if (done) return;
+        done = true;
+        resolve(res);
+      };
+      const timer = setTimeout(function () {
+        finish({ ok: false, error: 'timeout' });
+      }, timeoutMs != null ? timeoutMs : STORAGE_CALL_TIMEOUT_MS);
       try {
-        store.get(INDEED_SIGNAL_CACHE_KEY, function (data) {
-          const map = (data && data[INDEED_SIGNAL_CACHE_KEY]) || {};
-          resolve(lookupIndeedJobCache(map, jobKey, Date.now()));
+        if (!area || typeof area[method] !== 'function') {
+          clearTimeout(timer);
+          finish({ ok: false, error: 'unavailable' });
+          return;
+        }
+        area[method](arg, function (data) {
+          clearTimeout(timer);
+          const err = c && c.runtime && c.runtime.lastError;
+          if (err) finish({ ok: false, error: String(err.message || err) });
+          else finish({ ok: true, data: data });
         });
       } catch (e) {
-        resolve(null);
+        clearTimeout(timer);
+        finish({ ok: false, error: String((e && e.message) || e) });
       }
     });
+  }
+
+  function indeedCacheAreas(chromeApi) {
+    const c = chromeApi || (typeof chrome !== 'undefined' ? chrome : null);
+    const areas = [];
+    try {
+      if (!c || !c.storage) return areas;
+      if (c.storage.session) areas.push(c.storage.session);
+      if (c.storage.local) areas.push(c.storage.local);
+    } catch (e) { /* getter can throw in restricted contexts */ }
+    return areas;
+  }
+
+  async function readIndeedCacheMap(chromeApi, timeoutMs) {
+    const areas = indeedCacheAreas(chromeApi);
+    for (let i = 0; i < areas.length; i++) {
+      const res = await storageCall(areas[i], 'get', INDEED_SIGNAL_CACHE_KEY, timeoutMs, chromeApi);
+      if (res.ok) return { map: (res.data && res.data[INDEED_SIGNAL_CACHE_KEY]) || {}, area: areas[i] };
+    }
+    return null;
+  }
+
+  async function rememberIndeedJobSignals(jobKey, fields, chromeApi, timeoutMs) {
+    if (!jobKey) return false;
+    const found = await readIndeedCacheMap(chromeApi, timeoutMs);
+    if (!found) return false;
+    const payload = {};
+    payload[INDEED_SIGNAL_CACHE_KEY] = mergeIndeedJobCache(found.map, jobKey, fields, Date.now());
+    const res = await storageCall(found.area, 'set', payload, timeoutMs, chromeApi);
+    return res.ok;
+  }
+
+  async function recallIndeedJobSignals(jobKey, chromeApi, timeoutMs) {
+    if (!jobKey) return null;
+    const found = await readIndeedCacheMap(chromeApi, timeoutMs);
+    return found ? lookupIndeedJobCache(found.map, jobKey, Date.now()) : null;
+  }
+
+  // --- Indeed identity (title/company) fallbacks ----------------------------
+  // Indeed's DOM changes often (and the SERP <h1> is the *search* heading, e.g.
+  // "it support jobs in San Antonio, TX"). Identity is therefore resolved from
+  // several independent sources in priority order.
+
+  function looksLikeSerpHeading(text) {
+    const t = String(text || '').trim();
+    if (!t) return false;
+    return /\bjobs?\s+(in|near|hiring)\b/i.test(t) ||
+      /^[\d,]+\+?\s+.*\bjobs?\b/i.test(t) ||
+      /\bjobs?\s*,?\s*employment\b/i.test(t);
+  }
+
+  function cleanIdentityText(text) {
+    return String(text || '')
+      .replace(/\s*-\s*job post$/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * "Title - Company - City, ST | Indeed.com" (document.title) or
+   * "Title - Company - City, ST" (og:title). Returns null for SERP titles or
+   * when fewer than three segments make the split ambiguous.
+   */
+  function parseIndeedPageTitle(rawTitle) {
+    let t = cleanIdentityText(rawTitle).replace(/\s*\|\s*Indeed(?:\.com)?\s*$/i, '').trim();
+    if (!t || looksLikeSerpHeading(t)) return null;
+    const parts = t.split(/\s+-\s+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (parts.length < 3) return null;
+    const company = parts[parts.length - 2];
+    const title = parts.slice(0, parts.length - 2).join(' - ');
+    if (!title || !company) return null;
+    return { title: title, companyName: company };
+  }
+
+  function readJobPostingIdentity(jsonLdText) {
+    if (!jsonLdText) return null;
+    const chunks = Array.isArray(jsonLdText) ? jsonLdText : [jsonLdText];
+    for (let c = 0; c < chunks.length; c++) {
+      let parsed;
+      try {
+        parsed = typeof chunks[c] === 'string' ? JSON.parse(chunks[c]) : chunks[c];
+      } catch (e) {
+        continue;
+      }
+      const stack = [parsed];
+      let guard = 0;
+      while (stack.length && guard++ < 500) {
+        const n = stack.pop();
+        if (!n) continue;
+        if (Array.isArray(n)) { for (let i = 0; i < n.length; i++) stack.push(n[i]); continue; }
+        if (typeof n !== 'object') continue;
+        if (n['@graph']) stack.push(n['@graph']);
+        const type = n['@type'];
+        const isJob = type === 'JobPosting' || (Array.isArray(type) && type.indexOf('JobPosting') !== -1);
+        if (!isJob) continue;
+        let org = n.hiringOrganization;
+        if (Array.isArray(org)) org = org[0];
+        const orgName = typeof org === 'string' ? org : (org && org.name);
+        const title = cleanIdentityText(n.title || n.name || '');
+        const company = cleanIdentityText(orgName || '');
+        if (title || company) return { title: title || null, companyName: company || null };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Fill missing title/company. `src`:
+   *   current: {title, companyName}        (already parsed from the detail DOM)
+   *   jobKey, mosaicJobs[]                  (bridged mosaic rows; exact jk only)
+   *   card: {title, companyName}            (selected [data-jk] card, optional)
+   *   jsonLd: string|string[], docTitle, ogTitle
+   * Returns {title, companyName, sources[]}.
+   */
+  function resolveIndeedIdentity(src) {
+    const s = src || {};
+    const cur = s.current || {};
+    const out = { title: cur.title || null, companyName: cur.companyName || null, sources: [] };
+    const fill = function (cand, label) {
+      if (!cand) return;
+      let used = false;
+      if (!out.title && cand.title && !looksLikeSerpHeading(cand.title)) { out.title = cand.title; used = true; }
+      if (!out.companyName && cand.companyName) { out.companyName = cand.companyName; used = true; }
+      if (used) out.sources.push(label);
+    };
+    if (out.title && looksLikeSerpHeading(out.title)) out.title = null;
+
+    const key = s.jobKey ? String(s.jobKey).toLowerCase() : null;
+    if (key && Array.isArray(s.mosaicJobs)) {
+      for (let i = 0; i < s.mosaicJobs.length; i++) {
+        const j = s.mosaicJobs[i];
+        if (j && String(j.jobkey || '').toLowerCase() === key) {
+          fill({
+            title: cleanIdentityText(j.displayTitle || j.title || ''),
+            companyName: cleanIdentityText(j.company || ''),
+          }, 'mosaic');
+          break;
+        }
+      }
+    }
+    fill(s.card, 'card');
+    fill(readJobPostingIdentity(s.jsonLd), 'json-ld');
+    fill(parseIndeedPageTitle(s.ogTitle), 'og:title');
+    fill(parseIndeedPageTitle(s.docTitle), 'document.title');
+    return out;
   }
 
   // --- Track / Apply payloads --------------------------------------------
@@ -1223,6 +1372,10 @@
   api.mergeIndeedJobCache = mergeIndeedJobCache;
   api.rememberIndeedJobSignals = rememberIndeedJobSignals;
   api.recallIndeedJobSignals = recallIndeedJobSignals;
+  api.storageCall = storageCall;
+  api.resolveIndeedIdentity = resolveIndeedIdentity;
+  api.parseIndeedPageTitle = parseIndeedPageTitle;
+  api.readJobPostingIdentity = readJobPostingIdentity;
   api.INDEED_SIGNAL_CACHE_TTL_MS = INDEED_SIGNAL_CACHE_TTL_MS;
   api.extractLinkedInJobId = extractLinkedInJobId;
   api.hasEngagementSignal = hasEngagementSignal;
