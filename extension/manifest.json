@@ -9,17 +9,15 @@
     "activeTab"
   ],
   "host_permissions": [
-    "https://www.linkedin.com/*",
-    "https://*.linkedin.com/*",
-    "https://*.indeed.com/*",
-    "https://www.skipthisjob.com/*",
+    "*://*.linkedin.com/*",
+    "*://*.indeed.com/*",
     "https://skipthisjob.com/*"
   ],
   "content_scripts": [
     {
       "matches": [
-        "https://*.linkedin.com/jobs/*",
-        "https://*.linkedin.com/feed/*"
+        "*://*.linkedin.com/jobs/*",
+        "*://*.linkedin.com/feed/*"
       ],
       "js": ["content/shared.js", "content/linkedin.js"],
       "css": ["content/overlay.css"],
@@ -27,7 +25,7 @@
     },
     {
       "matches": [
-        "https://*.indeed.com/*"
+        "*://*.indeed.com/*"
       ],
       "js": ["content/indeed-mosaic-bridge.js"],
       "run_at": "document_start",
@@ -35,7 +33,7 @@
     },
     {
       "matches": [
-        "https://*.indeed.com/*"
+        "*://*.indeed.com/*"
       ],
       "js": ["content/shared.js", "content/indeed.js"],
       "css": ["content/overlay.css"],

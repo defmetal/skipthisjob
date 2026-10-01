@@ -13,9 +13,13 @@
 (function (root) {
   'use strict';
 
+  // Must match the published host_permissions job-site patterns exactly.
+  // Do not narrow to https:// or add skipthisjob.com / www hosts here: any
+  // change to the declared host set can make Chrome withhold access on update.
+  // skipthisjob.com stays in the manifest but does not gate this recovery flow.
   const REQUIRED_ORIGINS = [
-    'https://*.linkedin.com/*',
-    'https://*.indeed.com/*',
+    '*://*.linkedin.com/*',
+    '*://*.indeed.com/*',
   ];
 
   const BADGE_TEXT = '!';
@@ -111,7 +115,7 @@
   }
 
   function isJobUrl(url) {
-    return /^https:\/\/([^/]+\.)?(linkedin|indeed)\.com\//i.test(url || '');
+    return /^https?:\/\/([^/]+\.)?(linkedin|indeed)\.com\//i.test(url || '');
   }
 
   /**

@@ -30,17 +30,23 @@ function fakeChrome({ granted, requestResult, activeTab } = {}) {
 }
 
 test('required origins cover LinkedIn and Indeed', () => {
-  assert.deepEqual(A.REQUIRED_ORIGINS, ['https://*.linkedin.com/*', 'https://*.indeed.com/*']);
+  assert.deepEqual(A.REQUIRED_ORIGINS, ['*://*.linkedin.com/*', '*://*.indeed.com/*']);
 });
 
-test('required origins are all declared in manifest host_permissions', () => {
+test('required origins equal restored host_permissions job sites only', () => {
   const m = JSON.parse(fs.readFileSync(path.join(__dirname, '../extension/manifest.json'), 'utf8'));
-  for (const o of A.REQUIRED_ORIGINS) assert.ok(m.host_permissions.includes(o), o);
-  for (const o of ['https://www.linkedin.com/*', 'https://www.skipthisjob.com/*', 'https://skipthisjob.com/*']) {
-    assert.ok(m.host_permissions.includes(o), o);
-  }
+  // Published 0.2.2 host set. Do not grow or narrow this.
+  assert.deepEqual(m.host_permissions, [
+    '*://*.linkedin.com/*',
+    '*://*.indeed.com/*',
+    'https://skipthisjob.com/*',
+  ]);
+  const jobHosts = m.host_permissions.filter((h) => /linkedin\.com|indeed\.com/.test(h));
+  assert.deepEqual(A.REQUIRED_ORIGINS, jobHosts);
+  assert.equal(A.REQUIRED_ORIGINS.some((o) => /skipthisjob/.test(o)), false);
+  assert.equal(m.version, '0.2.2');
   for (const cs of m.content_scripts) {
-    for (const match of cs.matches) assert.ok(match.startsWith('https://'), match);
+    for (const match of cs.matches) assert.ok(match.startsWith('*://'), match);
   }
 });
 
