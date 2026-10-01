@@ -1,10 +1,11 @@
+import Logo from '@/components/Logo';
 export default function Terms() {
   return (
     <main className="min-h-screen bg-white">
       <nav className="max-w-3xl mx-auto px-6 py-6 flex items-center gap-2">
         <a href="/" className="flex items-center gap-2 hover:opacity-80 transition">
-          <span className="text-2xl">⏭️</span>
-          <span className="text-lg font-semibold tracking-tight">Skip This Job</span>
+          <Logo size={32} />
+          <span className="text-lg font-bold tracking-[-0.01em]">Skip This Job</span>
         </a>
       </nav>
 

@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import Logo from '@/components/Logo';
 
 interface Employer {
   name_raw: string;
@@ -88,8 +89,8 @@ export default function LeaderboardPage() {
       {/* ── Nav ── */}
       <nav className="max-w-5xl mx-auto px-6 py-6 flex items-center justify-between">
         <Link href="/" className="flex items-center gap-2">
-          <span className="text-2xl">⏭️</span>
-          <span className="text-lg font-semibold tracking-tight">Skip This Job</span>
+          <Logo size={32} />
+          <span className="text-lg font-bold tracking-[-0.01em]">Skip This Job</span>
         </Link>
         <div className="hidden sm:flex items-center gap-8 text-sm text-gray-500">
           <Link href="/#how-it-works" className="hover:text-gray-900 transition">How It Works</Link>
@@ -261,8 +262,8 @@ export default function LeaderboardPage() {
           <div className="grid sm:grid-cols-3 gap-10 mb-10">
             <div>
               <Link href="/" className="flex items-center gap-2 mb-3">
-                <span className="text-lg">⏭️</span>
-                <span className="font-semibold">Skip This Job</span>
+                <Logo size={28} />
+                <span className="font-bold tracking-[-0.01em]">Skip This Job</span>
               </Link>
               <p className="text-sm text-gray-500 leading-relaxed">
                 Bringing transparency to the job market. Built by people
