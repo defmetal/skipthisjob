@@ -1443,6 +1443,9 @@ function parseIndeedCard(card) {
     applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,
     engagementSignals: /actively reviewing|reviewing applicants/.test(text)
       ? ['actively_reviewing'] : [],
+    // Cards do not read Hiring Insights. Absence is unparsed (0), matching
+    // the detail overlay. A visible badge still credits via the signal.
+    engagementParsed: false,
     platform: 'indeed',
   };
 }

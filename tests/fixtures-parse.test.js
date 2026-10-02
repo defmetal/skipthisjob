@@ -67,9 +67,11 @@ test('LinkedIn job fixture parses and scores loaded fields only', () => {
     assert.equal(parsedCard.companyName, 'Acme');
     assert.equal(parsedCard.daysOpen, 3);
     assert.equal(parsedCard.platformJobId, '4242424242');
+    assert.equal(parsedCard.engagementParsed, false);
     const preview = shared.scoreListPreview(parsedCard);
     assert.equal(typeof preview.score, 'number');
-    assert.ok(!preview.signals.some(s => /unknown/i.test(s)));
+    assert.ok(!preview.signals.some(s => /posting age unknown|job description unknown|salary unknown/i.test(s)));
+    assert.ok(!preview.signals.some(s => /no active review/i.test(s)));
   } finally {
     dom.window.close();
   }
@@ -182,9 +184,11 @@ test('Indeed SERP card fixture parses without inventing a description penalty', 
     assert.equal(parsed.platformJobId, 'abc123def4567890');
     assert.equal(parsed.daysOpen, 45);
     assert.equal(parsed.salaryListed, true);
+    assert.equal(parsed.engagementParsed, false);
     const preview = shared.scoreListPreview(parsed);
     assert.ok(preview.score > 0, 'known age on a card should score');
-    assert.ok(!preview.signals.some(s => /description|unknown/i.test(s)));
+    assert.ok(!preview.signals.some(s => /description|salary unknown|posting age unknown/i.test(s)));
+    assert.ok(!preview.signals.some(s => /no active review/i.test(s)));
   } finally {
     dom.window.close();
   }
