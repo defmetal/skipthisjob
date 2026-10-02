@@ -2,4 +2,4 @@ User-agent: *
 Allow: /
 Disallow: /api/
 
-Sitemap: https://skipthisjob.com/sitemap.xml
+Sitemap: https://www.skipthisjob.com/sitemap.xml
