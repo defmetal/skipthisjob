@@ -525,11 +525,11 @@ export function highlightGroups(): HighlightGroup[] {
       }
     }
   }
-  return [...map.values()]
+  return Array.from(map.values())
     .sort((a, b) => a.order - b.order)
     .map((group) => ({
       ...group,
-      checks: [...group.checks].sort((a, b) => (a.highlight?.row ?? 0) - (b.highlight?.row ?? 0)),
+      checks: group.checks.slice().sort((a, b) => (a.highlight?.row ?? 0) - (b.highlight?.row ?? 0)),
     }));
 }
 

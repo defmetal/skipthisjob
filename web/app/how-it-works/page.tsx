@@ -140,9 +140,11 @@ export default function HowItWorksPage() {
                     </div>
                     <p className="mt-2 text-sm text-gray-600 leading-relaxed">{check.summary}</p>
                     <details className="mt-3 group">
-                      <summary className="cursor-pointer text-sm font-medium text-purple-700 hover:text-purple-900 list-none flex items-center gap-1">
-                        <span className="inline-block transition group-open:rotate-90" aria-hidden="true">▸</span>
-                        Point values
+                      <summary className="cursor-pointer list-none text-sm font-medium text-purple-700 hover:text-purple-900">
+                        <span className="inline-flex items-center gap-1">
+                          <span className="inline-block transition group-open:rotate-90" aria-hidden="true">▸</span>
+                          Point values
+                        </span>
                       </summary>
                       <dl className="mt-3 rounded-lg border border-gray-100 bg-gray-50 divide-y divide-gray-100">
                         {check.points.map((point) => (

@@ -139,7 +139,7 @@ export default function Home() {
       {/* ── Signals ── */}
       <section id="signals" className="bg-white border-y border-gray-200">
         <div className="max-w-5xl mx-auto px-6 py-24">
-          <h2 className="text-3xl font-bold text-center mb-4">What we check</h2>
+          <h2 className="text-3xl font-bold text-center mb-4">What We Check</h2>
           <p className="text-gray-500 text-center mb-3 max-w-2xl mx-auto leading-relaxed">
             The score uses {SIGNAL_COUNT} checks, in {SIGNAL_CATEGORIES.length} groups.
           </p>
@@ -147,7 +147,7 @@ export default function Home() {
             {DISTINCT_NOTE}
           </p>
 
-          <h3 className="text-lg font-semibold text-center mb-2">What moves the score most</h3>
+          <h3 className="text-lg font-semibold text-center mb-2">What Moves the Score Most</h3>
           <p className="text-sm text-gray-500 text-center mb-6">
             <span className="text-red-600 font-semibold">↑</span> raises ghost risk.{' '}
             <span className="text-green-700 font-semibold">↓</span> lowers it.
