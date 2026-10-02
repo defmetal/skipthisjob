@@ -1,6 +1,244 @@
 import Logo from '@/components/Logo';
 import Link from 'next/link';
 
+type ScoreDirection = 'Raises' | 'Lowers' | 'Raises or lowers';
+
+type ScoreSignal = {
+  title: string;
+  direction: ScoreDirection;
+  desc: string;
+};
+
+/**
+ * Every check that can change the number in the shipped extension.
+ * Listing checks: extension/content/shared.js scoreListingSignals, plus
+ * scoreLocally() in extension/content/linkedin.js and extension/content/indeed.js.
+ * Employer checks: the record blendGhostScore mixes in, from
+ * web/app/api/employer/score/route.ts and web/lib/employerScore.ts.
+ * The stat and the heading both use SIGNAL_COUNT, so the stated count
+ * stays equal to the number of items below.
+ */
+const SIGNAL_GROUPS: { title: string; items: ScoreSignal[] }[] = [
+  {
+    title: 'Listing age and reposts',
+    items: [
+      {
+        title: 'Posted in the last 48 hours',
+        direction: 'Lowers',
+        desc: 'A listing from the last two days gets a credit. The credit is larger on a LinkedIn job page than on Indeed or on a search card.',
+      },
+      {
+        title: 'Open more than two days',
+        direction: 'Raises',
+        desc: 'After two days, the score rises the longer the listing stays open. The add levels off once the listing is about 90 days old.',
+      },
+      {
+        title: 'Posting age missing on Indeed',
+        direction: 'Raises',
+        desc: 'On an Indeed job page, a missing posting date raises the score.',
+      },
+      {
+        title: 'Age floor',
+        direction: 'Raises',
+        desc: 'At 60 days the score is lifted to at least 50 if it was lower. At 90 days the floor is 75. At 120 days the floor is 88.',
+      },
+      {
+        title: 'Marked as a repost',
+        direction: 'Raises',
+        desc: 'A listing the platform marks as reposted adds a large amount of risk.',
+      },
+      {
+        title: 'High-turnover job title',
+        direction: 'Lowers',
+        desc: 'Titles such as barista, warehouse associate, and CNA reduce age and repost points to 40% of the usual add, and reduce applicant points to 60%. The overlay notes the title.',
+      },
+    ],
+  },
+  {
+    title: 'Applicants and engagement',
+    items: [
+      {
+        title: '100 or more applicants',
+        direction: 'Raises',
+        desc: 'The score rises at 100 applicants, more at 200, and more again at 500.',
+      },
+      {
+        title: '100+ applicants on an older listing',
+        direction: 'Raises',
+        desc: 'A listing open 60 days or more with 100+ applicants takes an extra hit. The extra hit is larger at 90 days and larger again at 120.',
+      },
+      {
+        title: 'LinkedIn: 30+ days and 200+ applicants',
+        direction: 'Raises',
+        desc: 'On LinkedIn, a listing open 30 days with 200 or more applicants takes an additional hit on top of the applicant checks.',
+      },
+      {
+        title: 'LinkedIn: repost with 100+ applicants',
+        direction: 'Raises',
+        desc: 'On LinkedIn, a repost that already has 100 or more applicants takes an additional hit.',
+      },
+      {
+        title: 'Easy Apply on an older listing',
+        direction: 'Raises',
+        desc: 'Easy Apply on a listing open 60 days or more raises the score. The add is larger at 90 days and larger again at 120.',
+      },
+      {
+        title: 'Actively reviewing applications',
+        direction: 'Lowers',
+        desc: 'An “actively reviewing” label lowers the score. The credit shrinks after 60 days and again after 90. At 120 days the label no longer lowers the score.',
+      },
+      {
+        title: 'No review activity after 14 days',
+        direction: 'Raises',
+        desc: 'A listing open 14 days or more with no “actively reviewing” label raises the score.',
+      },
+      {
+        title: 'Indeed: 30+ days with no active review',
+        direction: 'Raises',
+        desc: 'On Indeed, a listing open 30 days with no active review takes a further hit beyond the 14-day check.',
+      },
+    ],
+  },
+  {
+    title: 'Pay, contact, and where you apply',
+    items: [
+      {
+        title: 'Salary listed or missing',
+        direction: 'Raises or lowers',
+        desc: 'No salary on the job page raises the score. On a search card, a missing salary raises it a little, and a salary that is shown lowers it a little.',
+      },
+      {
+        title: 'Staffing agency or job board',
+        direction: 'Raises',
+        desc: 'A third-party or staffing poster raises the score, on the job page and on a search card.',
+      },
+      {
+        title: 'No hiring contact on LinkedIn',
+        direction: 'Raises',
+        desc: 'When the LinkedIn page does not show someone you can follow up with, the score goes up.',
+      },
+      {
+        title: 'Responses managed off LinkedIn',
+        direction: 'Raises',
+        desc: 'A listing that says responses are managed off LinkedIn raises the score.',
+      },
+      {
+        title: 'No response data',
+        direction: 'Raises',
+        desc: 'On LinkedIn, a “no response insights” line raises the score. On Indeed, the score rises when the page does not say the employer responds quickly.',
+      },
+      {
+        title: 'Indeed: employer responds quickly',
+        direction: 'Lowers',
+        desc: 'When Indeed says the employer responds quickly, the score goes down a little.',
+      },
+      {
+        title: 'Apply button leaves Indeed',
+        direction: 'Raises',
+        desc: 'An Indeed listing that sends you to the company site to apply raises the score a little.',
+      },
+      {
+        title: 'Indeed employer rating',
+        direction: 'Raises or lowers',
+        desc: 'A rating under 2.5 raises the score more than a rating under 3. A rating of 4 or higher lowers it a little. From 3 up to 4, this check leaves the score where it is.',
+      },
+    ],
+  },
+  {
+    title: 'Description quality',
+    items: [
+      {
+        title: 'Missing or short description',
+        direction: 'Raises',
+        desc: 'On LinkedIn, a missing description or one under 200 characters raises the score more than one under 500 characters. On Indeed, a missing description raises the score. A description that is present and under 280 characters raises it by a smaller step.',
+      },
+      {
+        title: 'Vague or generic wording',
+        direction: 'Raises',
+        desc: 'Buzzword-heavy copy raises the score. Heavier vague language raises it more than a lighter dose. The add is similar on LinkedIn and Indeed.',
+      },
+      {
+        title: 'Specific description',
+        direction: 'Lowers',
+        desc: 'A concrete description, with tools, scope, or reporting lines, lowers the score by a small step.',
+      },
+      {
+        title: 'Placeholder or broken template',
+        direction: 'Raises',
+        desc: 'Leftover template text in the title or description, such as an unfilled company or job-title token, raises the score.',
+      },
+      {
+        title: 'Seniority mismatch',
+        direction: 'Raises',
+        desc: 'An entry-level title that asks for 10 or more years raises the score. A senior title that asks for 0–2 years raises it too.',
+      },
+      {
+        title: 'Work arrangement contradicts the description',
+        direction: 'Raises',
+        desc: 'The score rises when the page and the description disagree, such as an on-site tag with a remote-only description.',
+      },
+    ],
+  },
+  {
+    title: 'Stacked gaps',
+    items: [
+      {
+        title: 'LinkedIn: old listing missing the basics',
+        direction: 'Raises',
+        desc: 'Open 14 days or more, with no hiring contact, a description under 300 characters or none at all, and no salary, raises the score further.',
+      },
+      {
+        title: 'Indeed: old listing missing the basics',
+        direction: 'Raises',
+        desc: 'Open 14 days or more, with no salary, no quick response, and no active review, raises the score further.',
+      },
+      {
+        title: 'Indeed: old, quiet, and unpaid',
+        direction: 'Raises',
+        desc: 'Open 30 days or more, with no review, no response, and no salary, adds still more on top of the other Indeed checks.',
+      },
+    ],
+  },
+  {
+    title: 'Platform',
+    items: [
+      {
+        title: 'Indeed job page baseline',
+        direction: 'Raises',
+        desc: 'An Indeed job page starts higher than a LinkedIn page or a search card, before the other checks are applied.',
+      },
+    ],
+  },
+  {
+    title: 'Employer record',
+    items: [
+      {
+        title: 'Recent ghost reports or no response',
+        direction: 'Raises',
+        desc: 'With at least three recent community reports, a high share of ghost flags or “no response” outcomes lifts the employer score. These reports can raise that score and do not pull it down.',
+      },
+      {
+        title: 'Same role reposted again and again',
+        direction: 'Raises',
+        desc: 'Four or more tracked reposts of the same role lift the employer score. Six or more lift it further.',
+      },
+      {
+        title: 'Same description reused on those reposts',
+        direction: 'Raises',
+        desc: 'When that repeated role also reuses one description, and it has happened at least three times, the employer score goes up further.',
+      },
+    ],
+  },
+];
+
+const SIGNAL_COUNT = SIGNAL_GROUPS.reduce((n, group) => n + group.items.length, 0);
+
+function directionClass(direction: ScoreDirection): string {
+  if (direction === 'Lowers') return 'bg-green-50 text-green-800';
+  if (direction === 'Raises or lowers') return 'bg-amber-50 text-amber-900';
+  return 'bg-red-50 text-red-800';
+}
+
 export default function Home() {
   return (
     <main className="min-h-screen">
@@ -63,7 +301,7 @@ export default function Home() {
       <section className="border-y border-gray-200 bg-white">
         <div className="max-w-4xl mx-auto px-6 py-8 grid grid-cols-1 sm:grid-cols-3 gap-6 text-center">
           {[
-            { number: '28', label: 'listing signals in the score' },
+            { number: String(SIGNAL_COUNT), label: 'signals in the score' },
             { number: '0', label: 'personal identifiers collected' },
             { number: '100%', label: 'free, no account needed' },
           ].map((stat, i) => (
@@ -127,79 +365,45 @@ export default function Home() {
 
       {/* ── Signals ── */}
       <section id="signals" className="bg-white border-y border-gray-200">
-        <div className="max-w-4xl mx-auto px-6 py-24">
+        <div className="max-w-5xl mx-auto px-6 py-24">
           <h2 className="text-3xl font-bold text-center mb-4">What We Check</h2>
-          <p className="text-gray-500 text-center mb-16 max-w-lg mx-auto">
-            The extension runs 28 checks on the listing in your browser, then
-            combines that result with the employer&apos;s track record when we
-            have one. Weight depends on how much evidence that record has.
-            Some of what goes into the score:
+          <p className="text-gray-500 text-center mb-4 max-w-2xl mx-auto leading-relaxed">
+            The score uses {SIGNAL_COUNT} signals. Each one is listed below.
+            The first groups run on the listing in your browser. The employer
+            record is mixed in afterward. A thin record can raise the score
+            and will not pull it down. Recent reports, saved reposts, or at
+            least eight tracked listings let that record pull a score down.
+          </p>
+          <p className="text-gray-500 text-center mb-16 max-w-2xl mx-auto text-sm leading-relaxed">
+            A Glassdoor rating under 3.0, or an interview-to-offer rate under 20%,
+            is shown beside the score when we have it on file. That line does not
+            add points by itself.
           </p>
 
-          <div className="grid sm:grid-cols-2 gap-6">
-            {[
-              {
-                icon: '📅',
-                title: 'Posting Age',
-                desc: 'The extension reads the age shown on the listing. Older posts add risk, with minimum scores once a listing has been open 60, 90, or 120 days. A post from the last 48 hours gets a small credit.',
-              },
-              {
-                icon: '🔄',
-                title: 'Repost Detection',
-                desc: 'A listing marked as reposted adds risk. We also track how many times an employer has posted the same role in the same city.',
-              },
-              {
-                icon: '👥',
-                title: 'Applicant Volume',
-                desc: '100, 200, and 500+ applicants add risk. On listings open 60 days or more, 100+ applicants adds more. On LinkedIn, 30+ days with 200+ applicants adds more still.',
-              },
-              {
-                icon: '💰',
-                title: 'Salary Transparency',
-                desc: 'No salary listed adds a small amount of risk. It is one check among the rest, not a verdict by itself.',
-              },
-              {
-                icon: '📝',
-                title: 'Description Quality',
-                desc: 'Missing, very short, or vague descriptions add risk. Placeholder text and a title that conflicts with the years of experience required add more. A specific description is a small credit.',
-              },
-              {
-                icon: '👀',
-                title: 'Engagement and Response',
-                desc: '“Actively reviewing” lowers the score, less so on old posts. No review activity on a listing open 14+ days, missing response data, or responses managed off LinkedIn add risk. On Indeed, a fast response is a small credit, and “Apply on company site” adds a little risk.',
-              },
-              {
-                icon: '📊',
-                title: 'Community Reports',
-                desc: 'Other users can flag a ghost job or report an outcome, such as never hearing back. Those reports feed the employer’s track record.',
-              },
-              {
-                icon: '⭐',
-                title: 'Glassdoor Ratings',
-                desc: 'When we have a Glassdoor rating on file, a rating under 3.0 or an interview-to-offer rate under 20% is shown with the employer score.',
-              },
-            ].map((signal, i) => (
-              <div
-                key={i}
-                className="flex gap-4 p-5 rounded-xl border border-gray-100 hover:border-gray-200 transition"
-              >
-                <span className="text-2xl shrink-0">{signal.icon}</span>
-                <div>
-                  <h3 className="font-semibold mb-1">{signal.title}</h3>
-                  <p className="text-sm text-gray-500 leading-relaxed">{signal.desc}</p>
-                </div>
+          <div className="space-y-12">
+            {SIGNAL_GROUPS.map((group) => (
+              <div key={group.title}>
+                <h3 className="text-lg font-semibold mb-4">{group.title}</h3>
+                <ul className="grid sm:grid-cols-2 gap-4">
+                  {group.items.map((signal) => (
+                    <li
+                      key={signal.title}
+                      className="p-5 rounded-xl border border-gray-100"
+                    >
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <h4 className="font-semibold">{signal.title}</h4>
+                        <span
+                          className={`text-xs font-medium px-2 py-0.5 rounded ${directionClass(signal.direction)}`}
+                        >
+                          {signal.direction} the score
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-500 leading-relaxed">{signal.desc}</p>
+                    </li>
+                  ))}
+                </ul>
               </div>
             ))}
-          </div>
-
-          <div className="mt-12 p-5 rounded-xl bg-amber-50 border border-amber-100">
-            <p className="text-sm text-amber-900 leading-relaxed">
-              <strong>High-turnover job titles.</strong> When the title matches
-              a role that is reposted often — barista, warehouse associate, CNA,
-              and similar titles — posting-age and applicant-count points are
-              reduced, and the overlay notes that. Staffing or third-party posts
-              and a missing hiring contact on LinkedIn are separate checks.
-            </p>
           </div>
         </div>
       </section>
