@@ -4,9 +4,13 @@ import { corsResponse } from './cors';
 /**
  * Soft in-memory rate limiter for Vercel serverless.
  *
- * Limits are per-isolate (not globally coordinated). That is enough to
- * blunt abusive floods from a single client without persisting IPs.
- * Request IPs are hashed in memory only and never written to the DB.
+ * Limits are per-isolate (not globally coordinated). On Vercel each cold
+ * instance has its own map, so the numbers are advisory. That is enough to
+ * blunt a burst from one client without persisting IPs. Request IPs are
+ * hashed in memory only and never written to the DB.
+ *
+ * If cross-instance abuse shows up, move the buckets to a shared store
+ * (Upstash Redis or Vercel KV). Do not treat this map as a security boundary.
  */
 
 type Bucket = { count: number; resetAt: number };

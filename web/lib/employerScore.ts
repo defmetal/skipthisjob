@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { ghostLabelForScore } from './ghostLabel.js';
 
 /**
  * Recompute and persist an employer's aggregate ghost_score from real data.
@@ -23,13 +24,6 @@ function median(nums: number[]): number | null {
   const s = [...nums].sort((a, b) => a - b);
   const mid = Math.floor(s.length / 2);
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-}
-
-function labelFor(score: number): string {
-  if (score >= 75) return 'very_high';
-  if (score >= 50) return 'high';
-  if (score >= 25) return 'moderate';
-  return 'low';
 }
 
 export async function recomputeEmployerScore(
@@ -82,16 +76,18 @@ export async function recomputeEmployerScore(
     else if (rate >= 0.55) score = Math.max(score, 52);
   }
 
-  const safeReposts = reposts || [];
-  if (safeReposts.length > 0) {
+  const repeated = (reposts || []).filter(
+    (r: { occurrence_count: number | null }) => (r.occurrence_count || 0) >= 2
+  );
+  if (repeated.length > 0) {
     const maxRepost = Math.max(
       0,
-      ...safeReposts.map((r: { occurrence_count: number | null }) => r.occurrence_count || 0)
+      ...repeated.map((r: { occurrence_count: number | null }) => r.occurrence_count || 0)
     );
     if (maxRepost >= 6) score = Math.max(score, 75);
     else if (maxRepost >= 4) score = Math.max(score, 62);
     if (
-      safeReposts.some((r: { descriptions_identical: boolean | null }) => r.descriptions_identical) &&
+      repeated.some((r: { descriptions_identical: boolean | null }) => r.descriptions_identical) &&
       maxRepost >= 3
     ) {
       score += 6;
@@ -99,26 +95,36 @@ export async function recomputeEmployerScore(
   }
 
   score = Math.max(0, Math.min(100, Math.round(score * 10) / 10));
-  const label = labelFor(score);
+  const label = ghostLabelForScore(score);
 
-  // 3. Persist + audit-log the change.
+  // Persist only when the stored score or label actually changes, and
+  // append an audit row only when the numeric score changes. A repeat
+  // view of the same listing must not grow employer_score_log.
   const { data: prev } = await db
     .from('employers')
-    .select('ghost_score')
+    .select('ghost_score, ghost_label')
     .eq('id', employerId)
-    .single();
+    .maybeSingle();
+
+  const prevScore = prev?.ghost_score == null ? null : Number(prev.ghost_score);
+  const prevLabel = prev?.ghost_label ?? null;
+  const scoreChanged = prevScore == null || !Number.isFinite(prevScore) || Math.abs(prevScore - score) > 0.049;
+  const labelChanged = prevLabel !== label;
+  if (!scoreChanged && !labelChanged) return { score, label };
 
   await db
     .from('employers')
     .update({ ghost_score: score, ghost_label: label, updated_at: new Date().toISOString() })
     .eq('id', employerId);
 
-  await db.from('employer_score_log').insert({
-    employer_id: employerId,
-    previous_score: prev?.ghost_score ?? null,
-    new_score: score,
-    trigger_reason: trigger,
-  });
+  if (scoreChanged) {
+    await db.from('employer_score_log').insert({
+      employer_id: employerId,
+      previous_score: prevScore,
+      new_score: score,
+      trigger_reason: trigger,
+    });
+  }
 
   return { score, label };
 }

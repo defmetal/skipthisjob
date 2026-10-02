@@ -1,10 +1,14 @@
 import { NextRequest } from 'next/server';
 import { corsResponse, corsOptions } from '@/lib/cors';
-import { supabaseAdmin } from '@/lib/supabase';
+import { getSupabaseAdmin } from '@/lib/supabase';
 import { recomputeEmployerScore } from '@/lib/employerScore';
 import { enforceRateLimit } from '@/lib/rateLimit';
+import { normalizeCompanyName } from '@/lib/normalizeCompanyName';
+import { isAllowedPostOrigin } from '@/lib/originCheck';
+import { isRecord, parseTrackBody } from '@/lib/requestValidation';
 import {
   countSimilarRoles,
+  incrementListingsTracked,
   parseLocation,
   persistListingSignals,
   upsertRepostPattern,
@@ -24,96 +28,84 @@ export async function OPTIONS() {
 }
 
 export async function POST(request: NextRequest) {
-  let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return corsResponse({ error: 'Invalid JSON' }, 400);
+  if (!isAllowedPostOrigin(request.headers.get('origin'))) {
+    return corsResponse({ error: 'Origin not allowed' }, 403);
   }
 
   const limited = enforceRateLimit(request, 'track', 40, 60_000);
   if (!limited.ok) return limited.response;
 
-  const {
-    companyName,
-    jobTitle,
-    platform,
-    platformJobId,
-    location,
-    salaryListed,
-    isRepost,
-    daysOpen,
-    engagementSignals,
-    employerResponseTime,
-    userClickedApply,
-    workArrangement,
-    employmentType,
-    listingHeuristic,
-    descriptionHash,
-  } = body;
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return corsResponse({ error: 'Invalid JSON' }, 400);
+  }
+  if (!isRecord(body)) {
+    return corsResponse({ error: 'Invalid JSON body' }, 400);
+  }
 
-  const heuristicScore =
-    typeof listingHeuristic === 'number' && Number.isFinite(listingHeuristic)
-      ? Math.max(0, Math.min(100, Math.round(listingHeuristic * 10) / 10))
-      : null;
+  const parsed = parseTrackBody(body);
+  if (!parsed.ok) {
+    return corsResponse({ error: parsed.error }, 400);
+  }
 
-  const postedDate =
-    daysOpen != null ? new Date(Date.now() - daysOpen * 86400000).toISOString().split('T')[0] : null;
+  let db;
+  try {
+    db = getSupabaseAdmin();
+  } catch (error) {
+    console.error('[SkipThisJob] Supabase is not configured', error);
+    return corsResponse({ error: 'Server is not configured' }, 500);
+  }
 
-  // Apply-only fallback: resolve an existing listing by platform job id
-  // when the lightweight USER_CLICKED_APPLY path omitted company/title.
-  if (userClickedApply && platform && platformJobId && (!companyName || !jobTitle)) {
-    const { data: existing } = await supabaseAdmin
+  const track = parsed.value;
+
+  if (track.mode === 'apply') {
+    const { data: existing } = await db
       .from('listings')
-      .select('id, employer_id, title_normalized, location_city, location_state')
-      .eq('platform', platform)
-      .eq('platform_job_id', platformJobId)
+      .select('id')
+      .eq('platform', track.platform)
+      .eq('platform_job_id', track.platformJobId)
       .maybeSingle();
 
     if (!existing) {
       return corsResponse({ error: 'Missing required fields' }, 400);
     }
 
-    await persistListingSignals(supabaseAdmin, existing.id, {
+    await persistListingSignals(db, existing.id, {
       userClickedApply: true,
-      engagementSignals: engagementSignals || [],
-      employerResponseTime: employerResponseTime || null,
-      workArrangement: workArrangement || null,
-      employmentType: employmentType || null,
+      engagementSignals: track.engagementSignals,
+      employerResponseTime: track.employerResponseTime,
+      workArrangement: track.workArrangement,
+      employmentType: track.employmentType,
     });
 
     return corsResponse({ success: true, apply: true, deduped: true });
   }
 
-  if (!companyName || !jobTitle || !platform) {
-    return corsResponse({ error: 'Missing required fields' }, 400);
+  const normalized = normalizeCompanyName(track.companyName);
+  if (!normalized) {
+    return corsResponse({ error: 'Invalid companyName' }, 400);
   }
 
-  // Normalize company name (same logic as score API)
-  let normalized = companyName.toLowerCase().trim().replace(/\.com\b/gi, '');
-  const suffixes = /\s+(inc\.?|llc\.?|llp\.?|corp\.?|ltd\.?|co\.?|company|corporation|group|holdings|services|consulting|solutions|enterprises|technologies|international|worldwide|global|north america|usa|us)$/i;
-  for (let i = 0; i < 4; i++) {
-    const before = normalized;
-    normalized = normalized.replace(suffixes, '').trim();
-    if (normalized === before) break;
-  }
-  normalized = normalized.replace(/\s+/g, ' ').trim();
+  const normalizedTitle = track.jobTitle.toLowerCase().trim();
+  const { city, state } = parseLocation(track.location);
+  const postedDate =
+    track.daysOpen != null
+      ? new Date(Date.now() - track.daysOpen * 86400000).toISOString().split('T')[0]
+      : null;
 
-  const normalizedTitle = jobTitle.toLowerCase().trim();
-  const { city, state } = parseLocation(location);
-
-  // Upsert employer
-  let { data: employer } = await supabaseAdmin
+  let { data: employer } = await db
     .from('employers')
     .select('id, total_listings_tracked')
     .eq('name_normalized', normalized)
-    .single();
+    .maybeSingle();
 
   if (!employer) {
-    const { data: newEmployer, error: insertError } = await supabaseAdmin
+    const { data: newEmployer, error: insertError } = await db
       .from('employers')
       .insert({
-        name_raw: companyName.trim(),
+        name_raw: track.companyName,
         name_normalized: normalized,
         total_listings_tracked: 0,
       })
@@ -121,11 +113,11 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (insertError) {
-      const { data: retry } = await supabaseAdmin
+      const { data: retry } = await db
         .from('employers')
         .select('id, total_listings_tracked')
         .eq('name_normalized', normalized)
-        .single();
+        .maybeSingle();
       employer = retry;
     } else {
       employer = newEmployer;
@@ -138,97 +130,94 @@ export async function POST(request: NextRequest) {
 
   let listingId: string | null = null;
   let isNewListing = false;
+  let shouldRecompute = false;
 
-  if (platformJobId) {
-    const { data: existing } = await supabaseAdmin
+  const { data: existing } = await db
+    .from('listings')
+    .select('id, heuristic_score')
+    .eq('platform', track.platform)
+    .eq('platform_job_id', track.platformJobId)
+    .maybeSingle();
+
+  if (!existing) {
+    const { data: newListing, error: listingError } = await db
       .from('listings')
+      .insert({
+        employer_id: employer.id,
+        platform: track.platform,
+        platform_job_id: track.platformJobId,
+        title_raw: track.jobTitle,
+        title_normalized: normalizedTitle,
+        location_raw: track.location,
+        location_city: city || null,
+        location_state: state,
+        salary_listed: track.salaryListed,
+        is_repost: track.isRepost,
+        posted_date: postedDate,
+        heuristic_score: track.listingHeuristic,
+        description_hash: track.descriptionHash,
+        source: 'extension',
+      })
       .select('id')
-      .eq('platform', platform)
-      .eq('platform_job_id', platformJobId)
-      .maybeSingle();
+      .single();
 
-    if (!existing) {
-      const { data: newListing, error: listingError } = await supabaseAdmin
-        .from('listings')
-        .insert({
-          employer_id: employer.id,
-          platform,
-          platform_job_id: platformJobId,
-          title_raw: jobTitle,
-          title_normalized: normalizedTitle,
-          location_raw: location || null,
-          location_city: city || null,
-          location_state: state,
-          salary_listed: salaryListed ?? false,
-          is_repost: isRepost ?? false,
-          posted_date: postedDate,
-          heuristic_score: heuristicScore,
-          description_hash: descriptionHash || null,
-          source: 'extension',
-        })
-        .select('id')
-        .single();
-
-      if (!listingError && newListing) {
-        listingId = newListing.id;
-        isNewListing = true;
-        await supabaseAdmin
-          .from('employers')
-          .update({
-            total_listings_tracked: (employer.total_listings_tracked || 0) + 1,
-          })
-          .eq('id', employer.id);
-      }
-    } else {
-      listingId = existing.id;
-      await supabaseAdmin
-        .from('listings')
-        .update({
-          last_seen_at: new Date().toISOString(),
-          ...(heuristicScore != null ? { heuristic_score: heuristicScore } : {}),
-          ...(descriptionHash ? { description_hash: descriptionHash } : {}),
-        })
-        .eq('id', existing.id);
+    if (!listingError && newListing) {
+      listingId = newListing.id;
+      isNewListing = true;
+      if (track.listingHeuristic != null) shouldRecompute = true;
+      await incrementListingsTracked(db, employer.id, employer.total_listings_tracked);
     }
+  } else {
+    listingId = existing.id;
+    const previous =
+      existing.heuristic_score == null ? null : Number(existing.heuristic_score);
+    const heuristicChanged =
+      track.listingHeuristic != null &&
+      (previous == null || Math.abs(previous - track.listingHeuristic) > 0.049);
+    await db
+      .from('listings')
+      .update({
+        last_seen_at: new Date().toISOString(),
+        ...(track.listingHeuristic != null ? { heuristic_score: track.listingHeuristic } : {}),
+        ...(track.descriptionHash ? { description_hash: track.descriptionHash } : {}),
+      })
+      .eq('id', existing.id);
+    if (heuristicChanged) shouldRecompute = true;
   }
 
   if (listingId) {
-    const similarCount = await countSimilarRoles(
-      supabaseAdmin,
-      employer.id,
-      listingId,
-      normalizedTitle
-    );
-
-    await persistListingSignals(supabaseAdmin, listingId, {
-      userClickedApply: userClickedApply ?? false,
-      engagementSignals: engagementSignals || [],
-      employerResponseTime: employerResponseTime || null,
+    const similarCount = await countSimilarRoles(db, employer.id, listingId, normalizedTitle);
+    await persistListingSignals(db, listingId, {
+      userClickedApply: track.userClickedApply,
+      engagementSignals: track.engagementSignals,
+      employerResponseTime: track.employerResponseTime,
       similarRolesCount: similarCount,
-      workArrangement: workArrangement || null,
-      employmentType: employmentType || null,
+      workArrangement: track.workArrangement,
+      employmentType: track.employmentType,
     });
+  }
 
+  if (isNewListing) {
     try {
-      await upsertRepostPattern(supabaseAdmin, {
+      await upsertRepostPattern(db, {
         employerId: employer.id,
         titleNormalized: normalizedTitle,
         city,
         state,
         postedDate,
-        descriptionHash: descriptionHash || null,
-        isNewListing,
+        descriptionHash: track.descriptionHash,
+        isNewListing: true,
       });
-    } catch (e) {
-      console.error('upsertRepostPattern failed:', e);
+    } catch (error) {
+      console.error('[SkipThisJob] upsertRepostPattern failed:', error);
     }
   }
 
-  if (heuristicScore != null) {
+  if (shouldRecompute) {
     try {
-      await recomputeEmployerScore(supabaseAdmin, employer.id, 'new_listing');
-    } catch (e) {
-      console.error('recomputeEmployerScore (track) failed:', e);
+      await recomputeEmployerScore(db, employer.id, 'new_listing');
+    } catch (error) {
+      console.error('[SkipThisJob] recomputeEmployerScore (track) failed:', error);
     }
   }
 

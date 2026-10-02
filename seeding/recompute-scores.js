@@ -18,6 +18,7 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const { ghostLabelForScore } = require('../web/lib/ghostLabel');
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -30,13 +31,6 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-function scoreToLabel(s) {
-  if (s >= 75) return 'very_high';
-  if (s >= 50) return 'high';
-  if (s >= 25) return 'moderate';
-  return 'low';
-}
 
 // Company size string → estimated employee count
 function parseCompanySize(sizeStr) {
@@ -235,7 +229,7 @@ async function main() {
     }
 
     score = Math.min(100, Math.max(0, Math.round(score)));
-    const label = scoreToLabel(score);
+    const label = ghostLabelForScore(score);
 
     if (score !== Number(emp.ghost_score) || label !== emp.ghost_label) {
       changed++;

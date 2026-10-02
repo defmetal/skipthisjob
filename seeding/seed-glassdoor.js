@@ -6,6 +6,13 @@
 // ============================================================
 
 const { createClient } = require('@supabase/supabase-js');
+const { normalizeCompanyName } = require('../web/lib/normalizeCompanyName');
+const {
+  acceptFirstWordMatch,
+  escapeLikePattern,
+  firstWordCandidate,
+  pickPrefixMatch,
+} = require('../web/lib/employerMatch');
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -209,62 +216,41 @@ async function seedGlassdoor() {
   let created = 0;
   let errors = 0;
 
-  for (const [name, rating, reviewCount, url, size, industry] of GLASSDOOR_DATA) {
-    // Find employer using same strategy as API: exact → fuzzy contains → first-word exact
+  for (const [rawName, rating, reviewCount, url, size, industry] of GLASSDOOR_DATA) {
+    const name = normalizeCompanyName(rawName);
     let employer = null;
 
-    // 1. Exact match on name_normalized
     const { data: exact } = await supabase
       .from('employers')
       .select('id, name_raw, name_normalized, glassdoor_rating')
       .eq('name_normalized', name)
-      .single();
+      .maybeSingle();
 
     if (exact) {
       employer = exact;
     } else {
-      // 2. Starts-with match: DB name starts with our search term + space
-      //    (word-boundary safe — prevents "apple" matching "appleone")
       const { data: startsWith } = await supabase
         .from('employers')
         .select('id, name_raw, name_normalized, glassdoor_rating')
-        .ilike('name_normalized', `${name} %`)
+        .ilike('name_normalized', `${escapeLikePattern(name)}%`)
         .order('total_listings_tracked', { ascending: false })
-        .limit(1);
+        .limit(8);
 
-      // Only accept if the matched name looks like a real company name (not a sentence)
-      if (startsWith && startsWith.length > 0 && startsWith[0].name_normalized.length <= 60) {
-        employer = startsWith[0];
-      }
+      const prefix = pickPrefixMatch(name, startsWith || []);
+      if (prefix && prefix.name_normalized.length <= 60) employer = prefix;
     }
 
     if (!employer) {
-      // 3. Contains match: DB name contains our search term as a word
-      const { data: contains } = await supabase
-        .from('employers')
-        .select('id, name_raw, name_normalized, glassdoor_rating')
-        .ilike('name_normalized', `%${name}%`)
-        .order('total_listings_tracked', { ascending: false })
-        .limit(1);
-
-      if (contains && contains.length > 0 && contains[0].name_normalized.length <= 60) {
-        employer = contains[0];
-      }
-    }
-
-    if (!employer && name.includes(' ')) {
-      // 4. First word exact match: for multi-word names, try matching just the first word
-      //    Only for longer first words (4+ chars) to avoid false positives
-      const firstWord = name.split(' ')[0];
-      if (firstWord.length >= 4) {
+      const first = firstWordCandidate(name);
+      if (first) {
         const { data: firstWordMatch } = await supabase
           .from('employers')
           .select('id, name_raw, name_normalized, glassdoor_rating')
-          .eq('name_normalized', firstWord)
-          .limit(1);
+          .eq('name_normalized', first)
+          .maybeSingle();
 
-        if (firstWordMatch && firstWordMatch.length > 0) {
-          employer = firstWordMatch[0];
+        if (firstWordMatch && acceptFirstWordMatch(name, firstWordMatch.name_normalized)) {
+          employer = firstWordMatch;
         }
       }
     }

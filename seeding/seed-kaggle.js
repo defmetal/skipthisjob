@@ -19,6 +19,8 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { createClient } = require('@supabase/supabase-js');
+const { normalizeCompanyName } = require('../web/lib/normalizeCompanyName');
+const { ghostLabelForScore } = require('../web/lib/ghostLabel');
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -96,18 +98,6 @@ function getField(values, colIdx) {
 }
 
 // --- Normalization helpers ---
-
-function normalizeCompany(name) {
-  let n = (name || '').toLowerCase().trim().replace(/\.com$/i, '');
-  // Iterative suffix stripping (up to 4 passes per CLAUDE.md)
-  const suffixes = /\s+(inc\.?|llc\.?|llp\.?|corp\.?|ltd\.?|co\.?|company|corporation|group|holdings|services|consulting|solutions|enterprises|international|worldwide|global|associates|partners)$/i;
-  for (let i = 0; i < 4; i++) {
-    const cleaned = n.replace(suffixes, '');
-    if (cleaned === n) break;
-    n = cleaned;
-  }
-  return n.replace(/\s+/g, ' ').trim();
-}
 
 function normalizeTitle(title) {
   return (title || '').toLowerCase().trim()
@@ -262,13 +252,6 @@ function isValidCompanyName(normalized, rawName) {
   return true;
 }
 
-function scoreToLabel(s) {
-  if (s >= 75) return 'very_high';
-  if (s >= 50) return 'high';
-  if (s >= 25) return 'moderate';
-  return 'low';
-}
-
 function parseCSVLine(line) {
   const result = [];
   let current = '';
@@ -366,7 +349,7 @@ async function streamCSV(filePath, employers) {
     const hasSalary = hasSalaryValue(salaryMin) || hasSalaryValue(salaryMax) || hasSalaryValue(salaryGeneric);
 
     if (!companyName) { skipped++; continue; }
-    const normalized = normalizeCompany(companyName);
+    const normalized = normalizeCompanyName(companyName);
     if (!normalized || !isValidCompanyName(normalized, companyName)) { skipped++; continue; }
 
     if (!employers.has(normalized)) {
@@ -436,7 +419,7 @@ async function streamLDJSON(filePath, employers) {
     const hasSalary = hasSalaryValue(salaryMin) || hasSalaryValue(salaryMax) || hasSalaryValue(salaryGeneric);
 
     if (!companyName) { skipped++; continue; }
-    const normalized = normalizeCompany(companyName);
+    const normalized = normalizeCompanyName(companyName);
     if (!normalized || !isValidCompanyName(normalized, companyName)) { skipped++; continue; }
 
     if (!employers.has(normalized)) {
@@ -524,7 +507,7 @@ async function main() {
         name_raw: emp.nameRaw,
         name_normalized: normalized,
         ghost_score: score,
-        ghost_label: scoreToLabel(score),
+        ghost_label: ghostLabelForScore(score),
         new_listings: emp.total,
         industry: emp.industry,
         is_high_turnover_industry: htRatio > 0.5,
