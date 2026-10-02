@@ -83,6 +83,46 @@ test('list scan dims from the card score already computed and does not remove no
   dom.window.close();
 });
 
+test('list badge scans settle after one mutation', async () => {
+  const html = '<ul id="results"><li id="a">Role A</li><li id="b">Role B</li></ul>';
+  const dom = new JSDOM(html, { url: 'https://www.indeed.com/jobs?q=engineer', runScripts: 'outside-only' });
+  dom.window.chrome = {
+    runtime: { id: 'test', lastError: null },
+    storage: {
+      local: { get(_key, cb) { cb({ stjDimRisky: 'off' }); }, set() {} },
+      onChanged: { addListener() {} },
+    },
+  };
+  const sharedSrc = fs.readFileSync(path.join(__dirname, '../extension/content/shared.js'), 'utf8');
+  dom.window.eval(sharedSrc);
+  const STJ = dom.window.SkipThisJobShared;
+  const list = dom.window.document.getElementById('results');
+  let scans = 0;
+  STJ.watchListBadges({
+    debounceMs: 20,
+    listRootSelector: '#results',
+    onScan() { scans += 1; },
+    findCards() { return list.querySelectorAll('li'); },
+    parseCard() {
+      return { title: 'Role', daysOpen: 10, salaryListed: true, platform: 'indeed', platformJobId: 'abc' };
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const afterInit = scans;
+  assert.ok(afterInit >= 1, 'initial scan should run');
+  const extra = dom.window.document.createElement('li');
+  extra.id = 'c';
+  extra.textContent = 'Role C';
+  list.appendChild(extra);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const afterMutation = scans - afterInit;
+  assert.ok(afterMutation >= 1 && afterMutation <= 2, 'one mutation should settle within 2 scans, got ' + afterMutation);
+  const settled = scans;
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(scans, settled, 'scans must stop while the list is idle');
+  dom.window.close();
+});
+
 test('popup stores the dim setting and offers off, 75+, and 55+', () => {
   const html = fs.readFileSync(path.join(__dirname, '../extension/popup/popup.html'), 'utf8');
   const js = fs.readFileSync(path.join(__dirname, '../extension/popup/popup.js'), 'utf8');
@@ -92,6 +132,10 @@ test('popup stores the dim setting and offers off, 75+, and 55+', () => {
   assert.match(html, /value="55"/);
   assert.match(js, /stjDimRisky/);
   assert.match(js, /chrome\.storage\.local\.set\(\{\s*stjDimRisky/);
+  const popup = new JSDOM(html);
+  assert.equal(popup.window.document.querySelector('#stj-help #stj-dim'), null);
+  assert.ok(popup.window.document.getElementById('stj-dim'));
+  popup.window.close();
   const css = fs.readFileSync(path.join(__dirname, '../extension/content/overlay.css'), 'utf8');
   assert.match(css, /\.stj-dimmed/);
   assert.match(css, /opacity:\s*0\.38/);

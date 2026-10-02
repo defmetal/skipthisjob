@@ -84,14 +84,30 @@
   }
 
   /**
+   * True when a parser actually read the review/hiring-insights area.
+   * `engagementParsed: false` means the badge was not on the page we could
+   * see — that must add 0, even if `activelyReviewing` defaulted to false.
+   * Callers that pass an `engagementSignals` array without the flag are
+   * treated as having looked (existing tests and search cards).
+   */
+  function engagementWasParsed(listing) {
+    if (!listing) return false;
+    if (listing.engagementParsed === false) return false;
+    if (listing.engagementParsed === true) return true;
+    return Array.isArray(listing.engagementSignals);
+  }
+
+  /**
    * Apply the shared engagement credit / stale-no-review penalty.
    * Mutates `signals` and returns the updated numeric score plus a boolean
    * the Indeed combo penalties can reuse.
+   * Unparsed engagement adds 0 and, on a detail score, an "unknown" chip.
    */
   function applyEngagementScoring(listing, score, signals) {
     const reviewing = isActivelyReviewing(listing);
     const out = Array.isArray(signals) ? signals : [];
     const days = listing && listing.daysOpen;
+    const parsed = engagementWasParsed(listing);
 
     if (reviewing) {
       const credit = engagementCreditForAge(days);
@@ -103,12 +119,14 @@
       } else {
         out.push('✓ Employer actively reviewing applications');
       }
-    } else if (listing && listing.daysOpen != null && listing.daysOpen >= 14) {
+    } else if (parsed && listing && listing.daysOpen != null && listing.daysOpen >= 14) {
       score += 10;
       out.push('No active review signals on older listing');
+    } else if (listing && listing.engagementParsed === false) {
+      out.push('Engagement unknown');
     }
 
-    return { score, signals: out, activelyReviewing: reviewing };
+    return { score, signals: out, activelyReviewing: reviewing, engagementParsed: parsed };
   }
 
   // --- Text helpers ------------------------------------------------------
@@ -276,7 +294,8 @@
       score += options.vagueMid != null ? options.vagueMid : 7;
       out.push('Some generic language in description');
     } else if (vagueness <= 0.15) {
-      // 0.2.2 bias: a specific JD is informational only — never a discount.
+      // Helper default is 0. scoreListingSignals passes detailedCredit: 1
+      // so a specific JD is −1 on the shipped job-page path (public copy).
       const credit = options.detailedCredit != null ? options.detailedCredit : 0;
       score -= credit;
       out.push('Detailed, specific job description');
@@ -439,6 +458,7 @@
     if (typeof options.afterShared === 'function') {
       const extra = options.afterShared(score, signals, {
         activelyReviewing: engagement.activelyReviewing,
+        engagementParsed: engagement.engagementParsed,
         preview: preview,
       }) || {};
       if (extra.score != null) score = extra.score;
@@ -479,7 +499,14 @@
    */
   function parseRelativeDays(text) {
     if (!text) return null;
-    const t = normalizeAgeText(text);
+    let t = normalizeAgeText(text);
+    if (!t) return null;
+
+    // Employer activity is not the posting date. "Employer Active 3 days ago"
+    // on a 90-day listing must not collapse the age to 3.
+    t = t.replace(/\bemployer\s+active\b[^.]*/g, ' ');
+    t = t.replace(/\bactive\s+\d+\+?\s*(?:days?|d|weeks?|wks?|months?|mos?)\s+ago\b/g, ' ');
+    t = t.replace(/\s+/g, ' ').trim();
     if (!t) return null;
 
     // LinkedIn header: "San Francisco, CA · 5 months ago · Over 100 applicants"
@@ -492,14 +519,51 @@
     m = t.match(/(\d+)\+?\s*(?:days?|d)\s+ago/);
     if (m) return parseInt(m[1], 10);
 
-    m = t.match(/active\s+(\d+)\+?\s*(?:days?|d)/);
-    if (m) return parseInt(m[1], 10);
-
-    if (/just posted|posted today|moments? ago|active\s+today/.test(t)) return 0;
+    if (/just posted|posted today|moments? ago/.test(t)) return 0;
     if (/(?:few |a few )?(?:hours?|mins?|minutes?) ago/.test(t)) return 0;
     if (/\byesterday\b/.test(t)) return 1;
-    if (/\btoday\b/.test(t) && t.length < 40) return 0;
+    if (/\btoday\b/.test(t) && t.length < 40 && !/employer\s+active/.test(normalizeAgeText(text))) return 0;
     return null;
+  }
+
+  /**
+   * A dollar amount is a salary only with pay context or a real range.
+   * "save $500 on tuition" is not a listed salary.
+   */
+  function looksLikeSalary(text) {
+    if (!text) return false;
+    const t = String(text);
+    if (/(?:salary|compensation|pay\s*range|base\s*pay)\s*[:\-]?\s*\$[\d,]+/i.test(t)) return true;
+    if (/\$[\d,]+(?:\s*[kK])?\s*(?:-|–|to)\s*\$?[\d,]+/.test(t) &&
+        /(?:\/|\bper\b|\bk\b|hour|year|\byr\b|\bhr\b|salary|pay|compensation)/i.test(t)) return true;
+    if (/\$[\d,]+\s*[kK]\b/.test(t)) return true;
+    if (/\$[\d,.]+\s*(?:\/|\bper\b|\ban\b|\ba\b)\s*(?:hour|hr|year|yr)/i.test(t)) return true;
+    return false;
+  }
+
+  /**
+   * Entry title vs an explicit minimum of 5+ years, or a senior title vs
+   * an explicit minimum of 0–2 years. A passing mention of "2 years with
+   * kubernetes" is not a requirement.
+   */
+  function detectSeniorityMismatch(title, description) {
+    if (!title || !description) return false;
+    const entryTitle = /\b(entry[- ]level|junior|associate|intern|graduate)\b/i.test(title);
+    const seniorTitle = /\b(senior|lead|principal|director|vp|vice\s*president|head\s+of)\b/i.test(title);
+    if (!entryTitle && !seniorTitle) return false;
+    const desc = String(description);
+    const stated = desc.match(
+      /\b(?:minimum|at\s+least|requires?(?:\s+a)?(?:\s+minimum(?:\s+of)?)?)\s+(\d+)\+?\s*years?\b/i
+    );
+    const statedYears = stated ? parseInt(stated[1], 10) : null;
+    const plus = desc.match(/\b(\d+)\+\s*years?\b/i);
+    const plusYears = plus ? parseInt(plus[1], 10) : null;
+    if (entryTitle) {
+      if (statedYears != null && statedYears >= 5) return true;
+      if (plusYears != null && plusYears >= 5) return true;
+    }
+    if (seniorTitle && statedYears != null && statedYears <= 2) return true;
+    return false;
   }
 
   // Explicit alias for tests / LinkedIn header strings.
@@ -999,18 +1063,46 @@
 
   // --- Track / Apply payloads --------------------------------------------
 
+  function triStateBool(primary, fallback) {
+    if (primary === true || primary === false || primary === null) return primary;
+    if (fallback === true || fallback === false || fallback === null) return fallback;
+    return null;
+  }
+
+  /**
+   * Drop search keywords, location, and tracking params. Keep a stable
+   * job URL when we know the id.
+   */
+  function canonicalListingUrl(url, platform, platformJobId) {
+    const href = url ? String(url) : '';
+    const id = platformJobId ||
+      (platform === 'indeed' ? extractIndeedJobKey(href) : extractLinkedInJobId(href));
+    if (platform === 'linkedin' && id) return 'https://www.linkedin.com/jobs/view/' + id;
+    if (platform === 'indeed' && id) return 'https://www.indeed.com/viewjob?jk=' + id;
+    if (!href) return null;
+    try {
+      const u = new URL(href);
+      return u.origin + u.pathname;
+    } catch (e) {
+      const cut = href.split('?')[0];
+      return cut || null;
+    }
+  }
+
   function buildTrackPayload(listing, extras) {
     const extra = extras || {};
     const platform = extra.platform || listing.platform || null;
+    const platformJobId = listing.platformJobId || extra.platformJobId || null;
+    const rawUrl = listing.listingUrl || extra.listingUrl || extra.url || null;
     return {
       companyName: listing.companyName || extra.companyName || null,
       jobTitle: listing.title || extra.jobTitle || null,
       platform: platform,
-      platformJobId: listing.platformJobId || extra.platformJobId || null,
-      listingUrl: listing.listingUrl || extra.listingUrl || extra.url || null,
+      platformJobId: platformJobId,
+      listingUrl: canonicalListingUrl(rawUrl, platform, platformJobId),
       location: listing.location || extra.location || null,
-      salaryListed: listing.salaryListed ?? extra.salaryListed ?? false,
-      isRepost: listing.isRepost ?? extra.isRepost ?? false,
+      salaryListed: triStateBool(listing.salaryListed, extra.salaryListed),
+      isRepost: triStateBool(listing.isRepost, extra.isRepost),
       daysOpen: listing.daysOpen != null ? listing.daysOpen : extra.daysOpen,
       engagementSignals: listing.engagementSignals || extra.engagementSignals || [],
       employerResponseTime: listing.employerResponseTime || extra.employerResponseTime || null,
@@ -1040,10 +1132,10 @@
       jobTitle: message.jobTitle || last.jobTitle || last.title || null,
       platform: platform,
       platformJobId: platformJobId,
-      listingUrl: listingUrl,
+      listingUrl: canonicalListingUrl(listingUrl, platform, platformJobId),
       location: last.location || null,
-      salaryListed: last.salaryListed ?? false,
-      isRepost: last.isRepost ?? false,
+      salaryListed: triStateBool(last.salaryListed, null),
+      isRepost: triStateBool(last.isRepost, null),
       daysOpen: last.daysOpen,
       engagementSignals: last.engagementSignals || [],
       employerResponseTime: last.employerResponseTime || null,
@@ -1060,6 +1152,51 @@
   }
 
   // --- Overlay copy ------------------------------------------------------
+
+  function escapeOverlayText(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function safeGlassdoorUrl(url) {
+    const s = String(url || '').trim();
+    return /^https:\/\/www\.glassdoor\.com\//i.test(s) ? s : '';
+  }
+
+  function overlaySignalsHtml(signals) {
+    const list = Array.isArray(signals) ? signals : [];
+    if (!list.length) return '';
+    return (
+      '<div class="ghost-detector-signals">' +
+      list.map(function (s) {
+        return '<span class="ghost-detector-signal">' + escapeOverlayText(s) + '</span>';
+      }).join('') +
+      '</div>'
+    );
+  }
+
+  function glassdoorBlockHtml(glassdoor) {
+    if (!glassdoor) return '';
+    const rating = Number(glassdoor.rating);
+    const ratingText = Number.isFinite(rating) ? String(rating) : '';
+    const url = safeGlassdoorUrl(glassdoor.url);
+    const offer = glassdoor.offerRate != null && Number.isFinite(Number(glassdoor.offerRate))
+      ? Math.round(Number(glassdoor.offerRate) * 100)
+      : null;
+    return (
+      '<div class="ghost-detector-glassdoor">' +
+      '<span class="ghost-detector-glassdoor-label">Glassdoor:</span>' +
+      (ratingText ? '<span>' + escapeOverlayText(ratingText) + '/5</span>' : '') +
+      (offer != null ? '<span> • ' + offer + '% offer rate</span>' : '') +
+      (url
+        ? '<a href="' + escapeOverlayText(url) + '" target="_blank" rel="noopener">View →</a>'
+        : '') +
+      '</div>'
+    );
+  }
 
   function brandFooterHtml() {
     return BRAND_FOOTER_HTML;
@@ -1241,12 +1378,13 @@
     if (!card || !card.classList) return card;
     const limit = dimThresholdFromSetting(threshold);
     const on = limit > 0 && score != null && !Number.isNaN(Number(score)) && Number(score) >= limit;
-    card.classList.toggle('stj-dimmed', on);
-    if (on) {
-      if (card.setAttribute) card.setAttribute('data-stj-dim', String(limit));
-    } else if (card.removeAttribute) {
-      card.removeAttribute('data-stj-dim');
-    }
+    const has = card.classList.contains('stj-dimmed');
+    if (on && !has) card.classList.add('stj-dimmed');
+    else if (!on && has) card.classList.remove('stj-dimmed');
+    const nextAttr = on ? String(limit) : null;
+    const curAttr = card.getAttribute ? card.getAttribute('data-stj-dim') : null;
+    if (nextAttr && curAttr !== nextAttr && card.setAttribute) card.setAttribute('data-stj-dim', nextAttr);
+    else if (!nextAttr && curAttr != null && card.removeAttribute) card.removeAttribute('data-stj-dim');
     return card;
   }
 
@@ -1416,10 +1554,21 @@
     return { result: next, kept: false };
   }
 
+  function listBadgeUnchanged(existing, result) {
+    if (!existing || !result) return false;
+    const days = result.daysOpen != null ? String(result.daysOpen) : '';
+    const source = result.source || 'preview';
+    return existing.getAttribute('data-stj-score') === String(result.score) &&
+      existing.getAttribute('data-stj-label') === String(result.label) &&
+      (existing.getAttribute('data-stj-days') || '') === days &&
+      (existing.getAttribute('data-stj-source') || '') === source;
+  }
+
   function injectListBadge(card, result, anchor) {
     if (!card || !result) return;
     const existing = card.querySelector('.stj-list-badge');
     if (existing) {
+      if (listBadgeUnchanged(existing, result)) return;
       existing.outerHTML = badgeHtml(result);
       return;
     }
@@ -1434,11 +1583,24 @@
     }
   }
 
+  let listBadgeObserver = null;
+  let listBadgeMuted = false;
+
+  function disconnectListBadgeObserver() {
+    if (listBadgeObserver) {
+      try { listBadgeObserver.disconnect(); } catch (e) {}
+      listBadgeObserver = null;
+    }
+  }
+
   function watchListBadges(opts) {
     if (typeof document === 'undefined') return null;
     const options = opts || {};
     let timer = null;
     const scan = function () {
+      if (typeof options.onScan === 'function') {
+        try { options.onScan(); } catch (e) {}
+      }
       let cards = [];
       try {
         cards = Array.prototype.slice.call(options.findCards ? options.findCards() : []);
@@ -1450,50 +1612,65 @@
           return other !== el && el.contains(other);
         });
       });
-      for (let i = 0; i < cards.length; i++) {
-        const card = cards[i];
-        if (!card || card.nodeType !== 1) continue;
-        let parsed = null;
-        try {
-          parsed = options.parseCard(card);
-        } catch (e) {
-          continue;
+      // Swallow the mutations this scan itself writes so the observer
+      // cannot schedule the next scan forever.
+      listBadgeMuted = true;
+      try {
+        for (let i = 0; i < cards.length; i++) {
+          const card = cards[i];
+          if (!card || card.nodeType !== 1) continue;
+          let parsed = null;
+          try {
+            parsed = options.parseCard(card);
+          } catch (e) {
+            continue;
+          }
+          if (!parsed || !parsed.title) continue;
+          const preview = scoreListPreview(parsed);
+          const key = listBadgeKey(card, parsed);
+          const remembered = lookupListBadgeScore(key) || readExistingBadge(card);
+          const resolved = resolveListBadge(preview, parsed, remembered);
+          if (key && !resolved.kept) {
+            rememberListBadgeScore(key, resolved.result, {
+              source: 'preview',
+              daysOpen: parsed.daysOpen,
+            });
+          }
+          let anchor = null;
+          try {
+            anchor = options.anchor ? options.anchor(card) : card;
+          } catch (e) {
+            anchor = card;
+          }
+          injectListBadge(card, resolved.result, anchor);
+          applyListDim(card, resolved.result.score, dimThreshold);
         }
-        if (!parsed || !parsed.title) continue;
-        const preview = scoreListPreview(parsed);
-        const key = listBadgeKey(card, parsed);
-        const remembered = lookupListBadgeScore(key) || readExistingBadge(card);
-        const resolved = resolveListBadge(preview, parsed, remembered);
-        if (key && !resolved.kept) {
-          rememberListBadgeScore(key, resolved.result, {
-            source: 'preview',
-            daysOpen: parsed.daysOpen,
-          });
-        }
-        let anchor = null;
-        try {
-          anchor = options.anchor ? options.anchor(card) : card;
-        } catch (e) {
-          anchor = card;
-        }
-        injectListBadge(card, resolved.result, anchor);
-        applyListDim(card, resolved.result.score, dimThreshold);
+      } finally {
+        setTimeout(function () { listBadgeMuted = false; }, 0);
       }
     };
     const schedule = function () {
+      if (listBadgeMuted) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(scan, options.debounceMs || 450);
     };
     listRescan = schedule;
     bindDimListener();
     loadDimThreshold(schedule);
-    let root = document.body;
+    let root = null;
     if (options.listRootSelector) {
-      const found = document.querySelector(options.listRootSelector);
-      if (found) root = found;
+      root = document.querySelector(options.listRootSelector);
+    } else {
+      root = document.body;
     }
+    // A missing list root must not fall back to document.body (LinkedIn
+    // /feed/* and other non-results pages). That watch rewrites badges
+    // on the whole document and never settles.
+    if (!root) return null;
+    disconnectListBadgeObserver();
     const observer = new MutationObserver(schedule);
     observer.observe(root, { childList: true, subtree: true });
+    listBadgeObserver = observer;
     return observer;
   }
 
@@ -1520,8 +1697,17 @@
   api.extractLinkedInJobId = extractLinkedInJobId;
   api.hasEngagementSignal = hasEngagementSignal;
   api.isActivelyReviewing = isActivelyReviewing;
+  api.engagementWasParsed = engagementWasParsed;
   api.engagementCreditForAge = engagementCreditForAge;
   api.applyEngagementScoring = applyEngagementScoring;
+  api.looksLikeSalary = looksLikeSalary;
+  api.detectSeniorityMismatch = detectSeniorityMismatch;
+  api.canonicalListingUrl = canonicalListingUrl;
+  api.triStateBool = triStateBool;
+  api.escapeOverlayText = escapeOverlayText;
+  api.safeGlassdoorUrl = safeGlassdoorUrl;
+  api.overlaySignalsHtml = overlaySignalsHtml;
+  api.glassdoorBlockHtml = glassdoorBlockHtml;
   api.hashDescription = hashDescription;
   api.normalizeTitle = normalizeTitle;
   api.labelForScore = labelForScore;
@@ -1560,6 +1746,7 @@
   api.publishActiveListing = publishActiveListing;
   api.installPopupBridge = installPopupBridge;
   api.watchListBadges = watchListBadges;
+  api.disconnectListBadgeObserver = disconnectListBadgeObserver;
   api.injectListBadge = injectListBadge;
   api.listBadgeKey = listBadgeKey;
   api.rememberListBadgeScore = rememberListBadgeScore;

@@ -67,12 +67,35 @@
     return isJobHost(url);
   }
 
+  function jobKeyFromUrl(url) {
+    const href = String(url || '');
+    const li = href.match(/currentJobId=(\d+)/) || href.match(/\/jobs\/view\/(\d+)/);
+    if (li) return 'li:' + li[1];
+    const jk = href.match(/[?&#](?:vjk|jk)=([a-f0-9]+)/i);
+    if (jk) return 'in:' + jk[1].toLowerCase();
+    return null;
+  }
+
+  function sameListing(tabUrl, state) {
+    if (!state || !sameSite(tabUrl, state)) return false;
+    const tabKey = jobKeyFromUrl(tabUrl);
+    let stateKey = null;
+    if (state.platform === 'linkedin' && state.platformJobId) stateKey = 'li:' + state.platformJobId;
+    else if (state.platform === 'indeed' && state.platformJobId) stateKey = 'in:' + String(state.platformJobId).toLowerCase();
+    else stateKey = jobKeyFromUrl(state.url);
+    if (tabKey && stateKey) return tabKey === stateKey;
+    return false;
+  }
+
   function applyState(tabUrl, live, stored) {
     const onJobSite = isJobHost(tabUrl);
-    const candidate = live && live.score != null ? live : stored;
-    const fresh = candidate && candidate.updatedAt && (Date.now() - candidate.updatedAt < 30 * 60 * 1000);
-    if (onJobSite && candidate && fresh && sameSite(tabUrl, candidate)) {
-      renderScore(candidate);
+    const liveOk = live && live.score != null;
+    const storedFresh = stored && stored.score != null && stored.updatedAt &&
+      (Date.now() - stored.updatedAt < 30 * 60 * 1000);
+    if (onJobSite && liveOk) {
+      renderScore(live);
+    } else if (onJobSite && storedFresh && sameListing(tabUrl, stored)) {
+      renderScore(stored);
     } else {
       renderHelp(onJobSite);
     }

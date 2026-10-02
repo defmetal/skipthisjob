@@ -90,26 +90,65 @@ test('hashDescription is stable and ignores whitespace case', () => {
   assert.equal(shared.hashDescription(''), null);
 });
 
-test('Indeed combo penalties do not stack when engagementSignals has actively_reviewing', () => {
+test('unparsed engagement adds 0 even when activelyReviewing defaults to false', () => {
   const listing = {
-    engagementSignals: ['actively_reviewing'],
-    daysOpen: 40,
-    salaryListed: false,
-    employerResponsive: false,
+    engagementParsed: false,
+    activelyReviewing: false,
+    engagementSignals: [],
+    daysOpen: 30,
   };
   const signals = [];
-  let score = 50;
-  const engagement = shared.applyEngagementScoring(listing, score, signals);
-  score = engagement.score;
-  const activelyReviewing = engagement.activelyReviewing;
-  const missingBasics = !listing.salaryListed && !listing.employerResponsive && !activelyReviewing;
-  if (listing.daysOpen >= 14 && missingBasics) score += 24;
-  if (listing.daysOpen >= 30 && !activelyReviewing) score += 14;
-  if (listing.daysOpen >= 30 && !activelyReviewing && !listing.employerResponsive && !listing.salaryListed) {
-    score += 12;
-  }
-  assert.equal(activelyReviewing, true);
-  assert.equal(score, 42, 'reviewing listings must not eat stale/no-review combo penalties');
+  const result = shared.applyEngagementScoring(listing, 50, signals);
+  assert.equal(result.engagementParsed, false);
+  assert.equal(result.score, 50);
+  assert.ok(signals.some(s => /engagement unknown/i.test(s)));
+  assert.ok(!signals.some(s => /No active review/i.test(s)));
+});
+
+test('Employer Active N days ago is not the posting age', () => {
+  assert.equal(shared.parseRelativeDays('Employer Active 3 days ago'), null);
+  assert.equal(shared.parseRelativeDays('Posted 90 days ago. Employer Active 3 days ago'), 90);
+  assert.equal(shared.parseRelativeDays('Active 3 days ago'), null);
+});
+
+test('salary detection ignores tuition amounts and accepts pay context', () => {
+  assert.equal(shared.looksLikeSalary('save $500 on tuition'), false);
+  assert.equal(shared.looksLikeSalary('$140,000 per year'), true);
+  assert.equal(shared.looksLikeSalary('$18 an hour'), true);
+  assert.equal(shared.looksLikeSalary('$130K - $160K/yr'), true);
+  assert.equal(shared.looksLikeSalary('Pay range: $55 to $60/hour'), true);
+});
+
+test('seniority mismatch requires a stated minimum, not a passing mention', () => {
+  assert.equal(
+    shared.detectSeniorityMismatch(
+      'Senior Engineer',
+      'senior engineer with 10+ years, including 2 years with kubernetes'
+    ),
+    false
+  );
+  assert.equal(
+    shared.detectSeniorityMismatch('Junior Engineer', 'Minimum 5 years of experience required'),
+    true
+  );
+  assert.equal(
+    shared.detectSeniorityMismatch('Senior Engineer', 'We require a minimum of 1 year'),
+    true
+  );
+});
+
+test('track payload keeps unknown salary null and strips listing query params', () => {
+  const track = shared.buildTrackPayload({
+    title: 'Engineer',
+    companyName: 'Acme',
+    platformJobId: '4242424242',
+    listingUrl: 'https://www.linkedin.com/jobs/search/?currentJobId=4242424242&keywords=ghost&trk=public',
+    salaryListed: null,
+    isRepost: null,
+  }, { platform: 'linkedin' });
+  assert.equal(track.salaryListed, null);
+  assert.equal(track.isRepost, null);
+  assert.equal(track.listingUrl, 'https://www.linkedin.com/jobs/view/4242424242');
 });
 
 test('list badge memory keeps a detail score when a rescan has null age', () => {
@@ -315,11 +354,21 @@ test('engagement credit is capped on 60–120+ day listings', () => {
   assert.equal(mid.score, 68);
 });
 
-test('detailed description does not discount and cannot beat an age floor', () => {
+test('detailed description helper defaults to 0 and the shipped scorer subtracts 1', () => {
   const signals = [];
   const result = shared.applyDescriptionQuality(20, signals, 0.05);
-  assert.equal(result.score, 20, 'detailed JD must not discount under 0.2.2 bias');
+  assert.equal(result.score, 20, 'helper default credit stays 0 unless a caller passes detailedCredit');
   assert.ok(signals.some(s => /Detailed, specific/i.test(s)));
+  const plain = 'A'.repeat(600);
+  const mid = shared.scoreListingSignals(
+    { title: 'Engineer', daysOpen: 7, salaryListed: true, description: plain },
+    { platform: 'linkedin', vagueness: 0.2 }
+  );
+  const specific = shared.scoreListingSignals(
+    { title: 'Engineer', daysOpen: 7, salaryListed: true, description: plain },
+    { platform: 'linkedin', vagueness: 0.05 }
+  );
+  assert.equal(mid.score - specific.score, 1, 'shipped path detailedCredit is 1');
 
   const floored = shared.scoreListingSignals({
     title: 'Engineer',
