@@ -16,6 +16,37 @@ const STJ = globalThis.SkipThisJobShared || {};
 let _stjBridgeWarned = false;
 let _stjMosaicCacheKey = '';
 let _stjMosaicCacheVal = null;
+function readBridgedViewJob() {
+  const snap = readBridgedMosaic();
+  const viewJob = snap && snap.viewJob;
+  if (!viewJob || typeof viewJob !== 'object') return null;
+  if (!viewJob.title && !viewJob.company && !viewJob.description) return null;
+  return viewJob;
+}
+
+function applyBridgedViewJob(data) {
+  const viewJob = readBridgedViewJob();
+  if (!viewJob || !data) return;
+  if (!data.title && viewJob.title) data.title = viewJob.title;
+  if (!data.companyName && viewJob.company) data.companyName = viewJob.company;
+  if (!data.location && viewJob.location) data.location = viewJob.location;
+  if (!data.description && viewJob.description) {
+    data.description = viewJob.description;
+    data.descriptionLength = viewJob.description.length;
+  }
+  if (data.salaryListed !== true && viewJob.salaryText && /\$[\d,.]/.test(viewJob.salaryText)) {
+    data.salaryListed = true;
+  }
+  if (data.daysOpen == null && viewJob.formattedRelativeTime) {
+    const days = parseIndeedRelativeDate(viewJob.formattedRelativeTime);
+    if (days != null) data.daysOpen = days;
+  }
+  if (data.daysOpen == null && viewJob.datePosted && STJ.daysOpenFromIso) {
+    const days = STJ.daysOpenFromIso(viewJob.datePosted);
+    if (days != null) data.daysOpen = days;
+  }
+}
+
 function readBridgedMosaic() {
   try {
     const node = document.getElementById('__stj_mosaic');
@@ -320,7 +351,7 @@ async function parseIndeedListing() {
     daysOpen: null,
     isRepost: false,
     applicantCount: null,
-    salaryListed: false,
+    salaryListed: null,
     hiringContactVisible: false,
     description: null,
     seniorityLevel: null,
@@ -427,6 +458,7 @@ async function parseIndeedListing() {
           jsonLd: jsonLd,
           ogTitle: isViewjob && ogEl ? ogEl.getAttribute('content') : '',
           docTitle: isViewjob ? document.title : '',
+          viewJob: isViewjob ? readBridgedViewJob() : null,
         })
       : null;
     if (resolved) {
@@ -462,7 +494,12 @@ async function parseIndeedListing() {
   window.SkipThisJob_MosaicStats.attempts = mosaicDateAttempts;
 
   let mosaicJob = getIndeedJobFromMosaic();
-  const delays = [700, 900, 1100];
+  // A standalone /viewjob snapshot already carries the posting date.
+  // Don't burn 2.7s re-polling mosaic when that row is present.
+  const bridgedView = readBridgedViewJob();
+  const delays = (bridgedView && (bridgedView.formattedRelativeTime || bridgedView.datePosted))
+    ? []
+    : [700, 900, 1100];
   for (const delay of delays) {
     if (mosaicJob && (mosaicJob.pubDate || mosaicJob.formattedRelativeTime || mosaicJob.jobkey)) break;
     await new Promise(r => setTimeout(r, delay));
@@ -497,6 +534,9 @@ async function parseIndeedListing() {
   if (collected) {
     data.daysOpen = collected.daysOpen;
     data.employerResponsive = collected.employerResponsive;
+    // No detail-pane text means we never saw a reply chip. Absence is
+    // unknown (0), not the +8 "no response data" penalty.
+    if (!detailText && data.employerResponsive === false) data.employerResponsive = null;
     data.isRepost = collected.isRepost;
     data.appliesOffsite = collected.appliesOffsite;
     data.urgentlyHiring = collected.urgentlyHiring;
@@ -549,9 +589,14 @@ async function parseIndeedListing() {
     document.querySelector('.salary-snippet-container') ||
     document.querySelector('[data-testid*="salary"]');
 
-  if (salaryEl && /\$[\d,.]+/.test(salaryEl.textContent)) {
-    data.salaryListed = true;
-    console.log('[SkipThisJob] Salary found');
+  if (salaryEl) {
+    if (/\$[\d,.]+/.test(salaryEl.textContent || '')) {
+      data.salaryListed = true;
+      console.log('[SkipThisJob] Salary found');
+    } else if (data.salaryListed == null) {
+      // The salary row rendered and it is empty — that is evidence, not a miss.
+      data.salaryListed = false;
+    }
   }
 
   // Work arrangement / employment type from the detail pane only
@@ -654,6 +699,11 @@ async function parseIndeedListing() {
     if (ratingMatch) data.indeedRating = parseFloat(ratingMatch[1]);
   }
   if (data.indeedRating) console.log('[SkipThisJob] Indeed rating:', data.indeedRating);
+
+  applyBridgedViewJob(data);
+  if (data.description && data.salaryListed !== true && /\$[\d,]+/.test(data.description)) {
+    data.salaryListed = true;
+  }
 
   // Description length
   data.descriptionLength = data.description ? data.description.length : 0;
@@ -1011,6 +1061,14 @@ function blendGhostScore(localScore, backendData) {
   };
 }
 
+function escapeOverlayText(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 function injectOverlay(localScore, backendData, listing) {
   const existing = document.getElementById('ghost-detector-overlay');
   if (existing) existing.remove();
@@ -1041,6 +1099,8 @@ function injectOverlay(localScore, backendData, listing) {
           `<span class="ghost-detector-live" style="background:#dcfce7;color:#166534;font-size:9px;padding:1px 5px;border-radius:3px;margin-left:5px;font-weight:600;letter-spacing:0.3px;">● LIVE</span>` : ''}
         <span id="ghost-close-btn" style="margin-left:auto; cursor:pointer; font-size:16px; line-height:1; opacity:0.65; padding:2px 6px;">✕</span>
       </div>
+      <div class="ghost-detector-job" style="font-size:13px; font-weight:650; margin-top:6px; line-height:1.3;">${escapeOverlayText(listing && listing.title ? listing.title : 'unknown')}</div>
+      <div class="ghost-detector-company" style="font-size:12px; opacity:0.8; margin-bottom:4px;">${escapeOverlayText(listing && listing.companyName ? listing.companyName : 'unknown')}</div>
 
       ${localScore.isHighTurnover ? 
         `<div style="font-size:9px; background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fde68a;">High Turnover Role – Scoring Adjusted</div>` : ''}

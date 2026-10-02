@@ -985,6 +985,12 @@
       }
     }
     fill(s.card, 'card');
+    if (s.viewJob) {
+      fill({
+        title: cleanIdentityText(s.viewJob.title || s.viewJob.displayTitle || ''),
+        companyName: cleanIdentityText(s.viewJob.company || s.viewJob.companyName || ''),
+      }, 'viewjob');
+    }
     fill(readJobPostingIdentity(s.jsonLd), 'json-ld');
     fill(parseIndeedPageTitle(s.ogTitle), 'og:title');
     fill(parseIndeedPageTitle(s.docTitle), 'document.title');

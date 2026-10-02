@@ -9,6 +9,32 @@ const { load: loadIndeed } = require('./helpers/indeed-dom.js');
 const { load: loadLinkedIn } = require('./helpers/linkedin-dom.js');
 
 const FIXTURES = path.join(__dirname, 'fixtures');
+const bridgeSrc = fs.readFileSync(path.join(__dirname, '../extension/content/indeed-mosaic-bridge.js'), 'utf8');
+
+function installViewJobBridge(dom) {
+  const node = dom.window.document.getElementById('stj-viewjob-rootprops');
+  if (node && node.textContent) dom.window._rootProps = JSON.parse(node.textContent);
+  dom.window.eval(bridgeSrc);
+}
+
+function waitForOverlay(win, timeoutMs) {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      const el = win.document.getElementById('ghost-detector-overlay');
+      if (el && /\d+\/100/.test(el.textContent || '')) {
+        resolve(el);
+        return;
+      }
+      if (Date.now() - start > timeoutMs) {
+        resolve(el);
+        return;
+      }
+      setTimeout(tick, 50);
+    };
+    tick();
+  });
+}
 
 function readFixture(name) {
   return fs.readFileSync(path.join(FIXTURES, name), 'utf8');
@@ -49,24 +75,72 @@ test('LinkedIn job fixture parses and scores loaded fields only', () => {
   }
 });
 
-test('Indeed /viewjob fixture parses age, salary, and description', async () => {
+test('Indeed /viewjob fixture produces an overlay from the page model', async () => {
   const dom = loadIndeed(
     readFixture('indeed-viewjob.html'),
     'https://www.indeed.com/viewjob?jk=abc123def4567890'
   );
   try {
+    assert.equal(dom.window.document.querySelector('[data-testid="jobsearch-JobInfoHeader-title"]'), null);
+    assert.equal(shared.parseIndeedPageTitle(dom.window.document.title), null);
+    assert.equal(dom.window.document.querySelector('[data-testid="inlineHeader-companyName"]'), null);
+
+    installViewJobBridge(dom);
+    const snap = JSON.parse(dom.window.document.getElementById('__stj_mosaic').textContent);
+    assert.equal(snap.viewJob.title, 'Staff Engineer');
+    assert.equal(snap.viewJob.company, 'Acme');
+
     const listing = await dom.window.parseIndeedListing();
     assert.equal(listing.title, 'Staff Engineer');
     assert.equal(listing.companyName, 'Acme');
     assert.equal(listing.daysOpen, 3);
     assert.equal(listing.platformJobId, 'abc123def4567890');
     assert.equal(listing.salaryListed, true);
+    assert.equal(listing.location, 'Austin, TX');
     assert.ok(listing.description && listing.description.length > 280);
+    assert.equal(listing.employerResponsive, null);
 
     const health = shared.selectorHealth(listing, { platform: 'indeed' });
     assert.equal(health.state, 'parsed');
     const scored = dom.window.scoreLocally(listing);
-    assert.ok(!scored.signals.some(s => /posting age unknown|job description unknown|salary unknown|no description available/i.test(s)));
+    assert.ok(scored.signals.some(s => /employer response unknown/i.test(s)));
+    assert.ok(!scored.signals.some(s => /no employer response data|no salary listed|posting age unknown|job description unknown|salary unknown/i.test(s)));
+    assert.equal(typeof scored.score, 'number');
+
+    const overlay = await waitForOverlay(dom.window, 8000);
+    assert.ok(overlay, 'standalone /viewjob must inject #ghost-detector-overlay');
+    const text = overlay.textContent || '';
+    assert.match(text, /Staff Engineer/);
+    assert.match(text, /Acme/);
+    assert.match(text, new RegExp(scored.score + '/100'));
+    assert.match(text, /Employer response unknown/i);
+    assert.doesNotMatch(text, /No employer response data/);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('legacy window._initialData viewjob model is mirrored for the overlay path', () => {
+  const dom = loadIndeed('<html><head><title>Indeed</title></head><body></body></html>', 'https://www.indeed.com/viewjob?jk=abc123def4567890');
+  try {
+    dom.window._initialData = {
+      jobInfoWrapperModel: {
+        jobInfoModel: {
+          sanitizedJobDescription: { content: '<p>Legacy description that is long enough to count as loaded copy for the overlay.</p>' },
+          jobInfoHeaderModel: {
+            jobTitle: 'Legacy Role',
+            companyName: 'Legacy Co',
+            jobKey: 'abc123def4567890',
+          },
+        },
+      },
+    };
+    dom.window.eval(bridgeSrc);
+    const snap = JSON.parse(dom.window.document.getElementById('__stj_mosaic').textContent);
+    assert.equal(snap.viewJob.title, 'Legacy Role');
+    assert.equal(snap.viewJob.company, 'Legacy Co');
+    assert.match(snap.viewJob.description, /Legacy description/);
+    assert.equal(snap.jobs[0].jobkey, 'abc123def4567890');
   } finally {
     dom.window.close();
   }
