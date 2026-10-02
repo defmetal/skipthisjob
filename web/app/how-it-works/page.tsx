@@ -1,6 +1,6 @@
-import type { Metadata } from 'next';
 import Logo from '@/components/Logo';
 import { DirectionMark, SignalIcon } from '@/components/signal-ui';
+import { pageMetadata } from '@/lib/seo';
 import {
   DISTINCT_NOTE,
   EMPLOYER_PARAGRAPHS,
@@ -14,22 +14,11 @@ import Link from 'next/link';
 const PAGE_TITLE = 'How the ghost score works — Skip This Job';
 const PAGE_DESCRIPTION = `Every check behind a Skip This Job score: ${SIGNAL_COUNT} distinct checks on LinkedIn and Indeed, the points each one adds or removes, and the four score bands.`;
 
-export const metadata: Metadata = {
-  title: { absolute: PAGE_TITLE },
+export const metadata = pageMetadata({
+  title: PAGE_TITLE,
   description: PAGE_DESCRIPTION,
-  alternates: { canonical: '/how-it-works' },
-  openGraph: {
-    title: PAGE_TITLE,
-    description: PAGE_DESCRIPTION,
-    url: '/how-it-works',
-    type: 'website',
-  },
-  twitter: {
-    card: 'summary_large_image',
-    title: PAGE_TITLE,
-    description: PAGE_DESCRIPTION,
-  },
-};
+  path: '/how-it-works',
+});
 
 const BAND_TONE: Record<string, string> = {
   low: 'bg-green-50 text-green-800 border-green-200',

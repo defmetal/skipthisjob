@@ -1,0 +1,27 @@
+# Skip This Job
+
+> Free Chrome extension that scores LinkedIn and Indeed job listings for ghost-job risk. No account.
+
+Skip This Job (https://www.skipthisjob.com) is a free Chrome extension and website from Vibe Labs Marketing in San Antonio, TX. It reads the LinkedIn or Indeed listing you open and shows a score from 0 to 100. There is no account and no email signup.
+
+The score uses 26 distinct checks. The same check on LinkedIn and Indeed counts once. A listing's own signals run in the browser. The employer's track record is mixed in afterward, weighted by how much evidence we have. A thin employer record can raise the score and will not pull it down.
+
+The four score bands are Worth Applying (0–34), Proceed with Caution (35–54), Likely a Waste of Time (55–74), and Skip This Job (75–100).
+
+## How scoring works
+
+Each check, the points it adds or removes, and the four bands are listed at [How the score works](https://www.skipthisjob.com/how-it-works).
+
+## Privacy
+
+The extension does not send your name, email, or account. Viewing a listing sends that listing's public details so scores can be computed. Community reports are optional and anonymous. Full policy: [Privacy](https://www.skipthisjob.com/privacy).
+
+## Pages
+
+- [Home](https://www.skipthisjob.com): product overview and the check categories
+- [How the score works](https://www.skipthisjob.com/how-it-works): every check and the four bands
+- [Ghost Job Leaderboard](https://www.skipthisjob.com/leaderboard): employers ranked by ghost score
+- [Privacy](https://www.skipthisjob.com/privacy): what is sent and what is not collected
+- [Terms](https://www.skipthisjob.com/terms): scores are estimates, not a guarantee a listing is real or fake
+
+Install: https://chromewebstore.google.com/detail/nodldfdkjomniknohmejdimjlejfongd

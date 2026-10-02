@@ -1,12 +1,15 @@
 import type { Metadata } from 'next';
+import { HOME_DESCRIPTION, HOME_TITLE, OG_IMAGE, SITE_ORIGIN } from '@/lib/seo';
 import './globals.css';
 
 export const metadata: Metadata = {
-  // The apex domain 307-redirects to www, so resolve relative URLs against the canonical www host.
-  metadataBase: new URL('https://www.skipthisjob.com'),
-  title: 'Skip This Job — Ghost Job Detector for LinkedIn & Indeed',
-  description:
-    'Free Chrome extension that detects ghost job listings on LinkedIn and Indeed before you waste time applying. Community-powered ghost scores, repost tracking, and employer transparency.',
+  // The apex domain 307-redirects to www. Relative URLs resolve against this host.
+  metadataBase: new URL(SITE_ORIGIN),
+  title: {
+    default: HOME_TITLE,
+    template: '%s — Skip This Job',
+  },
+  description: HOME_DESCRIPTION,
   icons: {
     icon: [
       { url: '/favicon.ico', sizes: '16x16 32x32 48x48' },
@@ -16,24 +19,25 @@ export const metadata: Metadata = {
     apple: [{ url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
   },
   openGraph: {
-    title: 'Skip This Job',
-    description: 'Stop applying to jobs that don\'t exist.',
-    url: 'https://skipthisjob.com',
+    title: HOME_TITLE,
+    description: HOME_DESCRIPTION,
+    url: SITE_ORIGIN,
+    siteName: 'Skip This Job',
     type: 'website',
-    images: [
-      {
-        url: '/og-image.png',
-        width: 1200,
-        height: 630,
-        alt: 'Skip This Job — Stop applying to jobs that don\'t exist.',
-      },
-    ],
+    images: [OG_IMAGE],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Skip This Job',
-    description: 'Stop applying to jobs that don\'t exist.',
-    images: ['/og-image.png'],
+    title: HOME_TITLE,
+    description: HOME_DESCRIPTION,
+    images: [
+      {
+        url: OG_IMAGE.url,
+        width: OG_IMAGE.width,
+        height: OG_IMAGE.height,
+        alt: OG_IMAGE.alt,
+      },
+    ],
   },
 };
 
