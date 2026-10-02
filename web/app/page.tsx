@@ -38,7 +38,7 @@ export default function Home() {
       </nav>
 
       {/* ── Hero ── */}
-      <section className="max-w-3xl mx-auto px-6 pt-20 pb-24 text-center">
+      <section className="max-w-3xl mx-auto px-6 pt-20 pb-12 text-center">
         <div className="inline-flex items-center gap-2 bg-purple-50 text-purple-700 px-3 py-1 rounded-full text-xs font-medium mb-6">
           <Logo size={18} />
           <span>Free Chrome Extension</span>
@@ -46,11 +46,14 @@ export default function Home() {
         <h1 className="text-4xl sm:text-5xl font-bold tracking-tight leading-tight mb-6">
           Stop applying to jobs<br />that don&apos;t exist.
         </h1>
-        <p className="text-lg text-gray-500 max-w-xl mx-auto mb-10 leading-relaxed">
+        <p className="text-lg text-gray-500 max-w-xl mx-auto mb-4 leading-relaxed">
           Ghost Job Detector scores every LinkedIn and Indeed listing you open.
           It combines that listing&apos;s own signals with the employer&apos;s track
           record, weighted by how much evidence we have, so you spend time on
-          real opportunities. Free, no account needed.
+          real opportunities.
+        </p>
+        <p className="text-base text-gray-800 max-w-xl mx-auto mb-10 leading-relaxed font-medium">
+          Free, no strings. We collect public job postings, not your data.
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
           <a
@@ -70,12 +73,35 @@ export default function Home() {
         </div>
       </section>
 
+      {/* ── Not the product ── */}
+      <section aria-labelledby="not-the-product" className="max-w-3xl mx-auto px-6 pb-16">
+        <div className="rounded-2xl border border-gray-200 bg-white px-6 py-8 sm:px-10 sm:py-10 text-left">
+          <div className="mb-4 flex items-center gap-3">
+            <span className="flex gap-1" aria-hidden="true">
+              <span className="h-8 w-1.5 rounded-full bg-purple-600" />
+              <span className="h-8 w-1.5 rounded-full bg-amber-400" />
+            </span>
+            <h2 id="not-the-product" className="text-xl sm:text-2xl font-bold tracking-tight">
+              Free, and you&apos;re not the product.
+            </h2>
+          </div>
+          <p className="text-base sm:text-lg text-gray-600 leading-relaxed">
+            I don&apos;t collect data about you, and I don&apos;t want it. Skip This Job
+            collects public job postings as people browse them, and that&apos;s what
+            makes the ghost scores better for everyone. No account, no email, no
+            ads, no selling anything. Only what&apos;s needed to run the extension. I
+            built this because ghost jobs wasted my own time, and I wanted to
+            fight back.
+          </p>
+        </div>
+      </section>
+
       {/* ── Stats bar ── */}
       <section className="border-y border-gray-200 bg-white">
         <div className="max-w-4xl mx-auto px-6 py-8 grid grid-cols-1 sm:grid-cols-3 gap-6 text-center">
           {[
             { number: String(SIGNAL_COUNT), label: 'distinct checks in the score' },
-            { number: '0', label: 'personal identifiers collected' },
+            { number: '0', label: 'names or emails collected' },
             { number: '100%', label: 'free, no account needed' },
           ].map((stat, i) => (
             <div key={i}>
