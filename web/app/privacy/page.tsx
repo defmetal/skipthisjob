@@ -1,4 +1,13 @@
 import Logo from '@/components/Logo';
+import { pageMetadata } from '@/lib/seo';
+
+export const metadata = pageMetadata({
+  title: 'Privacy Policy — Skip This Job',
+  description:
+    'What the Skip This Job Chrome extension sends when you view a LinkedIn or Indeed listing, what it does not collect, and how listing details and community reports are stored.',
+  path: '/privacy',
+});
+
 export default function Privacy() {
   return (
     <main className="min-h-screen bg-white">

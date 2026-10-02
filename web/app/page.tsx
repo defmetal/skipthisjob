@@ -1,5 +1,6 @@
 import Logo from '@/components/Logo';
 import { DirectionMark, SignalIcon } from '@/components/signal-ui';
+import { HOME_DESCRIPTION, HOME_TITLE, homepageJsonLd, pageMetadata } from '@/lib/seo';
 import {
   DISTINCT_NOTE,
   EMPLOYER_SHORT,
@@ -12,9 +13,23 @@ import Link from 'next/link';
 
 const HIGHLIGHTS = highlightGroups();
 
+export const metadata = pageMetadata({
+  title: HOME_TITLE,
+  description: HOME_DESCRIPTION,
+  path: '/',
+});
+
 export default function Home() {
+  const jsonLd = homepageJsonLd();
+
   return (
     <main className="min-h-screen">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(jsonLd).replace(/</g, '\\u003c'),
+        }}
+      />
       {/* ── Nav ── */}
       <nav className="max-w-5xl mx-auto px-6 py-6 flex items-center justify-between">
         <div className="flex items-center gap-2">

@@ -1,4 +1,13 @@
 import Logo from '@/components/Logo';
+import { pageMetadata } from '@/lib/seo';
+
+export const metadata = pageMetadata({
+  title: 'Terms of Service — Skip This Job',
+  description:
+    'Terms for the free Skip This Job Chrome extension and website. Ghost scores are estimates based on listing signals and community reports, not a guarantee a job is real or fake.',
+  path: '/terms',
+});
+
 export default function Terms() {
   return (
     <main className="min-h-screen bg-white">
