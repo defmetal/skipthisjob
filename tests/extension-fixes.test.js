@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const shared = require('../extension/content/shared.js');
 const { load: loadIndeed } = require('./helpers/indeed-dom.js');
 const { load: loadLinkedIn } = require('./helpers/linkedin-dom.js');
 
@@ -55,6 +56,68 @@ test('30-day Indeed listing with no engagement data stays below 75 and near Link
     assert.ok(parsed.signals.some(s => /no employer response/i.test(s)));
     assert.ok(parsed.signals.some(s => /missing basics/i.test(s)));
     assert.ok(!parsed.signals.some(s => /classic dead end|30\+ days old with no active review/i.test(s)));
+  } finally {
+    indeed.window.close();
+    linkedin.window.close();
+  }
+});
+
+test('30-day search cards do not add the unparsed-engagement penalty the overlay skips', () => {
+  const indeedHtml = '<html><body><div class="job_seen_beacon" data-jk="abc123def4567890">' +
+    '<h2 class="jobTitle"><a class="jcs-JobTitle"><span>Software Engineer</span></a></h2>' +
+    '<span data-testid="company-name">Acme</span>' +
+    '<span class="date">30 days ago</span>' +
+    '</div></body></html>';
+  const linkedinHtml = '<html><body><li class="jobs-search-results__list-item" data-occludable-job-id="4242424242">' +
+    '<a class="job-card-list__title" href="/jobs/view/4242424242">Software Engineer</a>' +
+    '<div class="job-card-container__primary-description">Acme</div>' +
+    '<time>30 days ago</time>' +
+    '</li></body></html>';
+  const indeed = loadIndeed(indeedHtml, 'https://www.indeed.com/jobs?q=x');
+  const linkedin = loadLinkedIn(linkedinHtml, 'https://www.linkedin.com/jobs/search/');
+  try {
+    const indeedCard = indeed.window.parseIndeedCard(indeed.window.document.querySelector('.job_seen_beacon'));
+    const linkedinCard = linkedin.window.parseLinkedInCard(
+      linkedin.window.document.querySelector('.jobs-search-results__list-item')
+    );
+    assert.equal(indeedCard.daysOpen, 30);
+    assert.equal(linkedinCard.daysOpen, 30);
+    assert.equal(indeedCard.engagementParsed, false);
+    assert.equal(linkedinCard.engagementParsed, false);
+    assert.equal(indeedCard.engagementSignals.length, 0);
+    assert.equal(linkedinCard.engagementSignals.length, 0);
+
+    const indeedPreview = shared.scoreListPreview(indeedCard);
+    const linkedinPreview = shared.scoreListPreview(linkedinCard);
+    const overlayFacts = {
+      title: 'Software Engineer',
+      companyName: 'Acme',
+      daysOpen: 30,
+      salaryListed: null,
+      description: null,
+      employerResponsive: null,
+      engagementParsed: false,
+      activelyReviewing: false,
+      engagementSignals: [],
+      hiringContactVisible: null,
+    };
+    const indeedOverlay = indeed.window.scoreLocally(overlayFacts);
+    const linkedinOverlay = linkedin.window.scoreLocally(overlayFacts);
+    assert.equal(indeedPreview.score, indeedOverlay.score);
+    assert.equal(linkedinPreview.score, linkedinOverlay.score);
+    assert.equal(indeedPreview.score, 15);
+    assert.ok(!indeedPreview.signals.some(s => /no active review/i.test(s)));
+    assert.ok(!linkedinPreview.signals.some(s => /no active review/i.test(s)));
+
+    indeed.window.document.querySelector('.job_seen_beacon').insertAdjacentHTML(
+      'beforeend',
+      '<span>Actively reviewing applicants</span>'
+    );
+    const reviewing = indeed.window.parseIndeedCard(indeed.window.document.querySelector('.job_seen_beacon'));
+    assert.equal(reviewing.engagementParsed, false);
+    assert.equal(reviewing.engagementSignals.indexOf('actively_reviewing'), 0);
+    const credited = shared.scoreListPreview(reviewing);
+    assert.ok(credited.score < indeedPreview.score, 'a visible reviewing badge on a card still credits');
   } finally {
     indeed.window.close();
     linkedin.window.close();

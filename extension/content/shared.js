@@ -87,8 +87,10 @@
    * True when a parser actually read the review/hiring-insights area.
    * `engagementParsed: false` means the badge was not on the page we could
    * see — that must add 0, even if `activelyReviewing` defaulted to false.
+   * Search cards set the flag false: a missing "Actively reviewing" chip
+   * on a card is unparsed, not a confirmed absence.
    * Callers that pass an `engagementSignals` array without the flag are
-   * treated as having looked (existing tests and search cards).
+   * treated as having looked (unit tests and older detail payloads).
    */
   function engagementWasParsed(listing) {
     if (!listing) return false;
@@ -710,18 +712,29 @@
     return out;
   }
 
+  function daysOpenFromTimestamp(ts) {
+    if (!ts) return null;
+    const diff = Math.round((Date.now() - new Date(ts).getTime()) / (1000 * 60 * 60 * 24));
+    if (Number.isNaN(diff)) return null;
+    return Math.max(0, diff);
+  }
+
+  /**
+   * Indeed mosaic age. "30+ days ago" is a floor, not the posting date.
+   * Prefer pubDate/createDate when the label contains "+" or when the
+   * timestamp is older than the label. A label with no timestamp still
+   * counts — many search rows only have the relative string.
+   */
   function daysOpenFromMosaicJob(job) {
     if (!job) return null;
-    if (job.formattedRelativeTime) {
-      const d = parseRelativeDays(job.formattedRelativeTime);
-      if (d != null) return d;
+    const label = job.formattedRelativeTime ? String(job.formattedRelativeTime) : '';
+    const labelDays = label ? parseRelativeDays(label) : null;
+    const dateDays = daysOpenFromTimestamp(job.pubDate || job.createDate);
+    if (dateDays != null && (label.indexOf('+') !== -1 || labelDays == null || dateDays > labelDays)) {
+      return dateDays;
     }
-    const ts = job.pubDate || job.createDate;
-    if (ts) {
-      const diff = Math.round((Date.now() - new Date(ts).getTime()) / (1000 * 60 * 60 * 24));
-      if (!Number.isNaN(diff)) return Math.max(0, diff);
-    }
-    return null;
+    if (labelDays != null) return labelDays;
+    return dateDays;
   }
 
   function daysOpenFromJobPostingJsonLd(text, nowMs) {

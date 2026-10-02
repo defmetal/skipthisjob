@@ -1259,6 +1259,9 @@ function parseLinkedInCard(card) {
     applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,
     easyApply: /easy apply/.test(text),
     engagementSignals: /actively reviewing/.test(text) ? ['actively_reviewing'] : [],
+    // Cards do not read the hiring-insights block. Absence is unparsed (0),
+    // matching the detail overlay. A visible badge still credits via the signal.
+    engagementParsed: false,
     platform: 'linkedin',
   };
 }

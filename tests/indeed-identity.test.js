@@ -13,7 +13,9 @@ const scitecMosaic = {
   displayTitle: SCI_TEC_TITLE,
   company: SCI_TEC_COMPANY,
   formattedRelativeTime: '30+ days ago',
-  pubDate: Date.UTC(2026, 7, 10),
+  // Same age as the label so these tests stay about job-key picking.
+  // The "+" vs pubDate case is covered below.
+  pubDate: Date.now() - 30 * 24 * 60 * 60 * 1000,
 };
 
 const neighborMosaic = {
@@ -139,6 +141,35 @@ test('indeed job-signal cache expires and keys by jk', () => {
     null
   );
   assert.equal(shared.lookupIndeedJobCache(map, 'deadbeefdeadbeef', now), null);
+});
+
+test('mosaic "30+" label does not cap a real pubDate or createDate', () => {
+  const day = 24 * 60 * 60 * 1000;
+  const pub120 = Date.now() - 120 * day;
+  assert.equal(shared.daysOpenFromMosaicJob({
+    formattedRelativeTime: '30+ days ago',
+    pubDate: pub120,
+  }), 120);
+  assert.equal(shared.daysOpenFromMosaicJob({ pubDate: pub120 }), 120);
+  assert.equal(shared.daysOpenFromMosaicJob({
+    formattedRelativeTime: '30+ days ago',
+    createDate: pub120,
+  }), 120);
+  assert.equal(shared.daysOpenFromMosaicJob({
+    formattedRelativeTime: '30+ days ago',
+  }), 30);
+  assert.equal(shared.daysOpenFromMosaicJob({
+    formattedRelativeTime: '10 days ago',
+    pubDate: Date.now() - 40 * day,
+  }), 40);
+  assert.equal(shared.daysOpenFromMosaicJob({
+    formattedRelativeTime: '20 days ago',
+    pubDate: Date.now() - 5 * day,
+  }), 20);
+  assert.equal(shared.daysOpenFromMosaicJob({
+    formattedRelativeTime: '30+ days ago',
+    pubDate: Date.now() - 10 * day,
+  }), 10);
 });
 
 test('parseRelativeDays accepts Indeed 30+ and 5d labels', () => {
