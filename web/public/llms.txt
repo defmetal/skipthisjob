@@ -4,7 +4,7 @@
 
 Skip This Job (https://www.skipthisjob.com) is a free Chrome extension and website from Vibe Labs Marketing in San Antonio, TX. It reads the LinkedIn or Indeed listing you open and shows a score from 0 to 100. There is no account and no email signup.
 
-The score uses 26 distinct checks. The same check on LinkedIn and Indeed counts once. A listing's own signals run in the browser. The employer's track record is mixed in afterward, weighted by how much evidence we have. A thin employer record can raise the score and will not pull it down.
+The score uses 25 distinct checks. The same check on LinkedIn and Indeed counts once. A listing's own signals run in the browser. The employer's track record is mixed in afterward, weighted by how much evidence we have. A thin employer record can raise the score and will not pull it down.
 
 The four score bands are Worth Applying (0–34), Proceed with Caution (35–54), Likely a Waste of Time (55–74), and Skip This Job (75–100).
 

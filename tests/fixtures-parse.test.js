@@ -75,6 +75,25 @@ test('LinkedIn job fixture parses and scores loaded fields only', () => {
   }
 });
 
+test('LinkedIn search sidebar Reposted/Remote does not score the viewed job', () => {
+  const dom = loadLinkedIn(
+    readFixture('linkedin-search-sidebar.html'),
+    'https://www.linkedin.com/jobs/search/?currentJobId=2222222222'
+  );
+  try {
+    const listing = dom.window.parseLinkedInListing();
+    assert.equal(listing.title, 'Viewed Analyst');
+    assert.equal(listing.companyName, 'Viewed Co');
+    assert.equal(listing.isRepost, false);
+    assert.equal(listing.workArrangement, null);
+    assert.equal(listing.hiringContactVisible, false);
+    assert.notEqual(listing.salaryListed, true);
+    assert.equal(listing.daysOpen, 3);
+  } finally {
+    dom.window.close();
+  }
+});
+
 test('Indeed /viewjob fixture produces an overlay from the page model', async () => {
   const dom = loadIndeed(
     readFixture('indeed-viewjob.html'),
@@ -115,6 +134,10 @@ test('Indeed /viewjob fixture produces an overlay from the page model', async ()
     assert.match(text, new RegExp(scored.score + '/100'));
     assert.match(text, /Employer response unknown/i);
     assert.doesNotMatch(text, /No employer response data/);
+    const closeBtn = overlay.querySelector('#ghost-close-btn');
+    assert.equal(closeBtn && closeBtn.tagName, 'BUTTON');
+    assert.equal(closeBtn.getAttribute('aria-label'), 'Close');
+    assert.equal(overlay.getAttribute('role'), 'dialog');
   } finally {
     dom.window.close();
   }

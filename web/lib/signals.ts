@@ -129,12 +129,11 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
         id: 'date-missing',
         phrase: 'Posting date missing',
         direction: 'raises',
-        where: 'Indeed job page',
+        where: 'LinkedIn and Indeed',
         summary:
-          'An Indeed job page with no posting date takes a flat add. The age curve does not also run.',
+          'A date the page never showed adds nothing. The overlay says the posting age is unknown, and the age curve does not run.',
         points: [
-          { when: 'Indeed job page, date missing', effect: '+15' },
-          { when: 'LinkedIn, and search cards', effect: 'No points for a missing date' },
+          { when: 'Job page or search card, date missing or not parsed', effect: '+0, shown as Posting age unknown' },
         ],
       },
       {
@@ -231,13 +230,14 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
         phrase: 'No review activity',
         direction: 'raises',
         where: 'LinkedIn and Indeed',
-        summary: 'An older listing with no “actively reviewing” label scores higher.',
+        summary:
+          'An older listing scores higher only when the review section was read and it is not “actively reviewing.” If that section was not on the page, the score adds nothing.',
         points: [
-          { when: '14+ days and not actively reviewing', effect: '+10' },
-          { when: 'Indeed job page, 30+ days and still not reviewing', effect: '+14 more' },
+          { when: '14+ days, review section read, and not actively reviewing', effect: '+10' },
+          { when: 'Review section missing or not parsed', effect: '+0, shown as Engagement unknown' },
         ],
         note:
-          'The +10 runs on job pages and search cards. The extra 14 is Indeed job pages only, and it stacks on the +10.',
+          'The +10 runs on job pages and on search cards that expose the review label. It does not stack with a second “still not reviewing” add.',
       },
     ],
   },
@@ -252,9 +252,10 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
         direction: 'raises',
         where: 'LinkedIn and Indeed',
         summary:
-          'No salary on the job page raises the score. On a search card, a missing salary raises it a little, and a salary that is shown lowers it a little.',
+          'No salary on a loaded job page raises the score. A salary the page never showed adds nothing. On a search card, a missing salary raises it a little, and a salary that is shown lowers it a little.',
         points: [
-          { when: 'Job page, no salary', effect: '+5' },
+          { when: 'Job page, salary row loaded and empty', effect: '+5' },
+          { when: 'Job page, salary not parsed', effect: '+0, shown as Salary unknown' },
           { when: 'Search card, no salary', effect: '+4' },
           { when: 'Search card, salary is shown', effect: '−2' },
           { when: 'Job page, salary is shown', effect: 'No change from this check' },
@@ -267,19 +268,24 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
         direction: 'raises',
         where: 'LinkedIn and Indeed',
         summary:
-          'A third-party or staffing post raises the score, whether the page says so or the company name is a known staffing firm or job board.',
+          'A third-party post raises the score when the company is a known staffing firm or job board, or the page shows an agency chip.',
         points: [
-          { when: 'Job page', effect: '+12' },
-          { when: 'Search card', effect: '+10' },
+          { when: 'Job page, company is a known staffing firm or the page has an agency chip', effect: '+12' },
         ],
+        note:
+          'Search cards do not run this check. A job description that merely mentions staffing, or “contract through” a date, does not count.',
       },
       {
         id: 'no-contact',
         phrase: 'No hiring contact',
         direction: 'raises',
         where: 'LinkedIn job page',
-        summary: 'When the LinkedIn page does not show someone you can follow up with, the score goes up.',
-        points: [{ when: 'No hiring contact or hiring team shown', effect: '+10' }],
+        summary:
+          'When the LinkedIn detail pane loads and does not show someone you can follow up with, the score goes up. If that pane was not found, the score adds nothing.',
+        points: [
+          { when: 'Detail pane loaded, no hiring contact or hiring team', effect: '+10' },
+          { when: 'Detail pane not found', effect: '+0, shown as Hiring contact unknown' },
+        ],
         highlight: { group: 'no-contact', order: 5, row: 1 },
       },
       {
@@ -299,11 +305,12 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
           'No sign of how the employer responds raises the score. On Indeed, a line that they often reply lowers it.',
         points: [
           { when: 'LinkedIn job page says “no response insights”', effect: '+8' },
-          { when: 'Indeed job page does not say the employer often replies', effect: '+8' },
+          { when: 'Indeed hiring-insights block loaded and does not say the employer often replies', effect: '+8' },
           { when: 'Indeed job page says the employer often replies', effect: '−5' },
+          { when: 'Indeed, response block not parsed', effect: '+0, shown as Employer response unknown' },
         ],
         note:
-          'On an Indeed job page this check always takes one of those two branches. LinkedIn adds points only when the “no response insights” line is present.',
+          'LinkedIn adds points only when the “no response insights” line is present. Indeed has a third branch: if the hiring-insights block was not read, the score adds 0.',
       },
       {
         id: 'apply-offsite',
@@ -340,11 +347,11 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
         direction: 'raises',
         where: 'LinkedIn and Indeed',
         summary:
-          'A missing, very short, or generic description raises the score. Length and vague wording are separate adds, and they stack when both match.',
+          'A very short or generic description raises the score. A description that was not loaded adds nothing and shows as unknown. Length and vague wording are separate adds, and they stack when both match.',
         points: [
-          { when: 'LinkedIn, no description or under 200 characters', effect: '+12' },
+          { when: 'Description not loaded', effect: '+0, shown as Job description unknown' },
+          { when: 'LinkedIn, description under 200 characters', effect: '+12' },
           { when: 'LinkedIn, description under 500 characters', effect: '+6' },
-          { when: 'Indeed, no description', effect: '+7' },
           { when: 'Indeed, description under 280 characters', effect: '+5' },
           { when: 'Heavily generic wording, LinkedIn', effect: '+12' },
           { when: 'Heavily generic wording, Indeed', effect: '+11' },
@@ -352,7 +359,7 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
           { when: 'Some generic wording, Indeed', effect: '+6' },
         ],
         note:
-          'Length uses one step per site (under 200 characters on LinkedIn does not also take the under-500 step; a missing Indeed description does not also take the under-280 step). Vague wording is scored only when a description is present. Heavily generic means a vagueness ratio of 0.65 or more; some generic wording means 0.45 or more. Generic phrases (fast-paced, rockstar, wear many hats, and similar lines) push the ratio up. Concrete details — a named tool, a reporting line, a team size, a dollar amount, or years required — push it down. A description under 500 characters, or a list of more than 15 distinct technologies, also pushes it up. Job pages only.',
+          'Length uses one step per site (under 200 characters on LinkedIn does not also take the under-500 step). A missing description does not also take the short-description step. Vague wording is scored only when a description is present. Heavily generic means a vagueness ratio of 0.65 or more; some generic wording means 0.45 or more. Generic phrases (fast-paced, rockstar, wear many hats, and similar lines) push the ratio up. Concrete details — a named tool, a reporting line, a team size, a dollar amount, or years required — push it down. A description under 500 characters, or a list of more than 15 distinct technologies, also pushes it up. Job pages only.',
         highlight: { group: 'vague-or-short', order: 6, row: 1 },
       },
       {
@@ -387,7 +394,7 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
           { when: 'Indeed', effect: '+13' },
         ],
         note:
-          'On both sites: an entry-level, junior, associate, intern, or graduate title plus 10 or more years in the description, or a senior, lead, principal, director, VP, or “head of” title plus 0–2 years. Indeed also flags the page when the title or the first 200 characters look entry-level and the description asks for 5 to 10 years of experience.',
+          'The title has to be entry-level, junior, associate, intern, or graduate, and the description has to say minimum, at least, or requires 5 or more years (or “N+ years” with N at least 5). A senior, lead, principal, director, VP, or “head of” title mismatches only when the description says minimum or at least 0–2 years. A passing mention such as “including 2 years with Kubernetes” does not count.',
         highlight: { group: 'seniority', order: 7, row: 1 },
       },
       {
@@ -409,43 +416,27 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
   {
     id: 'combined',
     title: 'Combined red flags',
-    summary: 'Indeed starts a little higher, and several gaps together add still more.',
+    summary: 'Several gaps that were actually read, together, add still more.',
     checks: [
-      {
-        id: 'indeed-baseline',
-        phrase: 'Indeed job page starts higher',
-        direction: 'raises',
-        where: 'Indeed job page',
-        summary:
-          'An Indeed job page starts 10 points higher than a LinkedIn page or a search card, before the other checks.',
-        points: [
-          { when: 'Indeed job page', effect: '+10' },
-          { when: 'LinkedIn, and search cards', effect: 'No starting add' },
-        ],
-      },
       {
         id: 'stacked-gaps',
         phrase: 'Several gaps at once',
         direction: 'raises',
         where: 'LinkedIn and Indeed job pages',
         summary:
-          'An older listing that is also missing the basics takes an extra add on top of the individual checks.',
+          'An older listing that is also missing basics the page actually showed takes one extra add. Gaps that were not parsed do not count.',
         points: [
           {
-            when: 'LinkedIn, 14+ days, no hiring contact, description missing or under 300 characters, and no salary',
+            when: 'LinkedIn, 14+ days, no hiring contact, description present and under 300 characters, and no salary',
             effect: '+20',
           },
           {
-            when: 'Indeed, 14+ days, no salary, not marked as often replying, and not actively reviewing',
+            when: 'Indeed, 14+ days, salary row empty, hiring insights read, not marked as often replying, and not actively reviewing',
             effect: '+24',
-          },
-          {
-            when: 'Indeed, 30+ days, not reviewing, not marked as often replying, and no salary',
-            effect: '+12 more',
           },
         ],
         note:
-          'The Indeed +12 stacks on the +24 when the post is 30 days or older and still missing those pieces. These adds are applied before the age minimum, so a minimum can cover them.',
+          'Indeed does not add a second combo on top of the +24. These adds are applied before the age minimum, so a minimum can cover them. Indeed and LinkedIn start from the same zero.',
       },
     ],
   },

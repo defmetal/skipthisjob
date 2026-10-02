@@ -1,7 +1,7 @@
 // ============================================================
 // Background Service Worker — Skip This Job
 // ============================================================
-// Handles API calls and company scans on behalf of content scripts.
+// Handles API calls on behalf of content scripts.
 // ============================================================
 
 importScripts('../lib/access.js');
@@ -28,9 +28,13 @@ chrome.runtime.onStartup.addListener(() => { SkipThisJobAccess.refreshAccessStat
 if (chrome.permissions && chrome.permissions.onAdded) chrome.permissions.onAdded.addListener(() => { SkipThisJobAccess.refreshAccessState(); });
 if (chrome.permissions && chrome.permissions.onRemoved) chrome.permissions.onRemoved.addListener(() => { SkipThisJobAccess.refreshAccessState(); });
 
-// Cache company scans to avoid re-fetching (expires after 1 hour)
-const scanCache = new Map();
-const CACHE_TTL = 60 * 60 * 1000;
+const FETCH_TIMEOUT_MS = 8000;
+
+function fetchWithTimeout(url, options) {
+  const opts = options || {};
+  opts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  return fetch(url, opts);
+}
 
 // Last TRACK_LISTING payload per tab — used to complete Apply-click events
 // that used to POST {platform, listingUrl} and 400 on /api/track.
@@ -46,15 +50,23 @@ function mergeApplyPayload(message, lastListing) {
                      String(listingUrl).match(/\/jobs\/view\/(\d+)/);
     platformJobId = (indeed && indeed[1]) || (linkedin && linkedin[1]) || null;
   }
+  const platform = message.platform || last.platform || null;
+  let cleanUrl = listingUrl;
+  if (platform === 'linkedin' && platformJobId) cleanUrl = 'https://www.linkedin.com/jobs/view/' + platformJobId;
+  else if (platform === 'indeed' && platformJobId) cleanUrl = 'https://www.indeed.com/viewjob?jk=' + String(platformJobId).toLowerCase();
+  else if (listingUrl) {
+    try { cleanUrl = new URL(listingUrl).origin + new URL(listingUrl).pathname; }
+    catch (e) { cleanUrl = String(listingUrl).split('?')[0]; }
+  }
   return {
     companyName: message.companyName || last.companyName || null,
     jobTitle: message.jobTitle || last.jobTitle || last.title || null,
-    platform: message.platform || last.platform || null,
+    platform: platform,
     platformJobId,
-    listingUrl,
+    listingUrl: cleanUrl,
     location: last.location || null,
-    salaryListed: last.salaryListed ?? false,
-    isRepost: last.isRepost ?? false,
+    salaryListed: last.salaryListed === undefined ? null : last.salaryListed,
+    isRepost: last.isRepost === undefined ? null : last.isRepost,
     daysOpen: last.daysOpen,
     engagementSignals: last.engagementSignals || [],
     employerResponseTime: last.employerResponseTime || null,
@@ -78,47 +90,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.platform) params.set('platform', message.platform);
     if (message.jobId) params.set('jobId', message.jobId);
     if (message.fresh) params.set('fresh', '1');
-    fetch(`${API_BASE}/employer/score?` + params)
+    fetchWithTimeout(`${API_BASE}/employer/score?` + params)
       .then(res => res.ok ? res.json() : null)
       .then(data => sendResponse({ data }))
       .catch(() => sendResponse({ data: null }));
     return true;
   }
 
-  // --- Scan employer listings on Indeed ---
-  if (message.type === 'SCAN_EMPLOYER_LISTINGS') {
-    const companyName = message.name;
-    const jobTitle = message.jobTitle || '';
-    const cacheKey = companyName.toLowerCase();
-
-    // Check cache
-    const cached = scanCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      sendResponse({ data: cached.data });
-      return true;
-    }
-
-    // Fetch Indeed search results for this company
-    const searchUrl = `https://www.indeed.com/jobs?q=%22${encodeURIComponent(companyName)}%22&sort=date`;
-    
-    fetch(searchUrl)
-      .then(res => res.text())
-      .then(html => {
-        const result = parseIndeedSearchResults(html, jobTitle);
-        scanCache.set(cacheKey, { data: result, timestamp: Date.now() });
-        console.log(`[SkipThisJob] Scanned ${companyName}: ${result.totalJobs} jobs, ${result.similarTitles} similar titles`);
-        sendResponse({ data: result });
-      })
-      .catch(err => {
-        console.warn('[SkipThisJob] Scan failed:', err.message);
-        sendResponse({ data: null });
-      });
-    return true;
-  }
-
   // --- Submit report ---
   if (message.type === 'SUBMIT_REPORT') {
-    fetch(`${API_BASE}/report`, {
+    fetchWithTimeout(`${API_BASE}/report`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(message.reportData),
@@ -136,7 +117,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (sender.tab && sender.tab.id != null && message.listingData) {
       lastListingByTab.set(sender.tab.id, message.listingData);
     }
-    fetch(`${API_BASE}/track`, {
+    fetchWithTimeout(`${API_BASE}/track`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(message.listingData),
@@ -160,7 +141,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: false, error: 'incomplete_apply_payload' });
       return true;
     }
-    fetch(`${API_BASE}/track`, {
+    fetchWithTimeout(`${API_BASE}/track`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -169,92 +150,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(() => sendResponse({ success: false }));
     return true;
   }
-
-  // --- Update badge ---
-  if (message.type === 'UPDATE_BADGE') {
-    const { score, label } = message;
-    const badgeColors = {
-      low: '#4caf50',
-      moderate: '#ff9800',
-      high: '#f44336',
-      very_high: '#9c27b0',
-    };
-
-    chrome.action.setBadgeText({
-      text: score > 0 ? String(score) : '',
-      tabId: sender.tab?.id,
-    });
-    chrome.action.setBadgeBackgroundColor({
-      color: badgeColors[label] || '#999',
-      tabId: sender.tab?.id,
-    });
-    sendResponse({ success: true });
-    return true;
-  }
 });
-
-// Parse Indeed search results HTML for job count and title patterns
-function parseIndeedSearchResults(html, currentTitle) {
-  const result = {
-    totalJobs: null,
-    similarTitles: 0,
-    titles: [],
-  };
-
-  // Extract total job count — Indeed shows "X jobs" or "Page 1 of X jobs"
-  const countMatch = html.match(/(\d[\d,]*)\s*jobs?/i) ||
-                     html.match(/"jobCount"\s*:\s*(\d+)/);
-  if (countMatch) {
-    result.totalJobs = parseInt(countMatch[1].replace(/,/g, ''));
-  }
-
-  // Extract job titles from the results page
-  // Indeed uses data attributes and various class patterns for job titles
-  const titleMatches = html.matchAll(/class="[^"]*jobTitle[^"]*"[^>]*>.*?<a[^>]*>.*?<span[^>]*>(.*?)<\/span>/gs) ||
-                       html.matchAll(/data-testid="[^"]*jobTitle[^"]*"[^>]*>(.*?)<\//gs);
-  
-  const titles = [];
-  for (const match of titleMatches) {
-    const title = match[1].replace(/<[^>]*>/g, '').trim();
-    if (title && title.length > 2) titles.push(title.toLowerCase());
-  }
-
-  // Also try simpler pattern
-  if (titles.length === 0) {
-    const simpleMatches = html.matchAll(/<h2[^>]*class="[^"]*jobTitle[^"]*"[^>]*>[\s\S]*?<span[^>]*>(.*?)<\/span>/gi);
-    for (const match of simpleMatches) {
-      const title = match[1].replace(/<[^>]*>/g, '').trim();
-      if (title && title.length > 2) titles.push(title.toLowerCase());
-    }
-  }
-
-  result.titles = titles;
-
-  // Count titles similar to the current listing
-  if (currentTitle) {
-    const normalizedCurrent = currentTitle.toLowerCase().trim();
-    result.similarTitles = titles.filter(t => {
-      // Check for exact match or high similarity
-      return t === normalizedCurrent ||
-             t.includes(normalizedCurrent) ||
-             normalizedCurrent.includes(t) ||
-             // Check if core words overlap (e.g. "Senior Software Engineer" ~ "Software Engineer")
-             overlapScore(t, normalizedCurrent) >= 0.6;
-    }).length;
-  }
-
-  return result;
-}
-
-// Simple word overlap score between two strings
-function overlapScore(a, b) {
-  const wordsA = new Set(a.split(/\s+/).filter(w => w.length > 2));
-  const wordsB = new Set(b.split(/\s+/).filter(w => w.length > 2));
-  if (wordsA.size === 0 || wordsB.size === 0) return 0;
-  let overlap = 0;
-  for (const w of wordsA) { if (wordsB.has(w)) overlap++; }
-  return overlap / Math.min(wordsA.size, wordsB.size);
-}
 
 // Clear badge when navigating away from job pages
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {

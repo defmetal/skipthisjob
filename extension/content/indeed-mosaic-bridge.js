@@ -22,7 +22,6 @@
 
   const NODE_ID = '__stj_mosaic';
   const MAX_JOBS = 400;
-  const MAX_SECTION_CHARS = 24000;
 
   function pickJob(job) {
     if (!job || typeof job !== 'object') return null;
@@ -179,7 +178,6 @@
         url: location.href,
         providers: {},
         jobs: row ? [row] : [],
-        jobDetailsSectionText: '',
         viewJob: viewJob,
       };
     }
@@ -235,20 +233,7 @@
     const viewRow = viewJobRow(viewJob);
     if (viewRow) addJob(viewRow, '_viewjob');
 
-    // Right-pane (vjk=) detail views keep the human-readable posting date
-    // inside the job-details insights provider rather than in pubDate.
-    let jobDetailsSectionText = '';
-    try {
-      const dp = providerData['js-match-insights-provider-job-details'];
-      const section = dp && dp.jobDetailsSection;
-      if (section) {
-        jobDetailsSectionText = JSON.stringify(section)
-          .toLowerCase()
-          .slice(0, MAX_SECTION_CHARS);
-      }
-    } catch (e) {}
-
-    if (Object.keys(providers).length === 0 && flat.length === 0 && !jobDetailsSectionText && !viewJob) {
+    if (Object.keys(providers).length === 0 && flat.length === 0 && !viewJob) {
       return null;
     }
 
@@ -257,7 +242,6 @@
       url: location.href,
       providers: providers,
       jobs: flat,
-      jobDetailsSectionText: jobDetailsSectionText,
       viewJob: viewJob,
     };
   }
@@ -288,9 +272,7 @@
         ? (snap.viewJob.jobkey + '|' + snap.viewJob.title + '|' + snap.viewJob.company)
         : '';
       const fingerprint =
-        json.length + '|' + snap.url + '|' + JSON.stringify(snap.providers).length +
-        '|' + (snap.jobs ? snap.jobs.length : 0) +
-        '|' + snap.jobDetailsSectionText.length +
+        json.length + '|' + snap.url + '|' + (snap.jobs ? snap.jobs.length : 0) +
         '|' + viewKey;
       if (fingerprint === lastWritten) return;
       const node = getNode();
@@ -302,20 +284,45 @@
     }
   }
 
-  // Indeed hydrates the mosaic providers late and is a SPA, so poll
-  // aggressively at first, then settle into a slow heartbeat that still
-  // catches client-side navigations between job listings.
+  // Poll until a snapshot with jobs exists, then stop. URL changes
+  // (pushState / popstate) start a new burst. No forever 1.5s heartbeat.
   let ticks = 0;
-  const fast = setInterval(() => {
-    writeSnapshot();
-    if (++ticks > 100) {
-      clearInterval(fast);
-      setInterval(writeSnapshot, 1500);
+  let fastTimer = null;
+
+  function snapshotHasJobs() {
+    const node = document.getElementById(NODE_ID);
+    if (!node || !node.textContent) return false;
+    try {
+      const snap = JSON.parse(node.textContent);
+      return !!(snap && Array.isArray(snap.jobs) && snap.jobs.length);
+    } catch (e) {
+      return false;
     }
-  }, 400);
+  }
+
+  function stopPoll() {
+    if (fastTimer) {
+      clearInterval(fastTimer);
+      fastTimer = null;
+    }
+  }
+
+  function startFastPoll() {
+    if (fastTimer) return;
+    ticks = 0;
+    fastTimer = setInterval(() => {
+      writeSnapshot();
+      ticks += 1;
+      if (snapshotHasJobs() || ticks > 100) stopPoll();
+    }, 400);
+  }
 
   // Re-snapshot immediately on SPA navigation (vjk= changes).
-  const fireNav = () => setTimeout(writeSnapshot, 50);
+  const fireNav = () => setTimeout(() => {
+    lastWritten = '';
+    writeSnapshot();
+    if (!snapshotHasJobs()) startFastPoll();
+  }, 50);
   try {
     const origPush = history.pushState;
     const origReplace = history.replaceState;
@@ -333,4 +340,5 @@
   } catch (e) {}
 
   writeSnapshot();
+  if (!snapshotHasJobs()) startFastPoll();
 })();
