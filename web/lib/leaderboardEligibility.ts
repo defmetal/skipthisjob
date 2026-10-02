@@ -183,11 +183,22 @@ export function meetsEvidenceMinimum(listings: number, reports: number): boolean
   );
 }
 
-export function evidenceAgeMet(iso: string | null | undefined, now = Date.now()): boolean {
+/**
+ * Array methods pass the index as the second argument. A clock value is a
+ * millisecond timestamp; anything smaller (0, 1, 2, …) is not a time.
+ */
+const MIN_CLOCK_MS = 1_000_000_000_000;
+
+function resolveClock(now?: number): number {
+  if (typeof now === 'number' && Number.isFinite(now) && now >= MIN_CLOCK_MS) return now;
+  return Date.now();
+}
+
+export function evidenceAgeMet(iso: string | null | undefined, now?: number): boolean {
   if (!iso) return false;
   const then = Date.parse(iso);
   if (!Number.isFinite(then)) return false;
-  return now - then >= MIN_EVIDENCE_AGE_MS;
+  return resolveClock(now) - then >= MIN_EVIDENCE_AGE_MS;
 }
 
 export function distinctListingReporters(
@@ -315,10 +326,11 @@ export function looksLikePersonalName(
 
 export function isEligibleEmployer(
   employer: LeaderboardSourceEmployer,
-  now = Date.now()
+  now?: number
 ): boolean {
   const listings = asCount(employer.total_listings_tracked);
-  if (!listingEvidenceMature(employer, now) && !reportEvidenceMature(employer, now)) return false;
+  const clock = resolveClock(now);
+  if (!listingEvidenceMature(employer, clock) && !reportEvidenceMature(employer, clock)) return false;
   if (isUnusableEmployerName(employer.name_raw)) return false;
   if (looksLikePersonalName(employer.name_raw, listings)) return false;
   return true;
@@ -379,7 +391,8 @@ export function prepareLeaderboard(
   sortBy: LeaderboardSortColumn,
   ascending: boolean
 ): LeaderboardEmployer[] {
-  const rows = employers.filter(isEligibleEmployer).map(toLeaderboardEmployer);
+  // Pass only the employer. filter() would otherwise supply the index as `now`.
+  const rows = employers.filter((employer) => isEligibleEmployer(employer)).map(toLeaderboardEmployer);
   rows.sort((a, b) => {
     const primary = compareValues(sortValue(a, sortBy), sortValue(b, sortBy), ascending);
     if (primary !== 0) return primary;

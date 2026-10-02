@@ -305,6 +305,88 @@ test('new employers and fresh report-only evidence wait 24 hours', () => {
   );
 });
 
+test('prepareLeaderboard includes aged listing-qualified employers and still caps one-listing scores', () => {
+  const old = '2024-01-15T00:00:00.000Z';
+  const fresh = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const rows = prepareLeaderboard(
+    [
+      {
+        name_raw: 'Acme Staffing',
+        ghost_score: 88,
+        total_listings_tracked: 12,
+        total_reports: 0,
+        created_at: old,
+      },
+      {
+        name_raw: 'One Shot LLC',
+        ghost_score: 100,
+        total_listings_tracked: 1,
+        total_reports: 0,
+        created_at: old,
+      },
+      {
+        name_raw: 'Bravo Health',
+        ghost_score: 71,
+        total_listings_tracked: 5,
+        total_reports: 1,
+        created_at: old,
+      },
+      {
+        name_raw: 'Thin High Score',
+        ghost_score: 100,
+        total_listings_tracked: 1,
+        total_reports: 3,
+        created_at: old,
+      },
+      {
+        name_raw: 'Charlie Group',
+        ghost_score: 64,
+        total_listings_tracked: 40,
+        total_reports: 0,
+        created_at: old,
+      },
+      {
+        name_raw: 'Brand New Co',
+        ghost_score: 99,
+        total_listings_tracked: 20,
+        total_reports: 0,
+        created_at: fresh,
+      },
+    ],
+    'ghost_score',
+    false
+  );
+
+  assert.deepEqual(
+    rows.map((row) => [row.name_raw, row.ghost_score, row.total_listings_tracked]),
+    [
+      ['Acme Staffing', 88, 12],
+      ['Thin High Score', 74, 1],
+      ['Bravo Health', 71, 5],
+      ['Charlie Group', 64, 40],
+    ]
+  );
+  assert.ok(rows.every((row) => row.name_raw !== 'One Shot LLC'));
+  assert.ok(rows.every((row) => row.name_raw !== 'Brand New Co'));
+  assert.ok(rows.find((row) => row.name_raw === 'Thin High Score')!.ghost_score < 100);
+
+  const aged = {
+    name_raw: 'Indexed LLC',
+    ghost_score: 80,
+    total_listings_tracked: 6,
+    total_reports: 0,
+    created_at: old,
+  };
+  assert.equal(isEligibleEmployer(aged, 0), true);
+  assert.equal(isEligibleEmployer(aged, 1890), true);
+  assert.equal(
+    [aged, { ...aged, name_raw: 'Indexed Two' }, { ...aged, name_raw: 'Indexed Three' }].filter(
+      isEligibleEmployer
+    ).length,
+    3
+  );
+});
+
 test('reports without a listing id do not count as distinct reporters', () => {
   const summary = distinctListingReporters([
     { anonymous_user_hash: 'a', listing_id: null, created_at: '2026-01-01T00:00:00Z' },
