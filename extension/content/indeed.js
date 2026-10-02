@@ -689,7 +689,7 @@ async function parseIndeedListing() {
   }));
 
   if (data.daysOpen == null) {
-    console.warn('[SkipThisJob] ⚠️  STILL NO DATE after all attempts (detail + identity mosaic + json-ld + cache). This job will get +15 unknown age penalty.');
+    console.warn('[SkipThisJob] unparsed posting age — date selectors missed. Not scoring an age penalty.');
   }
 
   return data;
@@ -777,12 +777,14 @@ function scoreLocally(listing) {
       afterShared: function (score, signals, ctx) {
         const activelyReviewing = ctx && ctx.activelyReviewing;
 
-        if (listing.employerResponsive) {
+        if (listing.employerResponsive === true) {
           score -= 5;
           signals.push('✓ Employer responds quickly');
-        } else {
+        } else if (listing.employerResponsive === false) {
           score += 8;
           signals.push('No employer response data');
+        } else {
+          signals.push('Employer response unknown');
         }
 
         if (listing.appliesOffsite) {
@@ -802,7 +804,8 @@ function scoreLocally(listing) {
           }
         }
 
-        if (listing.description && listing.descriptionLength < 280) {
+        const descText = typeof listing.description === 'string' ? listing.description.trim() : '';
+        if (descText && descText.length < 280) {
           score += 5;
           signals.push('Very short job description');
         }
@@ -813,7 +816,7 @@ function scoreLocally(listing) {
         }
 
         const isOld = listing.daysOpen >= 14;
-        const missingBasics = !listing.salaryListed && !listing.employerResponsive && !activelyReviewing;
+        const missingBasics = listing.salaryListed === false && listing.employerResponsive === false && !activelyReviewing;
         if (isOld && missingBasics) {
           score += 24;
           signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
@@ -823,7 +826,7 @@ function scoreLocally(listing) {
           signals.push('30+ days old with no active review signals — very low chance');
         }
         if (listing.daysOpen >= 30 && !activelyReviewing &&
-            !listing.employerResponsive && !listing.salaryListed) {
+            listing.employerResponsive === false && listing.salaryListed === false) {
           score += 12;
           signals.push('🚩 Stale listing: old, no engagement, no salary — classic dead end');
         }
@@ -1240,7 +1243,11 @@ async function processCurrentListingInner(vjk) {
 
   const listing = await parseIndeedListing();
   if (!listing.title || !listing.companyName) {
-    console.log('[SkipThisJob] Could not parse Indeed listing, will retry');
+    const health = STJ.selectorHealth
+      ? STJ.selectorHealth(listing, { platform: 'indeed', require: ['title', 'companyName'] })
+      : { missing: ['title', 'companyName'], state: 'unparsed' };
+    if (STJ.logUnparsed) STJ.logUnparsed('indeed', health);
+    else console.warn('[SkipThisJob] unparsed indeed — title, companyName. Not scoring.');
     lastVjk = null; // do not latch a failed parse; poll retries every 1.5s
     return;
   }
@@ -1317,6 +1324,41 @@ if (STJ.installPopupBridge) {
   STJ.installPopupBridge(() => lastPublishedScore);
 }
 
+function parseIndeedCard(card) {
+  if (!card || !card.querySelector) return null;
+  const titleEl = card.querySelector(
+    'h2.jobTitle a, [data-testid="jobTitle"], a.jcs-JobTitle, h2.jobTitle span'
+  );
+  const title = (titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
+  const jk = (card.getAttribute && (card.getAttribute('data-jk') || card.getAttribute('data-job-id'))) ||
+    (card.closest && card.closest('[data-jk]') && card.closest('[data-jk]').getAttribute('data-jk'));
+  if (!title || title.length < 3) {
+    if (jk && STJ.logUnparsedCard) STJ.logUnparsedCard('indeed', 'title selector missed');
+    return null;
+  }
+  const companyEl = card.querySelector(
+    '[data-testid="company-name"], .companyName, [data-testid="companyName"]'
+  );
+  const dateEl = card.querySelector(
+    '[data-testid="myJobsStateDate"], .date, span.date'
+  );
+  const text = ((card.innerText || card.textContent) || '').toLowerCase();
+  return {
+    title,
+    companyName: companyEl ? companyEl.textContent.trim() : null,
+    platformJobId: jk || null,
+    daysOpen: STJ.daysOpenFromCard
+      ? STJ.daysOpenFromCard(card, dateEl, text)
+      : (STJ.parseRelativeDays ? STJ.parseRelativeDays(dateEl ? dateEl.textContent : text) : null),
+    isRepost: /repost/.test(text),
+    salaryListed: /\$\d/.test(text) ? true : undefined,
+    applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,
+    engagementSignals: /actively reviewing|reviewing applicants/.test(text)
+      ? ['actively_reviewing'] : [],
+    platform: 'indeed',
+  };
+}
+
 function startIndeedListBadges() {
   if (!STJ.watchListBadges) return;
   STJ.watchListBadges({
@@ -1326,36 +1368,7 @@ function startIndeedListBadges() {
         '.job_seen_beacon, div[data-jk], .resultContent, .jobsearch-ResultsList > li'
       );
     },
-    parseCard(card) {
-      const titleEl = card.querySelector(
-        'h2.jobTitle a, [data-testid="jobTitle"], a.jcs-JobTitle, h2.jobTitle span'
-      );
-      const title = (titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!title || title.length < 3) return null;
-      const companyEl = card.querySelector(
-        '[data-testid="company-name"], .companyName, [data-testid="companyName"]'
-      );
-      const dateEl = card.querySelector(
-        '[data-testid="myJobsStateDate"], .date, span.date'
-      );
-      const text = (card.innerText || '').toLowerCase();
-      const jk = (card.getAttribute && (card.getAttribute('data-jk') || card.getAttribute('data-job-id'))) ||
-        (card.closest && card.closest('[data-jk]') && card.closest('[data-jk]').getAttribute('data-jk'));
-      return {
-        title,
-        companyName: companyEl ? companyEl.textContent.trim() : null,
-        platformJobId: jk || null,
-        daysOpen: STJ.daysOpenFromCard
-          ? STJ.daysOpenFromCard(card, dateEl, text)
-          : (STJ.parseRelativeDays ? STJ.parseRelativeDays(dateEl ? dateEl.textContent : text) : null),
-        isRepost: /repost/.test(text),
-        salaryListed: /\$\d/.test(text) ? true : undefined,
-        applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,
-        engagementSignals: /actively reviewing|reviewing applicants/.test(text)
-          ? ['actively_reviewing'] : [],
-        platform: 'indeed',
-      };
-    },
+    parseCard: parseIndeedCard,
     anchor(card) {
       return card.querySelector('h2.jobTitle, [data-testid="jobTitle"], a.jcs-JobTitle') || card;
     },

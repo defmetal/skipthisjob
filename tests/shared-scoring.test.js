@@ -422,6 +422,99 @@ test('Indeed shared path keeps a typical 7-day role low and still floors 60d', (
   assert.ok(stale.score >= 50, 'Indeed 60-day must honor age floor, got ' + stale.score);
 });
 
+test('absent fields add 0 and show unknown instead of a penalty', () => {
+  const long = 'A'.repeat(600);
+  const opts = { vagueness: 0.2 };
+
+  const indeedKnown = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: 7, salaryListed: true, description: long,
+  }, { platform: 'indeed', ...opts });
+  const linkedinKnown = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: 7, salaryListed: true, description: long,
+  }, { platform: 'linkedin', ...opts });
+  assert.equal(indeedKnown.score, 4, 'Indeed 7-day with salary and a loaded description');
+  assert.equal(linkedinKnown.score, indeedKnown.score, 'Indeed job-page baseline must not add points');
+
+  const unknownAge = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: null, salaryListed: true, description: long,
+  }, { platform: 'indeed', ...opts });
+  assert.equal(unknownAge.score, 0);
+  assert.equal(indeedKnown.score - unknownAge.score, 4, 'unknown age must not add 15');
+  assert.ok(unknownAge.signals.some(s => /posting age unknown/i.test(s)));
+  assert.equal(shared.ageContribution(null, { noteUnknown: true, unknownPenalty: 15 }).delta, 0);
+
+  const missingDesc = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: 7, salaryListed: true, description: null,
+  }, { platform: 'indeed' });
+  const missingDescLi = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: 7, salaryListed: true, description: null,
+  }, { platform: 'linkedin' });
+  assert.equal(missingDesc.score, indeedKnown.score, 'missing Indeed description must not add 7');
+  assert.equal(missingDescLi.score, linkedinKnown.score, 'missing LinkedIn description must not add 12');
+  assert.ok(missingDesc.signals.some(s => /job description unknown/i.test(s)));
+  assert.ok(missingDescLi.signals.some(s => /job description unknown/i.test(s)));
+  assert.ok(!missingDesc.signals.some(s => /no description available|very short/i.test(s)));
+
+  const blank = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: null, description: '   ', salaryListed: null,
+  }, { platform: 'indeed' });
+  assert.equal(blank.score, 0);
+  assert.ok(blank.signals.some(s => /salary unknown/i.test(s)));
+  assert.ok(blank.signals.some(s => /posting age unknown/i.test(s)));
+  assert.ok(blank.signals.some(s => /job description unknown/i.test(s)));
+
+  const noSalary = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: 7, salaryListed: false, description: long,
+  }, { platform: 'indeed', ...opts });
+  assert.equal(noSalary.score, indeedKnown.score + 5);
+  assert.ok(noSalary.signals.some(s => /no salary listed/i.test(s)));
+
+  const short = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: 7, salaryListed: true, description: 'Short listing copy.',
+  }, { platform: 'linkedin' });
+  assert.equal(short.score, linkedinKnown.score + 12);
+  assert.ok(short.signals.some(s => /very short job description/i.test(s)));
+
+  const vague = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: 7, salaryListed: true, description: long,
+  }, { platform: 'linkedin', vagueness: 0.8 });
+  assert.ok(vague.score > linkedinKnown.score);
+  assert.ok(vague.signals.some(s => /vague or generic description/i.test(s)));
+
+  const repost = shared.scoreListingSignals({
+    title: 'Engineer', daysOpen: 7, salaryListed: true, description: long, isRepost: true,
+  }, { platform: 'indeed', ...opts });
+  assert.ok(repost.score > indeedKnown.score);
+  assert.ok(repost.signals.some(s => /repost/i.test(s)));
+});
+
+test('selector health logs unparsed and does not score', () => {
+  const warnings = [];
+  const orig = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(' ')); };
+  let scored = false;
+  try {
+    const gated = shared.scoreParsedListing(
+      { title: 'Offres d\'emploi', companyName: null, daysOpen: null, description: null },
+      () => { scored = true; return { score: 40, signals: [] }; },
+      { platform: 'indeed', require: ['title', 'companyName'] }
+    );
+    assert.equal(gated.state, 'unparsed');
+    assert.equal(gated.score, null);
+    assert.equal(scored, false);
+    const ok = shared.scoreParsedListing(
+      { title: 'Engineer', companyName: 'Acme' },
+      () => ({ score: 4, signals: ['Open 7 days'] }),
+      { platform: 'linkedin' }
+    );
+    assert.equal(ok.state, 'parsed');
+    assert.equal(ok.score, 4);
+  } finally {
+    console.warn = orig;
+  }
+  assert.ok(warnings.some(w => /unparsed indeed/i.test(w) && /not scoring/i.test(w)));
+});
+
 test('fresh 3-day role stays Worth Applying', () => {
   const fresh = shared.scoreListingSignals({
     title: 'Engineer',

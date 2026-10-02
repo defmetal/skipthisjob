@@ -96,6 +96,32 @@
     .access-banner button[disabled] { opacity: .6; cursor: default; }
     .access-banner .access-msg { margin-top: 6px; font-size: 12px; }
     .score-signals li::before { content: "\2022\00a0"; color: #999; }
+    .dim-control {
+      margin-bottom: 12px;
+      padding: 10px;
+      background: #f5f5f5;
+      border-radius: 6px;
+    }
+    .dim-control label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .dim-control select {
+      width: 100%;
+      font-size: 13px;
+      padding: 6px 8px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #fff;
+    }
+    .dim-note {
+      margin-top: 6px;
+      font-size: 11px;
+      color: #777;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -119,6 +145,15 @@
     </div>
     <div class="hint">
       Not seeing scores? Open an actual job listing (search-result cards now show a preview badge too).
+    </div>
+    <div class="dim-control">
+      <label for="stj-dim">Dim risky results</label>
+      <select id="stj-dim">
+        <option value="off">Off</option>
+        <option value="75">Dim Skip This Job (75+)</option>
+        <option value="55">Dim 55+</option>
+      </select>
+      <p class="dim-note">Lowers opacity on matching LinkedIn and Indeed search results. Listings stay on the page.</p>
     </div>
   </div>
 

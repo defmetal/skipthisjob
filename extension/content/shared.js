@@ -185,17 +185,15 @@
   /**
    * Additive age points. Caps around 25 at 90d (matches the documented
    * 0.1.x comment). Recency credit is negative in the first 48 hours.
+   * Unknown age is 0 — a date the page never rendered is not evidence.
    */
   function ageContribution(daysOpen, opts) {
     const options = opts || {};
     let delta = 0;
     const signals = [];
     if (daysOpen == null || Number.isNaN(Number(daysOpen))) {
-      if (options.unknownPenalty) {
-        delta = options.unknownPenalty;
-        signals.push('Posting age unknown');
-      }
-      return { delta: delta, signals: signals };
+      if (options.noteUnknown) signals.push('Posting age unknown');
+      return { delta: 0, signals: signals };
     }
     const days = Number(daysOpen);
     const recency = options.recencyCredit != null ? options.recencyCredit : 10;
@@ -345,9 +343,13 @@
 
   /**
    * Shared listing heuristic used by LinkedIn, Indeed, and SERP badges.
-   * `preview: true` skips missing-field penalties cards cannot observe
-   * (description / hiring contact) so badges stay in the same band as
-   * detail for the signals they share (age, repost, applicants, salary).
+   * `preview: true` skips fields a card cannot observe.
+   *
+   * 0.2.4: a field that is absent or unparsed adds 0 and, on the detail
+   * overlay, an "unknown" chip. Short or vague copy still adds risk when
+   * the description text is actually present. Age floors, reposts,
+   * applicants, and salaryListed === false (page loaded with no salary)
+   * stay.
    */
   function scoreListingSignals(listing, opts) {
     const options = opts || {};
@@ -358,12 +360,8 @@
     const signals = [];
     let score = 0;
 
-    if (!preview && platform === 'indeed') {
-      score += 10;
-    }
-
     const age = ageContribution(row.daysOpen, {
-      unknownPenalty: !preview && platform === 'indeed' ? 15 : 0,
+      noteUnknown: !preview,
       recencyCredit: platform === 'indeed' ? 8 : (preview ? 8 : 10),
       isHighTurnover: isHighTurnover,
     });
@@ -386,9 +384,11 @@
     if (preview) {
       if (row.salaryListed === false) score += 4;
       else if (row.salaryListed === true) score -= 2;
-    } else if (!row.salaryListed) {
+    } else if (row.salaryListed === false) {
       score += 5;
       signals.push('No salary listed');
+    } else if (row.salaryListed !== true) {
+      signals.push('Salary unknown');
     }
 
     if (row.isThirdParty) {
@@ -396,22 +396,20 @@
       signals.push(preview ? 'Staffing / aggregator' : 'Middleman — staffing agency or job board');
     }
 
-    if (!preview && platform === 'linkedin') {
-      if (!row.description || row.description.length < 200) {
+    const descText = typeof row.description === 'string' ? row.description.trim() : '';
+    if (!preview && !descText) {
+      signals.push('Job description unknown');
+    } else if (!preview && platform === 'linkedin') {
+      if (descText.length < 200) {
         score += 12;
-        signals.push('No or very weak job description');
-      } else if (row.description.length < 500) {
+        signals.push('Very short job description');
+      } else if (descText.length < 500) {
         score += 6;
         signals.push('Short or limited job description');
       }
     }
 
-    if (!preview && platform === 'indeed' && !row.description) {
-      score += 7;
-      signals.push('No description available');
-    }
-
-    if (!preview && row.description && options.vagueness != null) {
+    if (!preview && descText && options.vagueness != null) {
       const desc = applyDescriptionQuality(score, signals, options.vagueness, {
         vagueHigh: platform === 'indeed' ? 11 : 12,
         vagueMid: platform === 'indeed' ? 6 : 7,
@@ -1157,6 +1155,139 @@
     });
   }
 
+  // --- Parse health ------------------------------------------------------
+  // Required identity missing means the selectors drifted or the page is
+  // in a language/layout we cannot read. Log unparsed and do not score.
+
+  function selectorHealth(parsed, opts) {
+    const options = opts || {};
+    const row = parsed || {};
+    const require = options.require || ['title', 'companyName'];
+    const missing = [];
+    for (let i = 0; i < require.length; i++) {
+      const key = require[i];
+      const val = row[key];
+      if (val == null || (typeof val === 'string' && !String(val).trim())) missing.push(key);
+    }
+    return {
+      state: missing.length ? 'unparsed' : 'parsed',
+      missing: missing,
+      platform: options.platform || null,
+    };
+  }
+
+  function logUnparsed(platform, health) {
+    const missing = health && health.missing && health.missing.length
+      ? health.missing.join(', ')
+      : 'required selectors';
+    const where = platform || (health && health.platform) || 'listing';
+    console.warn('[SkipThisJob] unparsed ' + where + ' — ' + missing + '. Not scoring.');
+  }
+
+  const unparsedCardLogged = {};
+
+  function logUnparsedCard(platform, reason) {
+    const key = platform || 'list';
+    if (unparsedCardLogged[key]) return;
+    unparsedCardLogged[key] = true;
+    console.warn('[SkipThisJob] unparsed ' + key + ' list card — ' + (reason || 'selectors missed') + '. Not scoring.');
+  }
+
+  function scoreParsedListing(listing, scoreFn, opts) {
+    const options = opts || {};
+    const health = selectorHealth(listing, options);
+    if (health.state !== 'parsed') {
+      logUnparsed(options.platform || health.platform, health);
+      return {
+        state: 'unparsed',
+        missing: health.missing,
+        score: null,
+        signals: ['unparsed'],
+        result: null,
+      };
+    }
+    const result = typeof scoreFn === 'function' ? scoreFn(listing) : null;
+    return {
+      state: 'parsed',
+      missing: [],
+      score: result ? result.score : null,
+      signals: result ? result.signals : [],
+      result: result,
+    };
+  }
+
+  // --- Dim risky list rows ----------------------------------------------
+  // Opacity only. Never remove or collapse nodes: LinkedIn's results list
+  // is React-managed and virtualized.
+
+  const DIM_STORAGE_KEY = 'stjDimRisky';
+  let dimThreshold = 0;
+  let dimListenerBound = false;
+  let listRescan = null;
+
+  function dimThresholdFromSetting(value) {
+    if (value === 75 || value === '75') return 75;
+    if (value === 55 || value === '55') return 55;
+    return 0;
+  }
+
+  function applyListDim(card, score, threshold) {
+    if (!card || !card.classList) return card;
+    const limit = dimThresholdFromSetting(threshold);
+    const on = limit > 0 && score != null && !Number.isNaN(Number(score)) && Number(score) >= limit;
+    card.classList.toggle('stj-dimmed', on);
+    if (on) {
+      if (card.setAttribute) card.setAttribute('data-stj-dim', String(limit));
+    } else if (card.removeAttribute) {
+      card.removeAttribute('data-stj-dim');
+    }
+    return card;
+  }
+
+  function loadDimThreshold(done) {
+    let settled = false;
+    const apply = function (value) {
+      dimThreshold = dimThresholdFromSetting(value);
+      const first = !settled;
+      settled = true;
+      if (first || done) {
+        if (done) done();
+      }
+    };
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local || !chrome.storage.local.get) {
+        apply('off');
+        return;
+      }
+      chrome.storage.local.get(DIM_STORAGE_KEY, function (res) {
+        let value = 'off';
+        try {
+          if (!(chrome.runtime && chrome.runtime.lastError) && res) value = res[DIM_STORAGE_KEY];
+        } catch (e) { /* ignore */ }
+        apply(value);
+      });
+      // Don't wait on storage to paint badges. A late read re-scans once.
+      setTimeout(function () {
+        if (!settled) apply('off');
+      }, 250);
+    } catch (e) {
+      apply('off');
+    }
+  }
+
+  function bindDimListener() {
+    if (dimListenerBound) return;
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.onChanged) return;
+      chrome.storage.onChanged.addListener(function (changes, area) {
+        if (area !== 'local' || !changes || !changes[DIM_STORAGE_KEY]) return;
+        dimThreshold = dimThresholdFromSetting(changes[DIM_STORAGE_KEY].newValue);
+        if (listRescan) listRescan();
+      });
+      dimListenerBound = true;
+    } catch (e) { /* orphaned extension context */ }
+  }
+
   // --- List badges -------------------------------------------------------
 
   function badgeHtml(result) {
@@ -1340,12 +1471,16 @@
           anchor = card;
         }
         injectListBadge(card, resolved.result, anchor);
+        applyListDim(card, resolved.result.score, dimThreshold);
       }
     };
     const schedule = function () {
       if (timer) clearTimeout(timer);
       timer = setTimeout(scan, options.debounceMs || 450);
     };
+    listRescan = schedule;
+    bindDimListener();
+    loadDimThreshold(schedule);
     let root = document.body;
     if (options.listRootSelector) {
       const found = document.querySelector(options.listRootSelector);
@@ -1353,7 +1488,6 @@
     }
     const observer = new MutationObserver(schedule);
     observer.observe(root, { childList: true, subtree: true });
-    schedule();
     return observer;
   }
 
@@ -1397,6 +1531,13 @@
   api.applyLowIntentTax = applyLowIntentTax;
   api.scoreListingSignals = scoreListingSignals;
   api.scoreListPreview = scoreListPreview;
+  api.selectorHealth = selectorHealth;
+  api.logUnparsed = logUnparsed;
+  api.logUnparsedCard = logUnparsedCard;
+  api.scoreParsedListing = scoreParsedListing;
+  api.DIM_STORAGE_KEY = DIM_STORAGE_KEY;
+  api.dimThresholdFromSetting = dimThresholdFromSetting;
+  api.applyListDim = applyListDim;
   api.parseRelativeDays = parseRelativeDays;
   api.parseLinkedInPostedAge = parseLinkedInPostedAge;
   api.normalizeAgeText = normalizeAgeText;

@@ -229,3 +229,9 @@
 .stj-list-badge--moderate { background: #fff3e0; color: #e65100; }
 .stj-list-badge--high { background: #fce4ec; color: #c62828; }
 .stj-list-badge--very_high { background: #f3e5f5; color: #6a1b9a; }
+
+/* Dim a risky result in place. Do not remove or collapse the node —
+   LinkedIn's list is React-managed. */
+.stj-dimmed {
+  opacity: 0.38 !important;
+}
