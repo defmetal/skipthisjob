@@ -129,13 +129,11 @@ export function bandNameForScore(score: number): string {
 }
 
 export function leaderboardMinimumNote(): string {
-  return (
-    `Only employers with at least ${MIN_LISTINGS_FOR_LEADERBOARD} tracked listings ` +
-    `or ${MIN_COMMUNITY_REPORTS_FOR_LEADERBOARD} community reports are listed. ` +
-    `Scores from fewer than ${MIN_LISTINGS_FOR_LEADERBOARD} listings are capped, ` +
-    `so a single posting cannot show as 100. Personal names with only a few listings, ` +
-    `and empty, very short, or numeric names, are left off.`
-  );
+  // One string literal on purpose. Next's production server compiler
+  // constant-folds multi-argument String#concat and drops every argument
+  // after the first, which deleted the words around these numbers when the
+  // sentence was built from concatenated templates.
+  return 'Only employers with at least 5 tracked listings or 3 community reports are listed. Scores from fewer than 5 listings are capped, so a single posting cannot show as 100. Personal names with only a few listings, and empty, very short, or numeric names, are left off.';
 }
 
 export function confidenceLabel(listings: number, reports: number): string {

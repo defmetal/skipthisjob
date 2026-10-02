@@ -196,9 +196,13 @@ test('confidence copy pluralizes, and the page note states the minimum', () => {
   assert.equal(confidenceLabel(1, 0), 'Based on 1 listing, 0 reports');
   assert.equal(confidenceLabel(5, 3), 'Based on 5 listings, 3 reports');
   const note = leaderboardMinimumNote();
-  assert.match(note, /5 tracked listings/);
-  assert.match(note, /3 community reports/);
+  assert.match(note, new RegExp(`${MIN_LISTINGS_FOR_LEADERBOARD} tracked listings`));
+  assert.match(note, new RegExp(`${MIN_COMMUNITY_REPORTS_FOR_LEADERBOARD} community reports`));
   assert.match(note, /cannot show as 100/);
+  assert.equal(
+    note,
+    'Only employers with at least 5 tracked listings or 3 community reports are listed. Scores from fewer than 5 listings are capped, so a single posting cannot show as 100. Personal names with only a few listings, and empty, very short, or numeric names, are left off.'
+  );
 });
 
 test('display bands stay on the extension boundaries', () => {
