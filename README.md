@@ -107,6 +107,10 @@ skipthisjob/
 
 Combined = (Listing heuristic x 0.4) + (Employer score x 0.6). If no employer data: 100% heuristic.
 
+Fields the page did not load add **0** and show as "unknown" on the overlay (posting age, job description, salary when that block was not read). A short or vague description adds risk only when that text is actually present. Known age, reposts, applicant counts, and a listing that clearly loaded with no salary still count. There is no Indeed job-page baseline.
+
+Search results can dim listings at or above a threshold (off by default; Skip This Job at 75+, or 55+). The control is in the extension popup and stored in `chrome.storage.local`. Rows stay in the DOM at reduced opacity.
+
 ## Setup
 
 ### Supabase

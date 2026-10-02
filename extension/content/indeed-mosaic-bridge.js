@@ -65,10 +65,124 @@
     }
   }
 
+  function textFromHtml(html) {
+    return String(html || '')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 20000);
+  }
+
+  function descriptionText(desc) {
+    if (!desc) return '';
+    if (typeof desc === 'string') return textFromHtml(desc);
+    if (typeof desc === 'object') return textFromHtml(desc.content || desc.html || desc.text || '');
+    return '';
+  }
+
+  function salaryTextFrom(header, model) {
+    const candidates = [];
+    if (header) candidates.push(header.salaryText, header.salary, header.extractedSalary);
+    if (model) candidates.push(model.salary, model.extractedSalary);
+    const meta = model && model.jobMetadataHeaderModel;
+    if (meta) candidates.push(meta.salary, meta.salaryText);
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      if (!c) continue;
+      if (typeof c === 'string' && c.trim()) return c.trim().slice(0, 200);
+      if (typeof c === 'object') {
+        const t = c.text || c.salaryText || c.display || '';
+        if (t) return String(t).trim().slice(0, 200);
+      }
+    }
+    return '';
+  }
+
+  function jobInfoFrom(node) {
+    if (!node || typeof node !== 'object') return null;
+    const wrapped = node.jobInfoWrapperModel &&
+      (node.jobInfoWrapperModel.jobInfoModel || node.jobInfoWrapperModel);
+    const model = wrapped || node.jobInfoModel || node;
+    if (!model || typeof model !== 'object') return null;
+    const header = model.jobInfoHeaderModel || model.header || null;
+    const title = header && (header.jobTitle || header.title);
+    const company = header && (header.companyName || header.company);
+    if (!title && !company && !model.sanitizedJobDescription && !model.jobDescription) return null;
+    return { model: model, header: header || {} };
+  }
+
+  // Standalone /viewjob does not publish window.mosaic. The posting lives
+  // in window._rootProps.preloadedVJData (older pages: window._initialData).
+  // The isolated content script cannot see those globals.
+  function readViewJob() {
+    const blobs = [];
+    try {
+      const root = window._rootProps;
+      if (root && typeof root === 'object') {
+        if (root.preloadedVJData && typeof root.preloadedVJData === 'object') blobs.push(root.preloadedVJData);
+        blobs.push(root);
+      }
+    } catch (e) {}
+    try {
+      const initial = window._initialData;
+      if (initial && typeof initial === 'object') blobs.push(initial);
+    } catch (e) {}
+
+    for (let i = 0; i < blobs.length; i++) {
+      const found = jobInfoFrom(blobs[i]);
+      if (!found) continue;
+      const header = found.header;
+      const model = found.model;
+      const jobkey = String(header.jobKey || header.jobkey || model.jobKey || model.jobkey || '');
+      const relative = header.formattedRelativeTime || header.relativeTime || model.formattedRelativeTime || '';
+      const posted = header.datePosted || model.datePosted || null;
+      return {
+        jobkey: jobkey,
+        title: String(header.jobTitle || header.title || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+        company: String(header.companyName || header.company || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+        location: String(header.formattedLocation || header.location || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+        description: descriptionText(model.sanitizedJobDescription || model.jobDescription),
+        salaryText: salaryTextFrom(header, model),
+        formattedRelativeTime: String(relative || '').slice(0, 80),
+        datePosted: typeof posted === 'string' ? posted : null,
+      };
+    }
+    return null;
+  }
+
+  function viewJobRow(viewJob) {
+    if (!viewJob || !viewJob.jobkey) return null;
+    return {
+      jobkey: viewJob.jobkey,
+      displayTitle: viewJob.title || '',
+      title: viewJob.title || '',
+      company: viewJob.company || '',
+      pubDate: viewJob.datePosted || null,
+      formattedRelativeTime: viewJob.formattedRelativeTime || '',
+      salarySnippet: { text: viewJob.salaryText || '' },
+    };
+  }
+
   function buildSnapshot() {
+    const viewJob = readViewJob();
     const mosaic = window.mosaic;
     const providerData = mosaic && mosaic.providerData;
-    if (!providerData || typeof providerData !== 'object') return null;
+    if (!providerData || typeof providerData !== 'object') {
+      if (!viewJob || (!viewJob.title && !viewJob.company)) return null;
+      const row = viewJobRow(viewJob);
+      return {
+        ts: Date.now(),
+        url: location.href,
+        providers: {},
+        jobs: row ? [row] : [],
+        jobDetailsSectionText: '',
+        viewJob: viewJob,
+      };
+    }
 
     const providers = {};
     const flat = [];
@@ -118,6 +232,9 @@
       for (const job of deep) addJob(job, '_deep');
     }
 
+    const viewRow = viewJobRow(viewJob);
+    if (viewRow) addJob(viewRow, '_viewjob');
+
     // Right-pane (vjk=) detail views keep the human-readable posting date
     // inside the job-details insights provider rather than in pubDate.
     let jobDetailsSectionText = '';
@@ -131,7 +248,7 @@
       }
     } catch (e) {}
 
-    if (Object.keys(providers).length === 0 && flat.length === 0 && !jobDetailsSectionText) {
+    if (Object.keys(providers).length === 0 && flat.length === 0 && !jobDetailsSectionText && !viewJob) {
       return null;
     }
 
@@ -141,6 +258,7 @@
       providers: providers,
       jobs: flat,
       jobDetailsSectionText: jobDetailsSectionText,
+      viewJob: viewJob,
     };
   }
 
@@ -166,10 +284,14 @@
       const json = JSON.stringify(snap);
       // Skip the providers/section payload comparison cost: only the ts/url
       // change every tick, so compare everything except ts.
+      const viewKey = snap.viewJob
+        ? (snap.viewJob.jobkey + '|' + snap.viewJob.title + '|' + snap.viewJob.company)
+        : '';
       const fingerprint =
         json.length + '|' + snap.url + '|' + JSON.stringify(snap.providers).length +
         '|' + (snap.jobs ? snap.jobs.length : 0) +
-        '|' + snap.jobDetailsSectionText.length;
+        '|' + snap.jobDetailsSectionText.length +
+        '|' + viewKey;
       if (fingerprint === lastWritten) return;
       const node = getNode();
       if (!node) return;

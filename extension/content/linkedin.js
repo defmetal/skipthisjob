@@ -107,6 +107,9 @@ function stampListBadgeForCurrentJob(listing, result) {
 }
 
 function parseLinkedInListing() {
+  if (typeof document === 'undefined' || !document.querySelector) {
+    return { title: null, companyName: null, daysOpen: null, description: null, salaryListed: null };
+  }
   const data = {
     title: null,
     companyName: null,
@@ -119,7 +122,7 @@ function parseLinkedInListing() {
     description: null,
     seniorityLevel: null,
     platformJobId: null,
-    listingUrl: window.location.href,
+    listingUrl: pageHref(),
     isThirdParty: false,        // posted by staffing agency / job board
     noResponseData: false,      // LinkedIn says "no response insights"
     responseManagedOffsite: false, // "responses managed off LinkedIn"
@@ -205,12 +208,12 @@ function parseLinkedInListing() {
       if (container.offsetWidth > 500 && container.offsetHeight > 300) break;
     }
     if (container) {
-      detailText = container.innerText.toLowerCase();
+      detailText = (container.innerText || container.textContent || '').toLowerCase();
     }
   }
   // Fallback if we couldn't find a scoped container
-  if (!detailText) {
-    detailText = document.body.innerText.toLowerCase();
+  if (!detailText && document.body) {
+    detailText = (document.body.innerText || document.body.textContent || '').toLowerCase();
     console.log('[GhostDetector] Warning: using full page text, scores may be inaccurate');
   }
 
@@ -355,7 +358,7 @@ function parseLinkedInListing() {
   // 0.1.8 - Parse top-level job attribute tags (salary bubble, Remote, Full-time, etc.)
   // LinkedIn shows these in a row of tags near the top of the job card.
   const topAttributeArea = document.querySelector('._81f0ce2b, [data-testid*="job-attribute"]') || document.body;
-  const attributeText = topAttributeArea.textContent.toLowerCase();
+  const attributeText = (topAttributeArea && topAttributeArea.textContent || '').toLowerCase();
 
   // Salary from the top structured tags (the "bubble")
   if (!data.salaryListed) {
@@ -436,9 +439,10 @@ function parseLinkedInListing() {
   else if (detailText.includes('executive')) data.seniorityLevel = 'c_suite';
 
   // Job ID from URL
+  const href = pageHref();
   data.platformJobId = STJ.extractLinkedInJobId
-    ? STJ.extractLinkedInJobId(window.location.href)
-    : ((window.location.href.match(/currentJobId=(\d+)/) || window.location.href.match(/\/jobs\/view\/(\d+)/)) || [])[1] || null;
+    ? STJ.extractLinkedInJobId(href)
+    : ((href.match(/currentJobId=(\d+)/) || href.match(/\/jobs\/view\/(\d+)/)) || [])[1] || null;
   data.descriptionHash = STJ.hashDescription ? STJ.hashDescription(data.description) : null;
 
   console.log('[GhostDetector] Full parsed data:', JSON.stringify(data, null, 2));
@@ -555,18 +559,22 @@ function scoreLocally(listing) {
       isHighTurnover: isHighTurnover,
       vagueness: vagueness,
       afterShared: function (score, signals) {
-        if (!listing.hiringContactVisible) {
+        if (listing.hiringContactVisible === false) {
           score += 10;
           signals.push('No hiring contact — no one to follow up with');
+        } else if (listing.hiringContactVisible == null) {
+          signals.push('Hiring contact unknown');
         }
         if (listing.noResponseData) {
           score += 8;
           signals.push('No employer response data on LinkedIn');
         }
         const isOld = listing.daysOpen >= 14;
-        const missingBasics = !listing.hiringContactVisible &&
-                              (!listing.description || listing.description.length < 300) &&
-                              !listing.salaryListed;
+        const descText = typeof listing.description === 'string' ? listing.description.trim() : '';
+        const descriptionWeak = descText.length > 0 && descText.length < 300;
+        const missingBasics = listing.hiringContactVisible === false &&
+                              descriptionWeak &&
+                              listing.salaryListed === false;
         if (isOld && missingBasics) {
           score += 20;
           signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
@@ -950,15 +958,24 @@ function injectOverlay(localScore, backendData, listing) {
 // MAIN — robust initialization + MutationObserver
 // ============================================================
 
+function pageHref() {
+  try {
+    return (window.location && window.location.href) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
 function getCurrentJobId() {
-  if (STJ.extractLinkedInJobId) return STJ.extractLinkedInJobId(window.location.href);
-  const match = window.location.href.match(/currentJobId=(\d+)/) ||
-                window.location.href.match(/\/jobs\/view\/(\d+)/);
+  const href = pageHref();
+  if (!href) return null;
+  if (STJ.extractLinkedInJobId) return STJ.extractLinkedInJobId(href);
+  const match = href.match(/currentJobId=(\d+)/) || href.match(/\/jobs\/view\/(\d+)/);
   return match ? match[1] : null;
 }
 
 function isOnJobPage() {
-  const url = window.location.href;
+  const url = pageHref();
   return url.includes('linkedin.com/jobs/') || url.includes('/jobs/view/');
 }
 
@@ -1013,6 +1030,7 @@ function linkedInDialogOpen() {
 }
 
 function syncOverlayWithLinkedInDialogs() {
+  if (typeof document === 'undefined' || !document.getElementById) return;
   const overlay = document.getElementById('ghost-detector-overlay');
   if (!overlay) return;
   const open = linkedInDialogOpen();
@@ -1057,6 +1075,16 @@ async function processCurrentListing() {
 
   isProcessing = true;
   lastProcessedJobId = jobId;
+  try {
+    await runLinkedInListing(jobId);
+  } catch (e) {
+    console.warn('[SkipThisJob] processCurrentListing failed', e);
+    isProcessing = false;
+    lastProcessedJobId = null;
+  }
+}
+
+async function runLinkedInListing(jobId) {
 
   // Adaptive wait — much more reliable than fixed 2s on cold loads
   const contentReady = await waitForLinkedInJobContent();
@@ -1069,7 +1097,11 @@ async function processCurrentListing() {
 
   let listing = parseLinkedInListing();
   if (!listing.title || !listing.companyName) {
-    console.log('[SkipThisJob] Could not parse listing — selectors may need updating');
+    const health = STJ.selectorHealth
+      ? STJ.selectorHealth(listing, { platform: 'linkedin', require: ['title', 'companyName'] })
+      : { missing: ['title', 'companyName'], state: 'unparsed' };
+    if (STJ.logUnparsed) STJ.logUnparsed('linkedin', health);
+    else console.warn('[SkipThisJob] unparsed linkedin — title, companyName. Not scoring.');
     isProcessing = false;
     return;
   }
@@ -1177,6 +1209,50 @@ if (STJ.installPopupBridge) {
   STJ.installPopupBridge(() => lastPublishedScore);
 }
 
+function parseLinkedInCard(card) {
+  if (!card || !card.querySelector) return null;
+  const titleEl = card.querySelector(
+    'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link, strong'
+  );
+  const title = (titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
+  const jobId = card.getAttribute && (card.getAttribute('data-job-id') ||
+    card.getAttribute('data-occludable-job-id')) ||
+    (card.closest && (card.closest('[data-job-id]') || card.closest('[data-occludable-job-id]')));
+  const platformJobId = typeof jobId === 'string'
+    ? jobId
+    : (jobId && jobId.getAttribute
+      ? (jobId.getAttribute('data-job-id') || jobId.getAttribute('data-occludable-job-id'))
+      : null);
+  if (!title || title.length < 3) {
+    if (platformJobId && STJ.logUnparsedCard) STJ.logUnparsedCard('linkedin', 'title selector missed');
+    return null;
+  }
+  const companyEl = card.querySelector(
+    '.job-card-container__primary-description, .artdeco-entity-lockup__subtitle, .job-card-container__company-name'
+  );
+  const dateEl = card.querySelector(
+    'time, .job-card-container__listed-time, .job-card-list__footer-wrapper, .tvm__text'
+  );
+  const text = (card.innerText || card.textContent || '').toLowerCase();
+  const parseAge = STJ.parseLinkedInPostedAge || STJ.parseRelativeDays;
+  return {
+    title,
+    companyName: companyEl ? companyEl.textContent.trim() : null,
+    platformJobId: platformJobId,
+    daysOpen: parseAge && parseAge(text) != null
+      ? parseAge(text)
+      : (STJ.daysOpenFromCard
+        ? STJ.daysOpenFromCard(card, dateEl, text)
+        : null),
+    isRepost: /reposted/.test(text),
+    salaryListed: /\$\d/.test(text) ? true : undefined,
+    applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,
+    easyApply: /easy apply/.test(text),
+    engagementSignals: /actively reviewing/.test(text) ? ['actively_reviewing'] : [],
+    platform: 'linkedin',
+  };
+}
+
 function startLinkedInListBadges() {
   if (!STJ.watchListBadges) return;
   STJ.watchListBadges({
@@ -1186,45 +1262,7 @@ function startLinkedInListBadges() {
         'li.jobs-search-results__list-item, li.scaffold-layout__list-item, .job-card-container, [data-job-id]'
       );
     },
-    parseCard(card) {
-      const titleEl = card.querySelector(
-        'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link, strong'
-      );
-      const title = (titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!title || title.length < 3) return null;
-      const companyEl = card.querySelector(
-        '.job-card-container__primary-description, .artdeco-entity-lockup__subtitle, .job-card-container__company-name'
-      );
-      const dateEl = card.querySelector(
-        'time, .job-card-container__listed-time, .job-card-list__footer-wrapper, .tvm__text'
-      );
-      const text = (card.innerText || card.textContent || '').toLowerCase();
-      const parseAge = STJ.parseLinkedInPostedAge || STJ.parseRelativeDays;
-      const jobId = card.getAttribute && (card.getAttribute('data-job-id') ||
-        card.getAttribute('data-occludable-job-id')) ||
-        (card.closest && (card.closest('[data-job-id]') || card.closest('[data-occludable-job-id]')));
-      const platformJobId = typeof jobId === 'string'
-        ? jobId
-        : (jobId && jobId.getAttribute
-          ? (jobId.getAttribute('data-job-id') || jobId.getAttribute('data-occludable-job-id'))
-          : null);
-      return {
-        title,
-        companyName: companyEl ? companyEl.textContent.trim() : null,
-        platformJobId: platformJobId,
-        daysOpen: parseAge && parseAge(text) != null
-          ? parseAge(text)
-          : (STJ.daysOpenFromCard
-            ? STJ.daysOpenFromCard(card, dateEl, text)
-            : null),
-        isRepost: /reposted/.test(text),
-        salaryListed: /\$\d/.test(text) ? true : undefined,
-        applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,
-        easyApply: /easy apply/.test(text),
-        engagementSignals: /actively reviewing/.test(text) ? ['actively_reviewing'] : [],
-        platform: 'linkedin',
-      };
-    },
+    parseCard: parseLinkedInCard,
     anchor(card) {
       return card.querySelector(
         'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link'
@@ -1241,11 +1279,13 @@ if (isOnJobPage()) {
 startLinkedInListBadges();
 
 // Handle navigation within LinkedIn (SPA)
-let lastObserverUrl = location.href;
+let lastObserverUrl = pageHref();
 _ghostTimers.push(setInterval(() => {
   if (!extensionAlive()) { teardownGhostDetector(); return; }
-  if (location.href !== lastObserverUrl) {
-    lastObserverUrl = location.href;
+  const href = pageHref();
+  if (!href) return;
+  if (href !== lastObserverUrl) {
+    lastObserverUrl = href;
 
     const overlay = document.getElementById('ghost-detector-overlay');
 

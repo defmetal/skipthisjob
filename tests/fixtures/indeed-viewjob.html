@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Staff Engineer | Indeed.com</title>
+</head>
+<body>
+  <!-- Standalone /viewjob shell. Indeed puts the posting in window._rootProps,
+       not in the header selectors the SERP right pane uses. document.title
+       has fewer than three dash segments, so it is not an identity source. -->
+  <div id="viewJobSSRRoot"></div>
+  <script type="application/json" id="stj-viewjob-rootprops">{
+    "preloadedVJData": {
+      "jobInfoWrapperModel": {
+        "jobInfoModel": {
+          "sanitizedJobDescription": "Build C++ services for the payments platform. Reports to the engineering director. Team of 5. Compensation $150,000. Five years of experience with Linux and Python. You will own on-call, review pull requests, and ship features end to end with the Austin office. The stack is C++, Python, and Linux. This description is intentionally long enough that a loaded Indeed description is not treated as missing or as a short-description penalty.",
+          "jobInfoHeaderModel": {
+            "jobKey": "abc123def4567890",
+            "jobTitle": "Staff Engineer",
+            "companyName": "Acme",
+            "formattedLocation": "Austin, TX",
+            "formattedRelativeTime": "Posted 3 days ago",
+            "salaryText": "$140,000 - $160,000 a year"
+          }
+        }
+      }
+    }
+  }</script>
+</body>
+</html>

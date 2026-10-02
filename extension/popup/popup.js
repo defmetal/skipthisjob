@@ -125,6 +125,18 @@
     });
   });
 
+  const dimSelect = document.getElementById('stj-dim');
+  if (dimSelect) {
+    chrome.storage.local.get('stjDimRisky', (res) => {
+      const value = res && res.stjDimRisky;
+      dimSelect.value = value === '75' || value === '55' ? value : 'off';
+    });
+    dimSelect.addEventListener('change', () => {
+      const value = dimSelect.value === '75' || dimSelect.value === '55' ? dimSelect.value : 'off';
+      chrome.storage.local.set({ stjDimRisky: value });
+    });
+  }
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes.stjActiveListing) return;
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {

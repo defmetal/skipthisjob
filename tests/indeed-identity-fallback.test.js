@@ -35,6 +35,19 @@ test('resolveIndeedIdentity: exact jk only (never a neighbor), SERP heading disc
   assert.deepEqual(r.sources, ['mosaic']);
 });
 
+test('resolveIndeedIdentity reads a standalone viewjob model before an ambiguous title', () => {
+  const r = shared.resolveIndeedIdentity({
+    current: {},
+    jobKey: 'abc123def4567890',
+    docTitle: 'Staff Engineer | Indeed.com',
+    viewJob: { title: 'Staff Engineer', company: 'Acme' },
+  });
+  assert.equal(shared.parseIndeedPageTitle('Staff Engineer | Indeed.com'), null);
+  assert.equal(r.title, 'Staff Engineer');
+  assert.equal(r.companyName, 'Acme');
+  assert.ok(r.sources.includes('viewjob'));
+});
+
 test('resolveIndeedIdentity returns nulls when nothing matches', () => {
   const r = shared.resolveIndeedIdentity({ current: {}, jobKey: 'zz', mosaicJobs: [{ jobkey: 'yy', displayTitle: 'x', company: 'y' }] });
   assert.equal(r.title, null);
