@@ -32,19 +32,33 @@
  * 2. Personal-name shape is omitted only when listing evidence is still
  *    few (below the listing minimum): exactly two short capitalized
  *    tokens, and neither token is a company suffix or company descriptor.
- *    Short means 2–12 letters. A token matches Title Case ("Dean") or
- *    ALL CAPS ("DEAN"). Hyphens, apostrophes, accents, a third token
- *    ("John Q. Smith", "Dean Davidson Jr"), or a lowercase name do not
- *    match, and the row is kept. Five or more listings also keep the row:
- *    a person-named company with real volume (the "few listings" guard)
- *    is not treated as an individual.
+ *    Courtesy titles (Dr, Mr, Mrs, Ms, Prof) and single-letter initials
+ *    ("Dean A. Davidson", "Dr Dean Davidson") are dropped before that
+ *    count, so a middle initial does not hide a two-word name. Short
+ *    means 2–12 letters. A token matches Title Case ("Dean") or ALL CAPS
+ *    ("DEAN"). Hyphens, apostrophes, accents, a trailing generation
+ *    suffix ("Dean Davidson Jr", "II"), or a lowercase name do not match,
+ *    and the row is kept. Five or more listings also keep the row.
  *    Known miss: a two-word brand with no suffix and few listings
  *    ("Dollar Tree", "Blue Skies") can be screened out until it has
  *    enough tracked listings or a company token in the name.
+ *
+ * Evidence age: when the leaderboard route supplies created_at, a
+ * listing-qualified employer must be at least MIN_EVIDENCE_AGE_MS old.
+ * When it supplies qualifying_distinct_reporters, report-only eligibility
+ * uses that distinct count (reports tied to a listing) and requires the
+ * oldest such report to be at least MIN_EVIDENCE_AGE_MS old. Callers that
+ * omit those fields keep the count-only check so existing rows still
+ * resolve.
  */
 
 export const MIN_LISTINGS_FOR_LEADERBOARD = 5;
 export const MIN_COMMUNITY_REPORTS_FOR_LEADERBOARD = 3;
+
+/** New employers and new report-only evidence wait this long before listing. */
+export const MIN_EVIDENCE_AGE_MS = 24 * 60 * 60 * 1000;
+
+export { ghostLabelForScore } from './ghostLabel.js';
 
 /** One listing and zero reports cannot display above this. */
 export const SINGLE_LISTING_SCORE_CAP = 59;
@@ -60,6 +74,10 @@ export const THIN_EVIDENCE_SCORE_CEILING = 94;
 
 const SHORT_NAME_TOKEN_MIN = 2;
 const SHORT_NAME_TOKEN_MAX = 12;
+
+const NAME_TITLES = new Set([
+  'dr', 'mr', 'mrs', 'ms', 'miss', 'prof', 'professor', 'sir',
+]);
 
 /**
  * Legal suffixes and words that mark a company rather than a person.
@@ -104,6 +122,16 @@ export interface LeaderboardSourceEmployer {
   total_listings_tracked?: number | string | null;
   glassdoor_rating?: number | string | null;
   glassdoor_url?: string | null;
+  id?: string;
+  created_at?: string | null;
+  /**
+   * When set (including null), listing eligibility uses this timestamp
+   * instead of created_at. Null means the listing age could not be proven.
+   */
+  oldest_listing_at?: string | null;
+  /** Distinct anonymous users whose report is tied to a listing. */
+  qualifying_distinct_reporters?: number;
+  oldest_qualifying_report_at?: string | null;
 }
 
 export interface LeaderboardEmployer {
@@ -133,7 +161,7 @@ export function leaderboardMinimumNote(): string {
   // constant-folds multi-argument String#concat and drops every argument
   // after the first, which deleted the words around these numbers when the
   // sentence was built from concatenated templates.
-  return 'Only employers with at least 5 tracked listings or 3 community reports are listed. Scores from fewer than 5 listings are capped, so a single posting cannot show as 100. Personal names with only a few listings, and empty, very short, or numeric names, are left off.';
+  return 'Only employers with at least 5 tracked listings or 3 community reports from different people are listed. A report counts only when it is tied to a specific listing, and new evidence waits 24 hours before an employer can appear. Scores from fewer than 5 listings are capped, so a single posting cannot show as 100. Personal names with only a few listings, and empty, very short, or numeric names, are left off.';
 }
 
 export function confidenceLabel(listings: number, reports: number): string {
@@ -153,6 +181,60 @@ export function meetsEvidenceMinimum(listings: number, reports: number): boolean
     listings >= MIN_LISTINGS_FOR_LEADERBOARD ||
     reports >= MIN_COMMUNITY_REPORTS_FOR_LEADERBOARD
   );
+}
+
+export function evidenceAgeMet(iso: string | null | undefined, now = Date.now()): boolean {
+  if (!iso) return false;
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return false;
+  return now - then >= MIN_EVIDENCE_AGE_MS;
+}
+
+export function distinctListingReporters(
+  reports: Array<{
+    anonymous_user_hash?: string | null;
+    listing_id?: string | null;
+    created_at?: string | null;
+  }>
+): { count: number; oldestAt: string | null } {
+  let oldest: number | null = null;
+  const hashes = new Set<string>();
+  for (const report of reports) {
+    if (!report.listing_id || !report.anonymous_user_hash) continue;
+    hashes.add(report.anonymous_user_hash);
+    if (!report.created_at) continue;
+    const then = Date.parse(report.created_at);
+    if (!Number.isFinite(then)) continue;
+    if (oldest == null || then < oldest) oldest = then;
+  }
+  return {
+    count: hashes.size,
+    oldestAt: oldest == null ? null : new Date(oldest).toISOString(),
+  };
+}
+
+function listingEvidenceMature(employer: LeaderboardSourceEmployer, now: number): boolean {
+  const listings = asCount(employer.total_listings_tracked);
+  if (listings < MIN_LISTINGS_FOR_LEADERBOARD) return false;
+  if (employer.oldest_listing_at !== undefined) {
+    return evidenceAgeMet(employer.oldest_listing_at, now);
+  }
+  if (employer.created_at !== undefined) {
+    return evidenceAgeMet(employer.created_at, now);
+  }
+  return true;
+}
+
+function reportEvidenceMature(employer: LeaderboardSourceEmployer, now: number): boolean {
+  if (
+    employer.qualifying_distinct_reporters !== undefined ||
+    employer.oldest_qualifying_report_at !== undefined
+  ) {
+    const distinct = asCount(employer.qualifying_distinct_reporters);
+    if (distinct < MIN_COMMUNITY_REPORTS_FOR_LEADERBOARD) return false;
+    return evidenceAgeMet(employer.oldest_qualifying_report_at, now);
+  }
+  return asCount(employer.total_reports) >= MIN_COMMUNITY_REPORTS_FOR_LEADERBOARD;
 }
 
 /**
@@ -196,6 +278,10 @@ function companyTokenKey(token: string): string {
   return token.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+function isMiddleInitial(token: string): boolean {
+  return /^[A-Za-z]\.?$/.test(token);
+}
+
 function isShortCapitalizedToken(token: string): boolean {
   if (/^[A-Z][a-z]+$/.test(token)) {
     return token.length >= SHORT_NAME_TOKEN_MIN && token.length <= SHORT_NAME_TOKEN_MAX;
@@ -216,16 +302,23 @@ export function looksLikePersonalName(
 ): boolean {
   if (asCount(listings) >= MIN_LISTINGS_FOR_LEADERBOARD) return false;
   if (name == null) return false;
-  const tokens = String(name).trim().split(/\s+/).filter(Boolean);
+  const tokens = String(name)
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((token) => !NAME_TITLES.has(companyTokenKey(token)))
+    .filter((token) => !isMiddleInitial(token));
   if (tokens.length !== 2) return false;
   if (tokens.some((token) => COMPANY_TOKENS.has(companyTokenKey(token)))) return false;
   return tokens.every(isShortCapitalizedToken);
 }
 
-export function isEligibleEmployer(employer: LeaderboardSourceEmployer): boolean {
+export function isEligibleEmployer(
+  employer: LeaderboardSourceEmployer,
+  now = Date.now()
+): boolean {
   const listings = asCount(employer.total_listings_tracked);
-  const reports = asCount(employer.total_reports);
-  if (!meetsEvidenceMinimum(listings, reports)) return false;
+  if (!listingEvidenceMature(employer, now) && !reportEvidenceMature(employer, now)) return false;
   if (isUnusableEmployerName(employer.name_raw)) return false;
   if (looksLikePersonalName(employer.name_raw, listings)) return false;
   return true;

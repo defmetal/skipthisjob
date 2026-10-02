@@ -86,9 +86,54 @@ export async function persistListingSignals(
 }
 
 /**
- * Keep repost_patterns live: increment occurrence when a *new* listing is
- * first seen for this employer + normalized title + city; compare
- * description hashes so identical-copy evergreen roles get flagged.
+ * Identical copy is meaningful only once at least two description hashes
+ * exist. A single listing used to set descriptions_identical = true
+ * (unique set size <= 1), so the first real repost inherited a false flag.
+ */
+export function descriptionsAreIdentical(hashes: Array<string | null | undefined>): boolean {
+  const present = hashes.filter((h): h is string => typeof h === 'string' && h.length > 0);
+  if (present.length < 2) return false;
+  return new Set(present).size === 1;
+}
+
+/** No repost row until the same title+city has been tracked twice. */
+export function repostCountForListings(listingCount: number | null | undefined): number | null {
+  const count = Number(listingCount);
+  if (!Number.isFinite(count) || count < 2) return null;
+  return Math.floor(count);
+}
+
+let incrementFallbackWarned = false;
+
+/**
+ * Atomic increment when database/migrations/0006 has been applied.
+ * Until then, fall back to a read-modify-write so tracking still works.
+ */
+export async function incrementListingsTracked(
+  db: SupabaseClient,
+  employerId: string,
+  previousCount: number | null | undefined
+): Promise<void> {
+  const { error } = await db.rpc('increment_listings_tracked', {
+    target_employer_id: employerId,
+  });
+  if (!error) return;
+  if (!incrementFallbackWarned) {
+    incrementFallbackWarned = true;
+    console.error(
+      '[SkipThisJob] increment_listings_tracked RPC unavailable; falling back until database/migrations/0006_api_integrity.sql is applied'
+    );
+  }
+  await db
+    .from('employers')
+    .update({ total_listings_tracked: (previousCount || 0) + 1 })
+    .eq('id', employerId);
+}
+
+/**
+ * Keep repost_patterns live: write a row only once a second listing is
+ * seen for this employer + normalized title + city. Re-views of a listing
+ * the caller already stored (isNewListing false) do not touch the table.
  */
 export async function upsertRepostPattern(
   db: SupabaseClient,
@@ -102,14 +147,18 @@ export async function upsertRepostPattern(
     isNewListing: boolean;
   }
 ): Promise<void> {
+  if (!args.isNewListing) return;
+
   const cityKey = args.city || '';
-  const { data: existing } = await db
-    .from('repost_patterns')
-    .select('id, occurrence_count, first_posted, last_posted, descriptions_identical')
+  const { count } = await db
+    .from('listings')
+    .select('id', { count: 'exact', head: true })
     .eq('employer_id', args.employerId)
     .eq('title_normalized', args.titleNormalized)
-    .eq('location_city', cityKey)
-    .maybeSingle();
+    .eq('location_city', cityKey);
+
+  const occurrence = repostCountForListings(count);
+  if (occurrence == null) return;
 
   const { data: hashRows } = await db
     .from('listings')
@@ -118,14 +167,21 @@ export async function upsertRepostPattern(
     .eq('title_normalized', args.titleNormalized)
     .eq('is_active', true);
 
-  const hashes = (hashRows || [])
-    .map((r: { description_hash: string | null }) => r.description_hash)
-    .filter((h: string | null): h is string => !!h);
+  const hashes = (hashRows || []).map(
+    (r: { description_hash: string | null }) => r.description_hash
+  );
   if (args.descriptionHash && !hashes.includes(args.descriptionHash)) {
     hashes.push(args.descriptionHash);
   }
-  const uniqueHashes = new Set(hashes);
-  const descriptionsIdentical = uniqueHashes.size <= 1;
+  const descriptionsIdentical = descriptionsAreIdentical(hashes);
+
+  const { data: existing } = await db
+    .from('repost_patterns')
+    .select('id, first_posted, last_posted')
+    .eq('employer_id', args.employerId)
+    .eq('title_normalized', args.titleNormalized)
+    .eq('location_city', cityKey)
+    .maybeSingle();
 
   if (!existing) {
     await db.from('repost_patterns').insert({
@@ -133,17 +189,13 @@ export async function upsertRepostPattern(
       title_normalized: args.titleNormalized,
       location_city: cityKey,
       location_state: args.state,
-      occurrence_count: 1,
+      occurrence_count: occurrence,
       first_posted: args.postedDate,
       last_posted: args.postedDate,
       descriptions_identical: descriptionsIdentical,
     });
     return;
   }
-
-  const nextCount = args.isNewListing
-    ? (existing.occurrence_count || 1) + 1
-    : existing.occurrence_count || 1;
 
   let lastPosted = existing.last_posted || args.postedDate;
   if (args.postedDate && (!lastPosted || args.postedDate > lastPosted)) {
@@ -153,7 +205,7 @@ export async function upsertRepostPattern(
   await db
     .from('repost_patterns')
     .update({
-      occurrence_count: nextCount,
+      occurrence_count: occurrence,
       last_posted: lastPosted,
       descriptions_identical: descriptionsIdentical,
       ...(args.state ? { location_state: args.state } : {}),

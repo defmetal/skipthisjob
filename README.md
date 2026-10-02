@@ -74,7 +74,7 @@ skipthisjob/
 │   └── ghostScore.js        # Scoring engine (reference implementation)
 │
 └── .github/workflows/
-    └── chrome-web-store.yml # Auto-publish extension on push to main
+    └── deploy-extension.yml # Publish extension when a v* tag matches the manifest
 ```
 
 ## Scoring Model

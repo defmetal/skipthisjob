@@ -30,4 +30,7 @@ next-env.d.ts
 
 # vercel
 .vercel
-kaggle/ 
+kaggle/
+
+# local editor permissions
+.claude/settings.local.json

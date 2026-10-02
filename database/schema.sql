@@ -21,7 +21,7 @@ CREATE TABLE employers (
     industry        TEXT,
     website_domain  TEXT,                       -- for domain-based matching
     ghost_score     NUMERIC(4,1) DEFAULT 0,    -- computed 0-100
-    ghost_label     TEXT DEFAULT 'unknown',     -- low / moderate / high / very_high / unknown
+    ghost_label     TEXT DEFAULT 'unknown',     -- low <35 / moderate <55 / high <75 / very_high >=75 / unknown
     total_reports   INTEGER DEFAULT 0,
     total_listings_tracked INTEGER DEFAULT 0,
     is_high_turnover_industry BOOLEAN DEFAULT FALSE,
@@ -31,7 +31,7 @@ CREATE TABLE employers (
     CONSTRAINT uq_employer_normalized UNIQUE (name_normalized)
 );
 
-CREATE INDEX idx_employers_normalized ON employers (name_normalized);
+-- name_normalized is already unique; a second btree on the same column is redundant.
 CREATE INDEX idx_employers_domain ON employers (website_domain);
 CREATE INDEX idx_employers_ghost_score ON employers (ghost_score DESC);
 CREATE INDEX idx_employers_glassdoor_id ON employers (glassdoor_id);
@@ -157,6 +157,13 @@ CREATE TABLE community_reports (
     -- one report per user per listing
     CONSTRAINT uq_report_user_listing UNIQUE (anonymous_user_hash, listing_id)
 );
+
+-- Employer-level reports (no listing) cannot use the unique constraint above
+-- because NULLs are distinct. Partial index closes that hole. Reports that
+-- count toward the leaderboard always have a listing_id.
+CREATE UNIQUE INDEX uq_report_user_employer_no_listing
+    ON community_reports (anonymous_user_hash, employer_id)
+    WHERE listing_id IS NULL;
 
 CREATE INDEX idx_reports_employer ON community_reports (employer_id);
 CREATE INDEX idx_reports_listing ON community_reports (listing_id);
@@ -313,3 +320,36 @@ CREATE TRIGGER trg_employers_updated
 CREATE TRIGGER trg_repost_patterns_updated
     BEFORE UPDATE ON repost_patterns
     FOR EACH ROW EXECUTE FUNCTION update_modified_column();
+
+-- Defense in depth. Service role bypasses RLS; anon/authenticated are also
+-- REVOKEd in migration 0005. See database/migrations/0006_api_integrity.sql
+-- for the same statements on an existing database.
+ALTER TABLE employers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE listings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE community_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE repost_patterns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE employer_score_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE high_turnover_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE high_turnover_industries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE listing_signals ENABLE ROW LEVEL SECURITY;
+
+CREATE INDEX idx_employers_listings_tracked ON employers (total_listings_tracked);
+CREATE INDEX idx_employers_total_reports ON employers (total_reports);
+
+-- Optional atomic counter used by POST /api/track. The route falls back to a
+-- read-modify-write when this function is not present.
+CREATE OR REPLACE FUNCTION public.increment_listings_tracked(target_employer_id UUID)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+    next_count INTEGER;
+BEGIN
+    UPDATE employers
+    SET total_listings_tracked = COALESCE(total_listings_tracked, 0) + 1
+    WHERE id = target_employer_id
+    RETURNING total_listings_tracked INTO next_count;
+    RETURN next_count;
+END;
+$$;

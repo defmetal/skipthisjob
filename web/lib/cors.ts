@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server';
 
-const corsHeaders = {
+/** Single CORS definition. Middleware and route responses both use this. */
+export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-export function corsResponse(data: any, status = 200) {
+export function corsResponse(data: unknown, status = 200) {
   return NextResponse.json(data, { status, headers: corsHeaders });
 }
 

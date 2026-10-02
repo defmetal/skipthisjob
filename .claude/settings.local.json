@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Read(//c/kaggle/**)",
-      "Read(//c//**)"
-    ]
-  }
-}

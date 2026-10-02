@@ -8,6 +8,7 @@ import {
   bandNameForScore,
   confidenceLabel,
   displayedGhostScore,
+  distinctListingReporters,
   isEligibleEmployer,
   leaderboardMinimumNote,
   looksLikePersonalName,
@@ -201,7 +202,7 @@ test('confidence copy pluralizes, and the page note states the minimum', () => {
   assert.match(note, /cannot show as 100/);
   assert.equal(
     note,
-    'Only employers with at least 5 tracked listings or 3 community reports are listed. Scores from fewer than 5 listings are capped, so a single posting cannot show as 100. Personal names with only a few listings, and empty, very short, or numeric names, are left off.'
+    'Only employers with at least 5 tracked listings or 3 community reports from different people are listed. A report counts only when it is tied to a specific listing, and new evidence waits 24 hours before an employer can appear. Scores from fewer than 5 listings are capped, so a single posting cannot show as 100. Personal names with only a few listings, and empty, very short, or numeric names, are left off.'
   );
 });
 
@@ -214,4 +215,103 @@ test('display bands stay on the extension boundaries', () => {
   assert.equal(bandNameForScore(74), 'Likely a Waste of Time');
   assert.equal(bandNameForScore(75), 'Skip This Job');
   assert.equal(bandNameForScore(100), 'Skip This Job');
+});
+
+test('titles and middle initials are screened as personal names', () => {
+  assert.equal(looksLikePersonalName('Dean A. Davidson', 1), true);
+  assert.equal(looksLikePersonalName('Dr Dean Davidson', 1), true);
+  assert.equal(looksLikePersonalName('Dr. Dean Davidson', 2), true);
+  assert.equal(looksLikePersonalName('Dean Davidson Jr', 1), false);
+  assert.equal(
+    isEligibleEmployer({
+      name_raw: 'Dean A. Davidson',
+      ghost_score: 90,
+      total_listings_tracked: 1,
+      total_reports: 3,
+    }),
+    false
+  );
+});
+
+test('new employers and fresh report-only evidence wait 24 hours', () => {
+  const now = Date.parse('2026-10-02T12:00:00Z');
+  assert.equal(
+    isEligibleEmployer(
+      {
+        name_raw: 'Brand New LLC',
+        ghost_score: 100,
+        total_listings_tracked: 8,
+        total_reports: 0,
+        created_at: '2026-10-02T11:00:00Z',
+      },
+      now
+    ),
+    false
+  );
+  assert.equal(
+    isEligibleEmployer(
+      {
+        name_raw: 'Established LLC',
+        ghost_score: 80,
+        total_listings_tracked: 8,
+        total_reports: 0,
+        created_at: '2026-08-01T00:00:00Z',
+      },
+      now
+    ),
+    true
+  );
+  assert.equal(
+    isEligibleEmployer(
+      {
+        name_raw: 'Fresh Reports Inc',
+        ghost_score: 90,
+        total_listings_tracked: 1,
+        total_reports: 3,
+        qualifying_distinct_reporters: 3,
+        oldest_qualifying_report_at: '2026-10-02T11:00:00Z',
+      },
+      now
+    ),
+    false
+  );
+  assert.equal(
+    isEligibleEmployer(
+      {
+        name_raw: 'Ripe Reports Inc',
+        ghost_score: 90,
+        total_listings_tracked: 1,
+        total_reports: 9,
+        qualifying_distinct_reporters: 3,
+        oldest_qualifying_report_at: '2026-09-01T00:00:00Z',
+      },
+      now
+    ),
+    true
+  );
+  assert.equal(
+    isEligibleEmployer(
+      {
+        name_raw: 'Same Person Inc',
+        ghost_score: 90,
+        total_listings_tracked: 1,
+        total_reports: 5,
+        qualifying_distinct_reporters: 2,
+        oldest_qualifying_report_at: '2026-08-01T00:00:00Z',
+      },
+      now
+    ),
+    false
+  );
+});
+
+test('reports without a listing id do not count as distinct reporters', () => {
+  const summary = distinctListingReporters([
+    { anonymous_user_hash: 'a', listing_id: null, created_at: '2026-01-01T00:00:00Z' },
+    { anonymous_user_hash: 'a', listing_id: 'listing-1', created_at: '2026-01-02T00:00:00Z' },
+    { anonymous_user_hash: 'a', listing_id: 'listing-2', created_at: '2026-02-01T00:00:00Z' },
+    { anonymous_user_hash: 'b', listing_id: 'listing-3', created_at: '2026-03-01T00:00:00Z' },
+  ]);
+  assert.equal(summary.count, 2);
+  assert.equal(summary.oldestAt, '2026-01-02T00:00:00.000Z');
 });

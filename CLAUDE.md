@@ -5,7 +5,7 @@
 
 **Owner:** Austin (@defmetal), Vibe Labs Marketing, San Antonio TX
 **Repo:** github.com/defmetal/skipthisjob
-**Live site:** https://skipthisjob.com
+**Live site:** https://www.skipthisjob.com (apex https://skipthisjob.com 307-redirects to www)
 **Domain:** Cloudflare DNS → Vercel
 
 ## Stack
@@ -114,15 +114,16 @@ SUPABASE_SERVICE_ROLE_KEY=xxx
 
 ## Deployment
 - Push to `main` → Vercel auto-deploys (root directory: `web/`)
-- Push to `main` → GitHub Actions auto-publishes extension to Chrome Web Store (`.github/workflows/chrome-web-store.yml`)
+- GitHub Actions CI (`.github/workflows/ci.yml`) runs `npm test`, `tsc --noEmit`, and `next build` on push and pull request
+- A version tag `v*` that matches `extension/manifest.json` runs `.github/workflows/deploy-extension.yml`, which reruns those checks and then publishes the extension to the Chrome Web Store (`publish: true`)
 - Extension: load unpacked from `extension/` folder in chrome://extensions for development
 
 ## Known Issues / TODO
 - Indeed overlay uses fixed positioning (top-right) because Indeed destroys DOM on job click
 - LinkedIn date detection can sometimes read sidebar listing ages instead of the viewed listing
 - Live employer scan on Indeed disabled — raw HTML fetch doesn't include JS-rendered job counts
-- Website employer lookup search is a placeholder (not functional yet)
-- Leaderboard page not built yet
+- Employer lookup on the homepage calls `/api/employer/score`
+- Leaderboard page is `/leaderboard`
 
 ## Code Style
 - No TypeScript in extension (vanilla JS for simplicity)

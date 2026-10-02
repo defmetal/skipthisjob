@@ -1,3 +1,4 @@
+import EmployerLookup from '@/components/EmployerLookup';
 import Logo from '@/components/Logo';
 import { DirectionMark, SignalIcon } from '@/components/signal-ui';
 import { HOME_DESCRIPTION, HOME_TITLE, homepageJsonLd, pageMetadata } from '@/lib/seo';
@@ -260,27 +261,7 @@ export default function Home() {
           Search any company to see their ghost job score, repost history, and community reports.
         </p>
 
-        <div className="max-w-md mx-auto">
-          <div className="flex gap-3">
-            <input
-              type="text"
-              placeholder="Search a company name..."
-              className="flex-1 px-4 py-3 rounded-lg border border-gray-200 text-base focus:outline-none focus:border-gray-400 transition"
-            />
-            <button className="bg-gray-900 text-white px-6 py-3 rounded-lg font-medium hover:bg-gray-800 transition text-sm">
-              Search
-            </button>
-          </div>
-          <p className="text-xs text-gray-400 mt-3 text-center">
-            Data from public job-posting datasets, community reports, posting patterns, and Glassdoor ratings where we have them.
-          </p>
-        </div>
-
-        {/* Placeholder for results — would be client component in production */}
-        <div className="mt-12 text-center text-sm text-gray-400">
-          Employer data populates as the community grows.
-          Install the extension to contribute.
-        </div>
+        <EmployerLookup />
       </section>
 
       {/* ── CTA ── */}
