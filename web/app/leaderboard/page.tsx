@@ -28,20 +28,12 @@ type SortDir = 'asc' | 'desc';
 
 const LIMIT = 20;
 
-function ghostScoreColor(label: string): string {
-  switch (label?.toLowerCase()) {
-    case 'low':
-      return 'bg-green-100 text-green-800';
-    case 'moderate':
-      return 'bg-orange-100 text-orange-800';
-    case 'high':
-      return 'bg-red-100 text-red-800';
-    case 'very high':
-    case 'ghost alert':
-      return 'bg-purple-100 text-purple-800';
-    default:
-      return 'bg-gray-100 text-gray-800';
-  }
+/** Same bands as the extension overlay (extension/content/shared.js labelForScore). */
+function bandForScore(score: number): { name: string; tone: string } {
+  if (score >= 75) return { name: 'Skip This Job', tone: 'bg-purple-100 text-purple-800' };
+  if (score >= 55) return { name: 'Likely a Waste of Time', tone: 'bg-red-100 text-red-800' };
+  if (score >= 35) return { name: 'Proceed with Caution', tone: 'bg-orange-100 text-orange-800' };
+  return { name: 'Worth Applying', tone: 'bg-green-100 text-green-800' };
 }
 
 function SortArrow({ column, sortBy, sortDir }: { column: SortColumn; sortBy: SortColumn; sortDir: SortDir }) {
@@ -117,8 +109,10 @@ export default function LeaderboardPage() {
           Ghost Job Leaderboard
         </h1>
         <p className="text-lg text-gray-500 max-w-xl mx-auto leading-relaxed">
-          The worst ghost job offenders ranked by ghost score. Data from community reports,
-          posting patterns, and employer history.
+          The worst ghost job offenders ranked by ghost score. Bands match the
+          extension: Worth Applying (0–34), Proceed with Caution (35–54), Likely
+          a Waste of Time (55–74), and Skip This Job (75–100). Data comes from
+          public job-posting datasets, community reports, and posting patterns.
         </p>
       </section>
 
@@ -173,16 +167,16 @@ export default function LeaderboardPage() {
                       </td>
                       <td className="px-4 py-3">
                         <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${ghostScoreColor(employer.ghost_label)}`}
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${bandForScore(employer.ghost_score).tone}`}
                         >
                           {employer.ghost_score}
                         </span>
                       </td>
                       <td className="px-4 py-3">
                         <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${ghostScoreColor(employer.ghost_label)}`}
+                          className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${bandForScore(employer.ghost_score).tone}`}
                         >
-                          {employer.ghost_label}
+                          {bandForScore(employer.ghost_score).name}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-gray-500 hidden md:table-cell">

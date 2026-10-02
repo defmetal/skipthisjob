@@ -36,9 +36,10 @@ export default function Home() {
           Stop applying to jobs<br />that don&apos;t exist.
         </h1>
         <p className="text-lg text-gray-500 max-w-xl mx-auto mb-10 leading-relaxed">
-          Ghost Job Detector scores every LinkedIn and Indeed listing for ghost risk —
-          repost patterns, employer history, community reports, and Glassdoor data —
-          so you spend time on real opportunities. Free forever, no account needed.
+          Ghost Job Detector scores every LinkedIn and Indeed listing you open.
+          It combines that listing&apos;s own signals with the employer&apos;s track
+          record, weighted by how much evidence we have, so you spend time on
+          real opportunities. Free, no account needed.
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
           <a
@@ -60,10 +61,9 @@ export default function Home() {
 
       {/* ── Stats bar ── */}
       <section className="border-y border-gray-200 bg-white">
-        <div className="max-w-4xl mx-auto px-6 py-8 grid grid-cols-2 sm:grid-cols-4 gap-6 text-center">
+        <div className="max-w-4xl mx-auto px-6 py-8 grid grid-cols-1 sm:grid-cols-3 gap-6 text-center">
           {[
-            { number: '40-60%', label: 'of listings may be ghost jobs' },
-            { number: '6', label: 'heuristic signals analyzed' },
+            { number: '28', label: 'listing signals in the score' },
             { number: '0', label: 'personal identifiers collected' },
             { number: '100%', label: 'free, no account needed' },
           ].map((stat, i) => (
@@ -73,6 +73,20 @@ export default function Home() {
             </div>
           ))}
         </div>
+        <p className="max-w-2xl mx-auto px-6 pb-8 text-center text-sm text-gray-500 leading-relaxed">
+          In a May 2024{' '}
+          <a
+            href="https://www.resumebuilder.com/3-in-10-companies-currently-have-fake-job-posting-listed/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-gray-900"
+          >
+            Resume Builder
+          </a>{' '}
+          survey of 1,641 hiring managers, 40% said their company had posted a
+          fake job listing in the past year (649 completed the full follow-up).
+          That figure is company-level and self-reported, not a share of listings.
+        </p>
       </section>
 
       {/* ── How It Works ── */}
@@ -92,7 +106,7 @@ export default function Home() {
             {
               step: '2',
               title: 'See the Score',
-              desc: 'A ghost risk score appears on the listing. Low, Moderate, High, or Ghost Alert — with the specific signals that triggered it.',
+              desc: 'A score from 0 to 100 appears on the listing: Worth Applying (0–34), Proceed with Caution (35–54), Likely a Waste of Time (55–74), or Skip This Job (75–100), with the signals that triggered it.',
             },
             {
               step: '3',
@@ -116,8 +130,10 @@ export default function Home() {
         <div className="max-w-4xl mx-auto px-6 py-24">
           <h2 className="text-3xl font-bold text-center mb-4">What We Check</h2>
           <p className="text-gray-500 text-center mb-16 max-w-lg mx-auto">
-            The extension scores listings using real signals — not guesswork.
-            Some run locally in your browser. Others come from aggregated community data.
+            The extension runs 28 checks on the listing in your browser, then
+            combines that result with the employer&apos;s track record when we
+            have one. Weight depends on how much evidence that record has.
+            Some of what goes into the score:
           </p>
 
           <div className="grid sm:grid-cols-2 gap-6">
@@ -125,32 +141,42 @@ export default function Home() {
               {
                 icon: '📅',
                 title: 'Posting Age',
-                desc: 'Jobs open 30+ days get flagged. 60+ days is a red flag. The extension reads the exact date from the page.',
+                desc: 'The extension reads the age shown on the listing. Older posts add risk, with minimum scores once a listing has been open 60, 90, or 120 days. A post from the last 48 hours gets a small credit.',
               },
               {
                 icon: '🔄',
                 title: 'Repost Detection',
-                desc: 'LinkedIn labels reposted listings. We also track how many times an employer has posted the same role in the same city.',
+                desc: 'A listing marked as reposted adds risk. We also track how many times an employer has posted the same role in the same city.',
               },
               {
                 icon: '👥',
                 title: 'Applicant Volume',
-                desc: '500+ applicants on a month-old listing? The numbers tell a story about whether this role is actually being filled.',
+                desc: '100, 200, and 500+ applicants add risk. On listings open 60 days or more, 100+ applicants adds more. On LinkedIn, 30+ days with 200+ applicants adds more still.',
               },
               {
                 icon: '💰',
                 title: 'Salary Transparency',
-                desc: 'No salary listed correlates with lower-quality listings. It\'s a small signal, but it adds up with others.',
+                desc: 'No salary listed adds a small amount of risk. It is one check among the rest, not a verdict by itself.',
+              },
+              {
+                icon: '📝',
+                title: 'Description Quality',
+                desc: 'Missing, very short, or vague descriptions add risk. Placeholder text and a title that conflicts with the years of experience required add more. A specific description is a small credit.',
+              },
+              {
+                icon: '👀',
+                title: 'Engagement and Response',
+                desc: '“Actively reviewing” lowers the score, less so on old posts. No review activity on a listing open 14+ days, missing response data, or responses managed off LinkedIn add risk. On Indeed, a fast response is a small credit, and “Apply on company site” adds a little risk.',
               },
               {
                 icon: '📊',
                 title: 'Community Reports',
-                desc: 'Other users flag ghost jobs and report outcomes. "Applied 3 months ago, never heard back" is the most honest signal.',
+                desc: 'Other users can flag a ghost job or report an outcome, such as never hearing back. Those reports feed the employer’s track record.',
               },
               {
                 icon: '⭐',
-                title: 'Glassdoor Data',
-                desc: 'When available, we show employer ratings and interview-to-offer rates. A 2.3-star company reposting the same role? Ghost.',
+                title: 'Glassdoor Ratings',
+                desc: 'When we have a Glassdoor rating on file, a rating under 3.0 or an interview-to-offer rate under 20% is shown with the employer score.',
               },
             ].map((signal, i) => (
               <div
@@ -168,12 +194,11 @@ export default function Home() {
 
           <div className="mt-12 p-5 rounded-xl bg-amber-50 border border-amber-100">
             <p className="text-sm text-amber-900 leading-relaxed">
-              <strong>Smart enough to know the difference.</strong> Not every
-              reposted listing is a ghost job. The scoring engine applies modifiers
-              for high-turnover roles (barista, warehouse associate, CNA),
-              high-turnover industries (food service, retail, healthcare), large
-              companies, and entry-level positions. A Starbucks barista listing
-              won&apos;t trigger a false alarm.
+              <strong>High-turnover job titles.</strong> When the title matches
+              a role that is reposted often — barista, warehouse associate, CNA,
+              and similar titles — posting-age and applicant-count points are
+              reduced, and the overlay notes that. Staffing or third-party posts
+              and a missing hiring contact on LinkedIn are separate checks.
             </p>
           </div>
         </div>
@@ -198,7 +223,7 @@ export default function Home() {
             </button>
           </div>
           <p className="text-xs text-gray-400 mt-3 text-center">
-            Data from community reports, historical posting patterns, and Glassdoor.
+            Data from public job-posting datasets, community reports, posting patterns, and Glassdoor ratings where we have them.
           </p>
         </div>
 
@@ -216,7 +241,7 @@ export default function Home() {
             Your time is worth more than ghost jobs.
           </h2>
           <p className="text-gray-400 mb-8 max-w-md mx-auto">
-            Free. No account. No personal data — only anonymous listing signals to improve ghost scores.
+            Free. No account. No name or email — public listing details help improve ghost scores.
           </p>
           <a
             href="https://chromewebstore.google.com/detail/nodldfdkjomniknohmejdimjlejfongd"

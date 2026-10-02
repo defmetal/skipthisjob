@@ -11,106 +11,137 @@ export default function Privacy() {
 
       <article className="max-w-3xl mx-auto px-6 py-12">
         <h1 className="text-3xl font-bold mb-2">Privacy Policy</h1>
-        <p className="text-sm text-gray-400 mb-10">Last updated: September 12, 2026</p>
+        <p className="text-sm text-gray-400 mb-10">Last updated: October 2, 2026</p>
 
         <div className="prose prose-gray max-w-none space-y-6 text-gray-600 leading-relaxed">
           <p>
             Skip This Job (&quot;we,&quot; &quot;our,&quot; or &quot;the extension&quot;) is a Chrome extension
             and website operated by Vibe Labs Marketing, based in San Antonio, TX.
-            We are committed to protecting your privacy. This policy explains what data
-            the extension collects, how it is used, and your rights.
+            This policy explains what the current version of the extension sends, how
+            we use it, and what we leave alone.
           </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">What We Collect</h2>
           <p>
-            <strong>Anonymous browser identifier.</strong> When you submit a community report
-            (flagging a ghost job or reporting an outcome), the extension generates a random
-            anonymous ID stored locally in your browser. This ID is not linked to your name,
-            email, or any personal information. It exists solely to prevent duplicate reports
-            from the same browser.
+            <strong>We don&apos;t send personal info, just public listing details.</strong>{' '}
+            For each job listing you view on LinkedIn or Indeed, the extension reads
+            that page and sends the listing&apos;s public details to our server. We use
+            them to compute and improve ghost scores. It does not send your name,
+            email, account info, or login credentials, and it does not send browsing
+            outside LinkedIn and Indeed job pages.
           </p>
           <p>
-            <strong>Job listing metadata from community reports.</strong> When you voluntarily
-            click &quot;Flag Ghost Job&quot; or &quot;Report Outcome,&quot; the extension sends the following
-            data to our server: the company name, job title, platform (LinkedIn or Indeed),
-            the listing URL, and your selected flag reason or outcome. This data is used to
-            compute community-powered ghost scores for employers.
+            The current version sends these fields for a listing you view:
+          </p>
+          <ul className="list-disc pl-6 space-y-1">
+            <li>Platform (LinkedIn or Indeed)</li>
+            <li>Platform job ID</li>
+            <li>Job title</li>
+            <li>Company name</li>
+            <li>Listing URL</li>
+            <li>Location</li>
+            <li>Whether a salary is listed</li>
+            <li>Whether the listing is marked as a repost</li>
+            <li>How many days the listing has been open</li>
+            <li>Engagement labels shown on the page, such as actively reviewing, urgently hiring, or hiring multiple candidates</li>
+            <li>Employer response time, if the page shows one</li>
+            <li>Whether you clicked Apply on that listing</li>
+            <li>Work arrangement, if shown (remote, hybrid, or on-site)</li>
+            <li>Employment type, if shown (full-time, part-time, contract, or internship)</li>
+            <li>A hash of the job description, not the description text</li>
+            <li>The heuristic ghost-risk score calculated in your browser</li>
+          </ul>
+          <p>
+            Applicant counts and other on-page facts are read on your device and
+            folded into that heuristic score. The raw applicant count is not sent
+            as its own field. The job description itself is not sent — only the hash.
+            We store those listing fields with the job, other than the listing
+            URL, which is sent and not saved in its own column. From listings we
+            already have, our server also counts similar titles for that employer.
+            That count is not read from your browser.
           </p>
           <p>
-            <strong>Employer score lookups.</strong> When you view a job listing, the extension
-            sends the employer name to our API to retrieve their ghost score. No information
-            about you is sent with this request — only the company name.
+            <strong>Anonymous ID.</strong> When you submit a community report, the
+            extension creates a random ID on your device and saves it in the
+            extension&apos;s local storage. That ID is sent to our server and stored
+            with each report you submit. We use it so the same browser is not
+            counted twice for the same listing. It is not linked to your name,
+            email, or account, and we do not share it with anyone else. It is not
+            sent when you only view a listing.
           </p>
           <p>
-            <strong>Passive listing metadata.</strong> When you view a job listing, the extension
-            sends publicly visible listing information to our server: company name, job title,
-            platform, location, whether a salary is listed, whether it is a repost, and how
-            long the listing has been open. This data comes from the job listing itself —
-            no information about you or your device is included. This helps us track
-            employer posting patterns and improve ghost scores for the community.
+            <strong>Community reports.</strong> If you choose &quot;Flag Ghost Job&quot; or
+            &quot;Report Outcome,&quot; the extension sends the company name, job title,
+            platform, platform job ID, listing URL, the reason or outcome you
+            picked, and the anonymous ID. You choose when to send a report.
           </p>
           <p>
-            <strong>Additional passive job signals (added in version 0.1.8).</strong> The
-            extension also collects the following non-personal signals from job listings you
-            view: engagement indicators shown on the page (such as “Actively reviewing
-            applications”, “Urgently hiring”, or “Hiring multiple candidates”), whether a
-            response time is displayed by the platform, whether you click the Apply button,
-            and the approximate number of similar roles the same employer has open. These
-            signals are used only to improve the accuracy of ghost risk scoring and are not
-            linked to your identity.
-          </p>
-          <p>
-            <strong>Computed listing risk score (added in version 0.1.9).</strong> When you
-            view a job listing, the extension calculates a ghost-risk score for that listing
-            from the publicly visible signals described above and sends that score to our
-            server. We store it with the listing and combine it with the scores from other
-            listings for the same employer to produce that employer&apos;s overall ghost score
-            shown to the community. This score reflects the job listing only — it contains no
-            information about you, your device, or your browsing history.
+            <strong>Employer score lookups.</strong> When you view a listing, the
+            extension also asks our server for that employer&apos;s ghost score. The
+            request sends the company name, the platform, and the platform job ID.
+            It does not include your name, email, or account.
           </p>
 
-          <h2 className="text-xl font-semibold text-gray-900 mt-10">What We Do NOT Collect</h2>
+          <h2 className="text-xl font-semibold text-gray-900 mt-10">What We Do Not Collect</h2>
           <p>
             We do not collect, store, or transmit any of the following:
           </p>
           <ul className="list-disc pl-6 space-y-1">
-            <li>Your name, email address, or any personal identifiers</li>
-            <li>Your browsing history or pages visited</li>
-            <li>Your LinkedIn or Indeed login credentials</li>
-            <li>Your resume, profile information, or job applications</li>
+            <li>Your name, email address, or LinkedIn or Indeed account information</li>
+            <li>Your login credentials</li>
+            <li>Your resume, profile, or the contents of a job application</li>
+            <li>Browsing outside LinkedIn and Indeed job pages</li>
             <li>Cookies or tracking pixels</li>
-            <li>Your IP address as a stored identifier (see Abuse Prevention below)</li>
+            <li>Raw IP addresses in our database (see Abuse Prevention)</li>
           </ul>
+          <p>
+            Viewing a job listing does send that listing&apos;s public details, listed
+            above. That is limited to the listing you opened. It is not a record
+            of the rest of your browsing.
+          </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">How We Use Data</h2>
           <p>
-            Community reports and the passively computed listing scores described above are
-            aggregated anonymously to compute employer ghost scores. These scores are
-            displayed to other users of the extension and on the skipthisjob.com website,
-            including a public leaderboard of employers with the highest ghost scores.
-            Individual reports and listing views cannot be traced back to any person.
+            Listing details and the heuristic score are stored with the job and
+            combined with other listings and community reports for the same
+            employer. That employer score is shown in the extension and on
+            skipthisjob.com, including a public leaderboard. Reports and listing
+            views are not tied to your name.
           </p>
           <p>
-            We may display aggregated statistics publicly, such as the total number of
-            community reports or the employers with the highest ghost scores. No individual
-            user data is ever made public.
+            Employer records start from public job-posting data (a Kaggle dataset
+            of job postings seeded into our database) and Glassdoor ratings
+            compiled for a set of major employers. Community reports and the
+            listing details described above update those records.
+          </p>
+          <p>
+            We may show aggregated totals, such as how many community reports an
+            employer has. We do not publish the anonymous ID or tie a report to
+            a person.
           </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Abuse Prevention</h2>
           <p>
-            Public write APIs (listing tracking and community reports) use a short-lived,
-            in-memory rate limit. The request IP may be hashed in memory for that window
-            so we can throttle floods. Hashes are not written to the database, are not
-            linked to your anonymous browser identifier, and are discarded when the
-            server instance recycles. We do not store raw IP addresses.
+            We don&apos;t store raw IP addresses in our database. Public write APIs
+            (listing tracking and community reports) keep a short-lived hash of
+            the request IP in server memory so we can throttle floods. That hash
+            is not written to the database, is not linked to your anonymous ID,
+            and is discarded when the server instance recycles.
+          </p>
+          <p>
+            Vercel hosts the website and API and may log IP addresses under its
+            own policy. Cloudflare provides DNS for the domain. If a request is
+            proxied through Cloudflare, Cloudflare may log IP addresses under its
+            own policy.
           </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Data Storage</h2>
           <p>
-            Community reports and employer scores are stored in a Supabase (PostgreSQL)
-            database hosted in the United States. The anonymous browser identifier is stored
-            locally in your browser using Chrome&apos;s storage API and is never sent to any
-            third party.
+            Community reports, listing details, and employer scores are stored in
+            a Supabase (PostgreSQL) database hosted in the United States. Your
+            anonymous ID is stored locally in the extension and, when you submit
+            a report, in that database with the report. We do not share it
+            elsewhere.
           </p>
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Third-Party Services</h2>
@@ -118,9 +149,9 @@ export default function Privacy() {
             We use the following third-party services:
           </p>
           <ul className="list-disc pl-6 space-y-1">
-            <li><strong>Supabase</strong> — database hosting (stores anonymous community reports)</li>
+            <li><strong>Supabase</strong> — database hosting for listing details, employer scores, and community reports</li>
             <li><strong>Vercel</strong> — website and API hosting</li>
-            <li><strong>Cloudflare</strong> — DNS and security</li>
+            <li><strong>Cloudflare</strong> — DNS</li>
           </ul>
           <p>
             We do not use analytics, advertising, or tracking services. We do not sell,
@@ -129,9 +160,9 @@ export default function Privacy() {
 
           <h2 className="text-xl font-semibold text-gray-900 mt-10">Your Rights</h2>
           <p>
-            You can clear your anonymous browser identifier at any time by removing the
-            extension or clearing the extension&apos;s storage in your browser settings.
-            Since we do not collect personal information, there is no account to delete.
+            You can clear your anonymous ID at any time by removing the
+            extension or clearing the extension&apos;s storage in your browser
+            settings. There is no account to delete.
           </p>
           <p>
             If you have submitted community reports and wish to have them removed, contact
