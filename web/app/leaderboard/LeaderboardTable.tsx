@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { bandNameForScore, confidenceLabel } from '@/lib/leaderboardEligibility';
 
 interface Employer {
   name_raw: string;
@@ -12,6 +13,7 @@ interface Employer {
   total_listings_tracked: number;
   glassdoor_rating: number | null;
   glassdoor_url: string | null;
+  confidence?: string;
 }
 
 interface LeaderboardResponse {
@@ -28,10 +30,11 @@ const LIMIT = 20;
 
 /** Same bands as the extension overlay (extension/content/shared.js labelForScore). */
 function bandForScore(score: number): { name: string; tone: string } {
-  if (score >= 75) return { name: 'Skip This Job', tone: 'bg-purple-100 text-purple-800' };
-  if (score >= 55) return { name: 'Likely a Waste of Time', tone: 'bg-red-100 text-red-800' };
-  if (score >= 35) return { name: 'Proceed with Caution', tone: 'bg-orange-100 text-orange-800' };
-  return { name: 'Worth Applying', tone: 'bg-green-100 text-green-800' };
+  const name = bandNameForScore(score);
+  if (name === 'Skip This Job') return { name, tone: 'bg-purple-100 text-purple-800' };
+  if (name === 'Likely a Waste of Time') return { name, tone: 'bg-red-100 text-red-800' };
+  if (name === 'Proceed with Caution') return { name, tone: 'bg-orange-100 text-orange-800' };
+  return { name, tone: 'bg-green-100 text-green-800' };
 }
 
 function SortArrow({ column, sortBy, sortDir }: { column: SortColumn; sortBy: SortColumn; sortDir: SortDir }) {
@@ -122,6 +125,10 @@ export default function LeaderboardTable() {
                     </td>
                     <td className="px-4 py-3 font-medium text-gray-900">
                       {employer.name_raw}
+                      <div className="text-xs font-normal text-gray-400 mt-0.5">
+                        {employer.confidence ||
+                          confidenceLabel(employer.total_listings_tracked, employer.total_reports)}
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <span

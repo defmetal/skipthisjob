@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import Logo from '@/components/Logo';
+import { leaderboardMinimumNote } from '@/lib/leaderboardEligibility';
 import { pageMetadata } from '@/lib/seo';
 import LeaderboardTable from './LeaderboardTable';
 
@@ -46,6 +47,9 @@ export default function LeaderboardPage() {
           extension: Worth Applying (0–34), Proceed with Caution (35–54), Likely
           a Waste of Time (55–74), and Skip This Job (75–100). Data comes from
           public job-posting datasets, community reports, and posting patterns.
+        </p>
+        <p className="mt-6 text-sm text-gray-600 max-w-2xl mx-auto leading-relaxed bg-gray-50 border border-gray-200 rounded-lg px-4 py-3">
+          {leaderboardMinimumNote()}
         </p>
       </section>
 
