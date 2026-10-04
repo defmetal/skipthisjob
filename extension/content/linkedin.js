@@ -144,20 +144,242 @@ function companyLinkIn(container, titleAnchor) {
   return null;
 }
 
-function findMetadataElement(root) {
-  if (!root || !root.querySelectorAll || !STJ.parseLinkedInMetadataLine) return null;
-  const nodes = root.querySelectorAll('p, div, span');
-  let best = null;
-  for (let i = 0; i < nodes.length; i++) {
-    const el = nodes[i];
-    if (el.children && el.children.length > 12) continue;
-    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-    if (!text || text.length > 400 || !/[·|•]/.test(text)) continue;
-    const parsed = STJ.parseLinkedInMetadataLine(text);
-    if (!parsed || (parsed.daysOpen == null && parsed.applicantCount == null && !parsed.location)) continue;
-    if (!best || text.length < best.text.length) best = { el: el, text: text, parsed: parsed };
+function metadataSnippet(text) {
+  const raw = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return '';
+  const m = raw.match(/.{0,80}(?:\b(?:reposted|posted)\b.{0,40})?\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\s+ago.{0,80}/i);
+  const line = m ? m[0].trim() : raw;
+  return line.slice(0, 200);
+}
+
+function nodeIsInList(el) {
+  if (!el) return false;
+  if (isLinkedInListNode(el)) return true;
+  if (el.closest && el.closest('.scaffold-layout__list, .jobs-search-results-list, .jobs-search-results__list, [data-stj-list-root]')) return true;
+  return false;
+}
+
+function nodeFollowsAnchor(anchor, node) {
+  if (!anchor || !node) return true;
+  if (anchor === node) return true;
+  if (anchor.contains && anchor.contains(node)) return true;
+  if (node.contains && node.contains(anchor)) return true;
+  if (!anchor.compareDocumentPosition) return true;
+  return (anchor.compareDocumentPosition(node) & 4) !== 0;
+}
+
+function normalizePiece(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function metadataSignal(text) {
+  if (!text || !STJ.parseLinkedInMetadataLine) return null;
+  const parsed = STJ.parseLinkedInMetadataLine(text);
+  if (!parsed) return null;
+  if (parsed.daysOpen == null && parsed.applicantCount == null && !parsed.isRepost) return null;
+  return parsed;
+}
+
+function prefixBeforeSignal(text) {
+  const norm = String(text || '')
+    .replace(/[\u00a0\u202f\u2007\u2009\u200a\u2060]/g, ' ')
+    .replace(/[·•・∙⋅\u2022\u2219\u2027\u30fb\u00b7|]/g, ' · ')
+    .replace(/([A-Za-z])(?=(?:Reposted|Posted|Over|Be among)\b)/g, '$1 ')
+    .replace(/([A-Za-z])(?=\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\b)/gi, '$1 ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const m = norm.match(/^(.*?)(?=\b(?:reposted|posted)\b|\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\s+ago|\bover\s+\d|\bbe among the first|\d[\d,]*\+?\s+(?:applicants?|people\s+clicked\s+apply))/i);
+  if (!m) return null;
+  return m[1].replace(/(?:\s*·\s*)+$/g, '').trim();
+}
+
+function lineIsTight(text) {
+  const prefix = prefixBeforeSignal(text);
+  return prefix != null && prefix.length <= 80;
+}
+
+function pieceHasAge(text) {
+  const parsed = metadataSignal(text);
+  return !!(parsed && (parsed.daysOpen != null || parsed.isRepost));
+}
+
+function siblingCluster(node) {
+  const parent = node && node.parentElement;
+  if (!parent) return String(node && node.textContent || '');
+  const kids = Array.from(parent.childNodes);
+  let child = node;
+  while (child && child.parentElement && child.parentElement !== parent) child = child.parentElement;
+  const idx = kids.indexOf(child);
+  if (idx === -1) return String(node.textContent || '');
+  let start = idx;
+  let steps = 0;
+  while (start > 0 && steps++ < 8) {
+    const prevEl = kids[start - 1];
+    const prev = normalizePiece(prevEl && prevEl.textContent);
+    if (!prev) { start--; continue; }
+    if (prev.length > 80) break;
+    if (pieceHasAge(prev)) break;
+    start--;
+  }
+  let end = idx;
+  steps = 0;
+  while (end < kids.length - 1 && steps++ < 8) {
+    const nextEl = kids[end + 1];
+    const next = normalizePiece(nextEl && nextEl.textContent);
+    if (!next) { end++; continue; }
+    if (next.length > 80) break;
+    if (pieceHasAge(next)) break;
+    end++;
+  }
+  const parts = [];
+  for (let i = start; i <= end; i++) {
+    const piece = normalizePiece(kids[i].textContent);
+    if (piece) parts.push(piece);
+  }
+  return parts.join(' · ');
+}
+
+function widenToCluster(node) {
+  let best = String(node && node.textContent || '');
+  let current = node;
+  for (let depth = 0; depth < 6 && current && current.parentElement; depth++) {
+    const parent = current.parentElement;
+    if (parent === document.body || parent === document.documentElement) break;
+    if (nodeIsInList(parent)) break;
+    const clustered = siblingCluster(current);
+    const parsed = metadataSignal(clustered);
+    if (parsed && lineIsTight(clustered)) {
+      best = clustered;
+      const prefix = prefixBeforeSignal(clustered);
+      if (parsed.daysOpen != null && parsed.applicantCount != null && prefix && prefix.length > 0) return clustered;
+    }
+    current = parent;
   }
   return best;
+}
+
+function lineTextAround(node) {
+  const own = String(node && node.textContent || '');
+  // A title or company node must not expand into the card. That expansion
+  // glues the title onto the place name and hides the age line.
+  const ownParsed = metadataSignal(own);
+  if (!ownParsed) return own;
+  const ownPrefix = prefixBeforeSignal(own);
+  const ownHasPlace = ownParsed.daysOpen != null && ownPrefix && ownPrefix.length > 0 && ownPrefix.length <= 80;
+  if (ownHasPlace && ownParsed.applicantCount != null) return own;
+  const wider = widenToCluster(node);
+  const widerParsed = metadataSignal(wider);
+  if (ownHasPlace) {
+    if (widerParsed && widerParsed.applicantCount != null && lineIsTight(wider)) return wider;
+    return own;
+  }
+  if (widerParsed && lineIsTight(wider)) return wider;
+  return own;
+}
+
+function mergeMetadata(primary, extra) {
+  if (!extra || !extra.parsed) return primary;
+  if (!primary || !primary.parsed) return extra;
+  const a = primary.parsed;
+  const b = extra.parsed;
+  const extraHasAge = b.daysOpen != null || b.applicantCount != null || b.isRepost;
+  const primaryHasAge = a.daysOpen != null || a.applicantCount != null || a.isRepost;
+  return {
+    el: extraHasAge && !primaryHasAge ? (extra.el || primary.el) : (primary.el || extra.el),
+    text: extraHasAge && !primaryHasAge ? (extra.text || primary.text) : (primary.text || extra.text),
+    parsed: {
+      location: a.location || b.location || null,
+      daysOpen: a.daysOpen != null ? a.daysOpen : b.daysOpen,
+      isRepost: a.isRepost != null ? a.isRepost : b.isRepost,
+      applicantCount: a.applicantCount != null ? a.applicantCount : b.applicantCount,
+    },
+  };
+}
+
+function bestMetadataIn(root, anchor) {
+  if (!root || !root.querySelectorAll || !STJ.parseLinkedInMetadataLine) return null;
+  const nodes = root.querySelectorAll('p, div, span, li');
+  let found = null;
+  let ageParent = null;
+  let line = '';
+  const consider = function (text, el) {
+    const parsed = STJ.parseLinkedInMetadataLine(text);
+    if (!parsed) return;
+    const hasSignal = parsed.daysOpen != null || parsed.applicantCount != null || parsed.isRepost;
+    // A "City · On-site" bullet has no age. Keep it from winning the place
+    // name ahead of the line that actually carries the relative time.
+    if (!hasSignal) return;
+    if (hasSignal && ageParent && el && el.parentElement !== ageParent && !ageParent.contains(el)) return;
+    if (!found) {
+      found = { el: el, text: text, parsed: { location: null, daysOpen: null, isRepost: null, applicantCount: null } };
+    }
+    const slot = found.parsed;
+    if (!slot.location && parsed.location) slot.location = parsed.location;
+    if (slot.daysOpen == null && parsed.daysOpen != null) slot.daysOpen = parsed.daysOpen;
+    if (slot.isRepost == null && parsed.isRepost) slot.isRepost = true;
+    if (slot.applicantCount == null && parsed.applicantCount != null) slot.applicantCount = parsed.applicantCount;
+    if (hasSignal && !line) line = text;
+    if (parsed.daysOpen != null && el && el.parentElement && !ageParent) ageParent = el.parentElement;
+  };
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (nodeIsInList(el)) continue;
+    if (el.closest && el.closest('[data-stj-overlay], #ghost-detector-overlay')) continue;
+    if (!nodeFollowsAnchor(anchor, el)) continue;
+    const own = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!own || own.length > 220) continue;
+    const text = lineTextAround(el);
+    if (!text) continue;
+    consider(text, el);
+    if (found && found.parsed.daysOpen != null && found.parsed.applicantCount != null) break;
+  }
+  if (!found) return null;
+  if (found.parsed.daysOpen == null && found.parsed.applicantCount == null && !found.parsed.isRepost && !found.parsed.location) return null;
+  found.text = metadataSnippet(line || found.text);
+  return found;
+}
+
+function detailPaneRoot() {
+  if (typeof document === 'undefined' || !document.querySelector) return null;
+  return document.querySelector('.jobs-search__job-details') ||
+    document.querySelector('.scaffold-layout__detail') ||
+    document.querySelector('.jobs-details') ||
+    document.querySelector('main') ||
+    document.querySelector('#main');
+}
+
+function readMetadataAround(anchor, jobId) {
+  let el = anchor;
+  let found = null;
+  for (let i = 0; i < 8 && el && el !== document.body && el !== document.documentElement; i++) {
+    if (nodeIsInList(el)) break;
+    if (jobId && i > 0 && hasOtherJobViewLink(el, jobId)) {
+      const same = el.querySelectorAll('a[href*="/jobs/view/' + jobId + '"]');
+      if (same.length > 1) break;
+    }
+    const hit = bestMetadataIn(el, anchor);
+    if (hit && (hit.parsed.daysOpen != null || hit.parsed.applicantCount != null || hit.parsed.isRepost)) {
+      found = mergeMetadata(found, hit);
+      if (found.parsed.daysOpen != null && found.parsed.applicantCount != null) break;
+    } else if (hit) {
+      found = mergeMetadata(found, hit);
+    }
+    el = el.parentElement;
+  }
+  if (!found || found.parsed.daysOpen == null) {
+    const pane = detailPaneRoot();
+    if (pane && !nodeIsInList(pane)) {
+      const paneHit = bestMetadataIn(pane, anchor);
+      if (paneHit) found = mergeMetadata(found, paneHit);
+    }
+  }
+  if (!found) return null;
+  found.text = metadataSnippet(found.text);
+  return found;
+}
+
+function findMetadataElement(root) {
+  return bestMetadataIn(root, null);
 }
 
 function hasOtherJobViewLink(el, jobId) {
@@ -193,24 +415,24 @@ function readHrefDetail(jobId) {
   const outside = anchors.filter(function (a) { return !isLinkedInListNode(a); });
   let chosen = null;
   let container = null;
-  let meta = null;
   for (let i = 0; i < outside.length; i++) {
     const c = containerForTitleAnchor(outside[i], jobId);
     if (!c) continue;
-    if (companyLinkIn(c, outside[i]) && findMetadataElement(c)) {
+    if (companyLinkIn(c, outside[i])) {
       chosen = outside[i];
       container = c;
-      meta = findMetadataElement(c);
       break;
     }
   }
   if (!chosen && outside.length) {
     chosen = outside[outside.length - 1];
     container = containerForTitleAnchor(chosen, jobId) || chosen.parentElement;
-    meta = container && findMetadataElement(container);
   }
   if (!chosen || !container) return null;
   const company = companyLinkIn(container, chosen);
+  // Age, repost, and applicants may sit outside the company-link wrapper.
+  // Walk ancestors and, if needed, the detail pane. One value per field.
+  const meta = readMetadataAround(chosen, jobId);
   const parsed = meta && meta.parsed;
   // A bare list-row title is not a loaded detail pane. Keep the title if
   // that is all we have, and leave scope unset so salary and hiring
@@ -225,6 +447,7 @@ function readHrefDetail(jobId) {
     applicantCount: parsed ? parsed.applicantCount : null,
     container: loaded ? container : null,
     metaEl: loaded && meta ? meta.el : null,
+    metadataText: meta && meta.text ? meta.text : '',
   };
 }
 
@@ -236,7 +459,7 @@ function readComponentKeyDetail(jobId) {
     const key = el.getAttribute('componentkey') || '';
     if (key.indexOf(String(jobId)) === -1) continue;
     if (isLinkedInListNode(el) || hasOtherJobViewLink(el, jobId)) continue;
-    const meta = findMetadataElement(el);
+    const meta = readMetadataAround(el, jobId) || findMetadataElement(el);
     const parsed = meta && meta.parsed;
     const company = companyLinkIn(el, null);
     let title = null;
@@ -264,6 +487,7 @@ function readComponentKeyDetail(jobId) {
       applicantCount: parsed ? parsed.applicantCount : null,
       container: el,
       metaEl: meta ? meta.el : null,
+      metadataText: meta && meta.text ? meta.text : '',
     };
   }
   return null;
@@ -284,7 +508,7 @@ function readGhostJobTopCard() {
       if (isLinkedInListNode(el) || hasOtherJobViewLink(el, jobId)) break;
       const company = companyLinkIn(el, null);
       if (company) {
-        const meta = findMetadataElement(el);
+        const meta = readMetadataAround(h1, jobId) || findMetadataElement(el);
         const parsed = meta && meta.parsed;
         return {
           title: title,
@@ -295,6 +519,7 @@ function readGhostJobTopCard() {
           applicantCount: parsed ? parsed.applicantCount : null,
           container: el,
           metaEl: meta ? meta.el : null,
+          metadataText: meta && meta.text ? meta.text : '',
         };
       }
       el = el.parentElement;
@@ -471,8 +696,13 @@ function findLinkedInJobCards() {
     'li.jobs-search-results__list-item, li.scaffold-layout__list-item, .job-card-container, [data-job-id], [data-occludable-job-id]'
   ).forEach(add);
   document.querySelectorAll('[componentkey]').forEach(function (el) {
-    const key = el.getAttribute('componentkey') || '';
-    if (el.querySelector('a[href*="/jobs/view/"]') || /\d{6,}/.test(key)) add(el);
+    if (!el.querySelector('a[href*="/jobs/view/"]')) return;
+    const ids = {};
+    el.querySelectorAll('a[href*="/jobs/view/"]').forEach(function (a) {
+      const id = jobIdFromHref(a.getAttribute('href'));
+      if (id) ids[id] = true;
+    });
+    if (Object.keys(ids).length === 1) add(el);
   });
   document.querySelectorAll('a[href*="/jobs/view/"]').forEach(function (a) {
     const row = repeatingJobRow(a);
@@ -612,11 +842,21 @@ function parseLinkedInListing() {
     ? (scope.innerText || scope.textContent || '').toLowerCase()
     : '';
 
+  // One age log. The legacy top-card sentence is only for a legacy pane
+  // that produced no age. A value from either path suppresses the other.
   if (data.daysOpen != null) {
     console.log('[SkipThisJob] Days open:', data.daysOpen, 'from:', sources.daysOpen || '');
-  } else {
+  } else if (legacyRoot && !(hrefDetail && hrefDetail.metadataText)) {
     console.log('[SkipThisJob] Days open: null (no months/weeks/days-ago in top card)');
+  } else {
+    console.log('[SkipThisJob] Days open: null');
   }
+  const metadataLine = (hrefDetail && hrefDetail.metadataText)
+    || (keyedDetail && keyedDetail.metadataText)
+    || (ghostDetail && ghostDetail.metadataText)
+    || '';
+  data.metadataLine = metadataLine;
+  console.log('[SkipThisJob] LinkedIn metadata line:', metadataLine ? String(metadataLine).slice(0, 200) : '(none)');
 
   data.easyApply = scope ? /easy apply/.test(detailText) : false;
 
@@ -796,8 +1036,9 @@ function parseLinkedInListing() {
   }
   data.descriptionHash = STJ.hashDescription ? STJ.hashDescription(data.description) : null;
   data.fieldSources = sources;
-  const sourceBits = Object.keys(sources).map(function (k) { return k + '=' + sources[k]; });
-  console.log('[SkipThisJob] LinkedIn field sources: ' + (sourceBits.join(', ') || 'none'));
+  const trackedFields = ['title', 'companyName', 'location', 'daysOpen', 'isRepost', 'applicantCount', 'description'];
+  const sourceBits = trackedFields.map(function (k) { return k + '=' + (sources[k] || 'none'); });
+  console.log('[SkipThisJob] LinkedIn field sources: ' + sourceBits.join(', '));
 
   console.log('[GhostDetector] Full parsed data:', JSON.stringify(data, null, 2));
 
@@ -1654,15 +1895,43 @@ if (STJ.installPopupBridge) {
   STJ.installPopupBridge(() => lastPublishedScore);
 }
 
+function isLegacyListCard(card) {
+  if (!card || !card.getAttribute) return false;
+  if (card.getAttribute('data-job-id') || card.getAttribute('data-occludable-job-id')) return true;
+  const cl = card.classList;
+  return !!(cl && (
+    cl.contains('jobs-search-results__list-item') ||
+    cl.contains('scaffold-layout__list-item') ||
+    cl.contains('job-card-container')
+  ));
+}
+
+function cardTitleText(card) {
+  const links = card.querySelectorAll('a[href*="/jobs/view/"]');
+  let best = '';
+  for (let i = 0; i < links.length; i++) {
+    const t = String(links[i].textContent || '').replace(/\s+/g, ' ').trim();
+    if (t.length > best.length && t.length < 180) best = t;
+  }
+  if (best.length >= 3) return best;
+  const titleEl = card.querySelector(
+    'a.job-card-list__title, a.job-card-container__link, .job-card-list__title--link, strong'
+  );
+  return String(titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
 function parseLinkedInCard(card) {
   if (!card || !card.querySelector) return null;
-  const titleEl = card.querySelector(
-    'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link, strong'
-  );
-  const title = (titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
+  const title = cardTitleText(card);
   const platformJobId = jobIdFromCard(card);
   if (!title || title.length < 3) {
-    if (platformJobId && STJ.logUnparsedCard) STJ.logUnparsedCard('linkedin', 'title selector missed');
+    // New-layout rows have no stable attributes. A row we cannot read is
+    // skipped at debug level. Legacy cards still warn once.
+    if (platformJobId && isLegacyListCard(card) && STJ.logUnparsedCard) {
+      STJ.logUnparsedCard('linkedin', 'title selector missed');
+    } else if (platformJobId) {
+      console.debug('[SkipThisJob] skipped linkedin list row', platformJobId);
+    }
     return null;
   }
   const companyEl = card.querySelector(

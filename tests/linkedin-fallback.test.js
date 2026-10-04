@@ -205,6 +205,10 @@ test('new search-results layout reads the detail pane from the job link', async 
     assert.equal(next.applicantCount, 5);
     assert.equal(next.platformJobId, '1111111111');
     assert.equal(next.fieldSources.title, 'href-detail');
+    await dom.window.processCurrentListing();
+    await dom.window.processCurrentListing();
+    assert.equal(overlays(doc).length, 1);
+    assert.equal(doc.getElementById('ghost-detector-overlay').getAttribute('data-stj-job-id'), '1111111111');
     observer.disconnect();
   } finally {
     dom.window.close();

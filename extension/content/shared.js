@@ -600,42 +600,86 @@
 
   function parseApplicantCount(text) {
     if (!text) return null;
-    const m = String(text).match(/(?:over\s+)?(\d[\d,]*)\+?\s*(?:applicants?|people\s+clicked\s+apply)/i);
+    const t = String(text);
+    // "Be among the first 25 applicants" — the crowd size is the 25, and
+    // the generic "N applicants" match would see the same number. One value.
+    const first = t.match(/\bbe among the first\s+(\d[\d,]*)/i);
+    if (first) {
+      const n = parseInt(first[1].replace(/,/g, ''), 10);
+      return Number.isNaN(n) ? null : n;
+    }
+    const m = t.match(/(?:over\s+)?(\d[\d,]*)\+?\s*(?:applicants?|people\s+clicked\s+apply)/i);
     if (!m) return null;
     const n = parseInt(m[1].replace(/,/g, ''), 10);
     return Number.isNaN(n) ? null : n;
   }
 
   /**
+   * Collapse whitespace, nbsp, and bullet separators, and split words that
+   * LinkedIn concatenates when the dot is only a CSS separator
+   * ("United StatesReposted 2 weeks agoOver 100 people clicked apply").
+   */
+  function normalizeLinkedInMetadataText(text) {
+    let t = String(text || '')
+      .replace(/[\u00a0\u202f\u2007\u2009\u200a\u2060]/g, ' ')
+      .replace(/[·•・∙⋅\u2022\u2219\u2027\u30fb\u00b7|]/g, ' · ')
+      .replace(/([A-Za-z])(?=(?:Reposted|Posted|Over|Be among)\b)/g, '$1 ')
+      .replace(/([A-Za-z])(?=\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\b)/gi, '$1 ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return t;
+  }
+
+  /**
    * LinkedIn top-card metadata: "City · Reposted 2 weeks ago · Over 100 people clicked apply".
-   * Segments are split on · | •. The first approach that fills a field wins;
-   * this parser itself returns each field at most once.
+   * Age, repost, and applicants are each read once from the whole line.
+   * A missing separator still matches "Reposted 2 weeks ago" inside the text.
+   * Location is the place segment, not a second copy of the age.
    */
   function parseLinkedInMetadataLine(text) {
-    const raw = String(text || '').replace(/\s+/g, ' ').trim();
+    const raw = normalizeLinkedInMetadataText(text);
     if (!raw) return null;
-    const parts = raw.split(/\s*[·|•]\s*/).map(function (s) { return s.trim(); }).filter(Boolean);
-    if (!parts.length) return null;
+    const daysOpen = parseRelativeDays(raw);
+    const isRepost = /reposted/i.test(raw) ? true : null;
+    const applicantCount = parseApplicantCount(raw);
+    const parts = raw.split(/\s*·\s*/).map(function (s) { return s.trim(); }).filter(Boolean);
     let location = null;
-    let daysOpen = null;
-    let isRepost = null;
-    let applicantCount = null;
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      if (/reposted/i.test(part)) isRepost = true;
-      const days = parseRelativeDays(part);
-      if (days != null && daysOpen == null) {
-        daysOpen = days;
-        continue;
+    const separated = raw.indexOf(' · ') !== -1;
+    // "On-site" / "Remote" / "Hybrid" sit between the place and the age.
+    // The place is the segment next to the age, not a title or company
+    // that an ancestor walk concatenated in front of the line.
+    const workplaceOnly = /^(?:on-?site|remote|hybrid)$/i;
+    function isSignalPart(part) {
+      if (!part) return true;
+      if (/reposted/i.test(part)) return true;
+      if (/^(?:posted|over|be among)\b/i.test(part)) return true;
+      if (parseRelativeDays(part) != null) return true;
+      if (parseApplicantCount(part) != null) return true;
+      return false;
+    }
+    if (separated) {
+      let signalIdx = -1;
+      for (let i = 0; i < parts.length; i++) {
+        if (isSignalPart(parts[i])) { signalIdx = i; break; }
       }
-      const apps = parseApplicantCount(part);
-      if (apps != null && applicantCount == null) {
-        applicantCount = apps;
-        continue;
+      const from = signalIdx === -1 ? parts.length - 1 : signalIdx - 1;
+      for (let i = from; i >= 0; i--) {
+        const part = parts[i];
+        if (!part || part.length > 80) continue;
+        if (isSignalPart(part)) continue;
+        if (workplaceOnly.test(part) && i > 0) continue;
+        location = part;
+        break;
       }
-      if (!location && part && !/reposted/i.test(part)) location = part;
+    } else if (daysOpen != null || isRepost || applicantCount != null) {
+      const before = raw.split(/\b(?:reposted|posted)\b/i)[0].replace(/\s+/g, ' ').trim();
+      if (before && before.length <= 80 && parseRelativeDays(before) == null && parseApplicantCount(before) == null) {
+        location = before;
+      }
     }
     if (location == null && daysOpen == null && applicantCount == null && isRepost == null) return null;
+    // A bare title has none of the metadata signals. Do not treat it as a place.
+    if (!separated && daysOpen == null && applicantCount == null && !isRepost) return null;
     return {
       location: location,
       daysOpen: daysOpen,

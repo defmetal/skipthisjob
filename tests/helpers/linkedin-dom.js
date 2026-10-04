@@ -10,9 +10,10 @@ const ROOT = path.join(__dirname, '../../extension/content');
 const sharedSrc = fs.readFileSync(path.join(ROOT, 'shared.js'), 'utf8');
 const linkedinSrc = fs.readFileSync(path.join(ROOT, 'linkedin.js'), 'utf8');
 
-function load(html, url) {
+function load(html, url, hooks) {
   const dom = new JSDOM(html, { url: url, runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window;
+  if (hooks && typeof hooks.beforeScripts === 'function') hooks.beforeScripts(w);
   w.chrome = {
     runtime: {
       id: 'test',
