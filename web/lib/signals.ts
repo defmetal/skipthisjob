@@ -370,7 +370,8 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
         summary:
           'A concrete description lowers the score by a single point. It does not also take the vague-wording adds.',
         points: [{ when: 'Vagueness ratio 0.15 or below', effect: '−1' }],
-        note: 'Between 0.15 and 0.45, wording changes nothing.',
+        note:
+          'Between 0.15 and 0.45, wording changes nothing. A very-short or short length verdict is the only description-length chip on that listing; the specific-description credit is not also shown.',
       },
       {
         id: 'placeholder',

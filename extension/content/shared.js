@@ -295,9 +295,11 @@
     } else if (vagueness >= 0.45) {
       score += options.vagueMid != null ? options.vagueMid : 7;
       out.push('Some generic language in description');
-    } else if (vagueness <= 0.15) {
+    } else if (vagueness <= 0.15 && !options.suppressDetailed) {
       // Helper default is 0. scoreListingSignals passes detailedCredit: 1
       // so a specific JD is −1 on the shipped job-page path (public copy).
+      // A length verdict (very short / short) already occupies the one
+      // description-length chip, so the detailed credit is not also shown.
       const credit = options.detailedCredit != null ? options.detailedCredit : 0;
       score -= credit;
       out.push('Detailed, specific job description');
@@ -418,7 +420,11 @@
     }
 
     const descText = typeof row.description === 'string' ? row.description.trim() : '';
-    if (!preview && !descText) {
+    // descriptionParsed === false means the parser did not read a description
+    // node (a card snippet or an empty pane does not count). Callers that
+    // pass description text without the flag are treated as parsed.
+    const descriptionParsed = row.descriptionParsed !== false && !!descText;
+    if (!preview && !descriptionParsed) {
       signals.push('Job description unknown');
     } else if (!preview && platform === 'linkedin') {
       if (descText.length < 200) {
@@ -428,13 +434,22 @@
         score += 6;
         signals.push('Short or limited job description');
       }
+    } else if (!preview && platform === 'indeed') {
+      if (descText.length < 280) {
+        score += 5;
+        signals.push('Very short job description');
+      }
     }
 
-    if (!preview && descText && options.vagueness != null) {
+    const lengthVerdict = signals.some(function (s) {
+      return s === 'Very short job description' || s === 'Short or limited job description';
+    });
+    if (!preview && descriptionParsed && options.vagueness != null) {
       const desc = applyDescriptionQuality(score, signals, options.vagueness, {
         vagueHigh: platform === 'indeed' ? 11 : 12,
         vagueMid: platform === 'indeed' ? 6 : 7,
         detailedCredit: 1,
+        suppressDetailed: lengthVerdict,
       });
       score = desc.score;
     }
@@ -589,6 +604,58 @@
     if (!m) return null;
     const n = parseInt(m[1].replace(/,/g, ''), 10);
     return Number.isNaN(n) ? null : n;
+  }
+
+  /**
+   * LinkedIn top-card metadata: "City · Reposted 2 weeks ago · Over 100 people clicked apply".
+   * Segments are split on · | •. The first approach that fills a field wins;
+   * this parser itself returns each field at most once.
+   */
+  function parseLinkedInMetadataLine(text) {
+    const raw = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return null;
+    const parts = raw.split(/\s*[·|•]\s*/).map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!parts.length) return null;
+    let location = null;
+    let daysOpen = null;
+    let isRepost = null;
+    let applicantCount = null;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (/reposted/i.test(part)) isRepost = true;
+      const days = parseRelativeDays(part);
+      if (days != null && daysOpen == null) {
+        daysOpen = days;
+        continue;
+      }
+      const apps = parseApplicantCount(part);
+      if (apps != null && applicantCount == null) {
+        applicantCount = apps;
+        continue;
+      }
+      if (!location && part && !/reposted/i.test(part)) location = part;
+    }
+    if (location == null && daysOpen == null && applicantCount == null && isRepost == null) return null;
+    return {
+      location: location,
+      daysOpen: daysOpen,
+      isRepost: isRepost,
+      applicantCount: applicantCount,
+    };
+  }
+
+  /**
+   * "Title | Company | LinkedIn" (document.title or og:title).
+   * Returns null when the split is ambiguous.
+   */
+  function parseLinkedInPageTitle(rawTitle) {
+    let t = String(rawTitle || '').replace(/\s+/g, ' ').trim();
+    t = t.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim();
+    if (!t || looksLikeSerpHeading(t)) return null;
+    const parts = t.split(/\s*\|\s*/).map(function (s) { return s.trim(); }).filter(Boolean);
+    if (parts.length < 2) return null;
+    if (!parts[0] || !parts[1]) return null;
+    return { title: parts[0], companyName: parts[1] };
   }
 
   /**
@@ -1748,6 +1815,8 @@
   api.normalizeAgeText = normalizeAgeText;
   api.daysOpenFromIso = daysOpenFromIso;
   api.parseApplicantCount = parseApplicantCount;
+  api.parseLinkedInMetadataLine = parseLinkedInMetadataLine;
+  api.parseLinkedInPageTitle = parseLinkedInPageTitle;
   api.daysOpenFromCard = daysOpenFromCard;
   api.buildTrackPayload = buildTrackPayload;
   api.mergeApplyPayload = mergeApplyPayload;

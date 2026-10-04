@@ -30,9 +30,17 @@ function applyBridgedViewJob(data) {
   if (!data.title && viewJob.title) data.title = viewJob.title;
   if (!data.companyName && viewJob.company) data.companyName = viewJob.company;
   if (!data.location && viewJob.location) data.location = viewJob.location;
-  if (!data.description && viewJob.description) {
-    data.description = viewJob.description;
-    data.descriptionLength = viewJob.description.length;
+  const bridgedDesc = viewJob.description && String(viewJob.description).trim();
+  if (bridgedDesc) {
+    const current = data.descriptionParsed && data.description ? String(data.description).trim() : '';
+    // The mosaic/view-job model is a parsed description. Prefer it when the
+    // DOM never read a description node, or when the DOM text is a short
+    // fragment and the bridge has the full posting.
+    if (!current || (current.length < 280 && bridgedDesc.length > current.length + 40)) {
+      data.description = bridgedDesc;
+      data.descriptionParsed = true;
+      data.descriptionSource = 'mosaic-bridge';
+    }
   }
   if (data.salaryListed !== true && viewJob.salaryText &&
       (STJ.looksLikeSalary ? STJ.looksLikeSalary(viewJob.salaryText) : false)) {
@@ -200,6 +208,47 @@ function mosaicJobToDays(job) {
   if (job.pubDate) {
     const diff = Math.round((Date.now() - new Date(job.pubDate)) / (1000 * 60 * 60 * 24));
     return Math.max(0, diff);
+  }
+  return null;
+}
+
+function isIndeedResultCard(el) {
+  if (!el || !el.closest) return false;
+  return !!(
+    el.closest('.job_seen_beacon') ||
+    el.closest('.resultContent') ||
+    el.closest('.jobsearch-SerpJobCard') ||
+    el.closest('.tapItem') ||
+    el.closest('.slider_item')
+  );
+}
+
+// Real job-description nodes only. Card snippets
+// (.jobsearch-JobComponent-description on the /?vjk= homepage feed) are
+// not a description and must not feed the length penalty.
+function readParsedIndeedDescription(detailRoot) {
+  const selectors = ['#jobDescriptionText', '.jobsearch-jobDescriptionText'];
+  const roots = [];
+  const view = document.querySelector('#jobsearch-ViewjobPaneWrapper') ||
+    document.querySelector('#viewJobSSRRoot') ||
+    document.querySelector('#jobsearch-ViewJobPage') ||
+    document.querySelector('[data-testid="viewJob-body"]') ||
+    document.querySelector('.jobsearch-JobInfoWrapper');
+  if (view) roots.push(view);
+  if (detailRoot && roots.indexOf(detailRoot) === -1) roots.push(detailRoot);
+  roots.push(document);
+  for (let r = 0; r < roots.length; r++) {
+    const root = roots[r];
+    if (!root || !root.querySelector) continue;
+    for (let s = 0; s < selectors.length; s++) {
+      const nodes = root.querySelectorAll(selectors[s]);
+      for (let i = 0; i < nodes.length; i++) {
+        const el = nodes[i];
+        if (isIndeedResultCard(el)) continue;
+        const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text) return { text: text, source: selectors[s] };
+      }
+    }
   }
   return null;
 }
@@ -618,19 +667,20 @@ async function parseIndeedListing() {
   else if (/\bcontract\b/.test(chipText)) data.employmentType = 'contract';
   else if (/\bintern/.test(chipText)) data.employmentType = 'internship';
 
-  // 0.1.8 - Improved description detection
-  const descScope = salaryPane || detailRoot;
-  const descEl = descScope && (
-    descScope.querySelector('#jobDescriptionText') ||
-    descScope.querySelector('.jobsearch-jobDescriptionText') ||
-    descScope.querySelector('.jobsearch-JobComponent-description') ||
-    descScope.querySelector('[data-testid="job-description"]') ||
-    descScope.querySelector('.jobsearch-JobDescription')
-  );
-
-  if (descEl) {
-    data.description = descEl.textContent.trim();
-
+  // Description node only. On https://www.indeed.com/?vjk= the first
+  // .jobsearch-JobComponent is a result card whose
+  // .jobsearch-JobComponent-description is a short snippet. Scoring that
+  // snippet produced both "Very short" and "Detailed, specific". A card
+  // snippet is not a parsed description (0 risk, no length chip). The
+  // full text lives in #jobDescriptionText inside the view pane, or in
+  // the mosaic bridge viewJob.description.
+  const parsedDesc = readParsedIndeedDescription(detailRoot);
+  data.descriptionParsed = false;
+  data.descriptionSource = null;
+  if (parsedDesc) {
+    data.description = parsedDesc.text;
+    data.descriptionParsed = true;
+    data.descriptionSource = parsedDesc.source;
     if (data.salaryListed !== true && STJ.looksLikeSalary && STJ.looksLikeSalary(data.description)) {
       data.salaryListed = true;
     }
@@ -698,8 +748,12 @@ async function parseIndeedListing() {
     data.salaryListed = true;
   }
 
-  // Description length
-  data.descriptionLength = data.description ? data.description.length : 0;
+  // Length is 0 unless a description node (or the bridge) was actually read.
+  data.descriptionLength = data.descriptionParsed && data.description ? data.description.length : 0;
+  if (!data.descriptionParsed) data.description = null;
+  console.log('[SkipThisJob] Indeed description:', data.descriptionParsed
+    ? (data.descriptionSource + ' len=' + data.descriptionLength)
+    : 'unparsed');
 
   data.seniorityMismatch = STJ.detectSeniorityMismatch
     ? STJ.detectSeniorityMismatch(data.title || '', data.description || '')
@@ -793,7 +847,10 @@ function detectSeniorityMismatch(title, description) {
 
 function scoreLocally(listing) {
   const isHighTurnover = !!(listing.title && HIGH_TURNOVER_PATTERNS.some(p => p.test(listing.title)));
-  const vagueness = listing.description ? analyzeDescriptionVagueness(listing.description) : null;
+  const parsedDescText = listing.descriptionParsed === false
+    ? ''
+    : (typeof listing.description === 'string' ? listing.description.trim() : '');
+  const vagueness = parsedDescText ? analyzeDescriptionVagueness(parsedDescText) : null;
   const seniorityMismatch = !!(listing.seniorityMismatch ||
     detectSeniorityMismatch(listing.title || '', listing.description || ''));
 
@@ -830,12 +887,6 @@ function scoreLocally(listing) {
           } else if (listing.indeedRating >= 4.0) {
             score -= 3;
           }
-        }
-
-        const descText = typeof listing.description === 'string' ? listing.description.trim() : '';
-        if (descText && descText.length < 280) {
-          score += 5;
-          signals.push('Very short job description');
         }
 
         if (seniorityMismatch) {
