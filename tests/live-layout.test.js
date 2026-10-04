@@ -949,7 +949,7 @@ function trailingPaneNoise() {
       '<p>Meet the hiring team at Five9. Responses managed off LinkedIn.</p>' +
     '</section>' +
     '<section id="hiring"><h2>Meet the hiring team</h2>' +
-      '<a class="hirer-card" href="https://www.linkedin.com/in/pat-lee/">Pat Lee</a>' +
+      '<p>No one listed</p>' +
     '</section>' +
     '<div id="ghost-detector-overlay" data-stj-overlay="1" data-stj-job-id="' + LI_JOB + '">' +
       '<div class="ghost-detector-card">' +
@@ -1090,6 +1090,195 @@ test('a one-month posting is not a repost on either LinkedIn layout', () => {
   }
   assert.deepEqual(posted[0], posted[1]);
   assert.deepEqual(reposted[0], reposted[1]);
+});
+
+const HIRE_JOB = '4468850593';
+const HIRE_SEARCH = 'https://www.linkedin.com/jobs/search-results/?currentJobId=' + HIRE_JOB;
+const HIRE_VIEW = 'https://www.linkedin.com/jobs/view/' + HIRE_JOB + '/';
+
+function hireDescription() {
+  let text = 'To get the best candidate experience, please consider applying. This description mentions entry level colleagues and a director in passing. You will report to the Vice President of Product Marketing. The team of 8 uses Salesforce. ';
+  while (text.length < 900) text += 'Eight years of experience are required in the Austin office. ';
+  return text;
+}
+
+function hireInsights(withChips) {
+  if (!withChips) return '';
+  return '<div class="job-insights"><button type="button">Hybrid</button><span>Full-time</span><span>Entry level</span></div>';
+}
+
+function hireContact(mode) {
+  if (mode === 'profile') {
+    return '<section id="hiring"><h2>Meet the hiring team</h2><a href="https://www.linkedin.com/in/pat-lee/">Pat Lee</a></section>';
+  }
+  if (mode === 'name') {
+    return '<section id="hiring"><h3>Posted by</h3><p>Pat Lee</p></section>';
+  }
+  return '<section id="hiring"><h2>Meet the hiring team</h2><p>No one listed</p></section>';
+}
+
+function hireColumn(opts) {
+  return '<nav id="viewer-nav"><a href="https://www.linkedin.com/in/viewer-me/">Viewer Me</a></nav>' +
+    '<a id="stray-in" href="https://www.linkedin.com/in/someone-else/">Someone Else</a>' +
+    '<div id="detail">' +
+      hireInsights(opts.chips !== false) +
+      '<p><a id="title-anchor" href="https://www.linkedin.com/jobs/view/' + HIRE_JOB + '/">Product Marketing Manager Agentforce</a></p>' +
+      '<a href="https://www.linkedin.com/company/salesforce/">Salesforce</a>' +
+      '<p><span>Austin, TX</span> · <span>2 weeks ago</span> · <span>51 people clicked apply</span></p>' +
+      '<h2>About the job</h2><div id="jd">' + hireDescription() + '</div>' +
+      hireContact(opts.contact || 'none') +
+      '<aside><p>entry level director in the description aside</p><a href="https://www.linkedin.com/in/aside-person/">Aside Person</a></aside>' +
+    '</div>';
+}
+
+function hireListRows() {
+  let rows = '';
+  for (let i = 1; i <= 25; i++) {
+    const id = i === 2 ? HIRE_JOB : String(5000000000 + i);
+    const title = i === 2 ? 'Product Marketing Manager Agentforce' : 'Role ' + i;
+    const row = '<div role="button" componentkey="job-card-component-ref-' + id + '" data-pos="' + i + '">' +
+      '<p>' + title + '</p><p>Salesforce</p><p>Austin, TX (Hybrid)</p></div>';
+    if (i === 2) {
+      rows += '<div componentkey="open-job-shell">' +
+        '<p><a href="https://www.linkedin.com/jobs/view/' + HIRE_JOB + '/">Product Marketing Manager Agentforce</a></p>' +
+        row + '</div>';
+    } else {
+      rows += row;
+    }
+  }
+  return '<div componentkey="SearchResultsMainContent">' + rows + '</div>';
+}
+
+function hireSearchHtml(opts) {
+  return '<!DOCTYPE html><html><head><title>Product Marketing Manager Agentforce | Salesforce | LinkedIn</title></head><body>' +
+    '<div componentkey="split-view-shell">' + hireListRows() + hireColumn(opts) + '</div></body></html>';
+}
+
+function hireViewHtml(opts) {
+  return '<!DOCTYPE html><html><head><title>Product Marketing Manager Agentforce | Salesforce | LinkedIn</title></head><body>' +
+    '<div id="direct-root">' + hireColumn(opts) + '</div></body></html>';
+}
+
+function assertLayoutScoreEqual(searchListing, viewListing, searchScore, viewScore) {
+  assert.equal(searchListing.hiringContactVisible, viewListing.hiringContactVisible);
+  assert.equal(searchListing.seniorityLevel, viewListing.seniorityLevel);
+  assert.equal(searchListing.workArrangement, viewListing.workArrangement);
+  assert.equal(searchListing.employmentType, viewListing.employmentType);
+  assert.equal(searchListing.paneStableHash, viewListing.paneStableHash);
+  assert.equal(searchListing.paneChars, viewListing.paneChars);
+  assert.equal(searchScore.score, viewScore.score);
+  assert.deepEqual(chipSet(searchScore), chipSet(viewScore));
+}
+
+test('hiring contact is the hiring-team module on both LinkedIn layouts', () => {
+  const modes = [
+    { contact: 'none', visible: false, source: 'none' },
+    { contact: 'profile', visible: true, source: 'Meet the hiring team' },
+    { contact: 'name', visible: true, source: 'Posted by' },
+  ];
+  for (const mode of modes) {
+    const search = loadLinkedIn(hireSearchHtml({ contact: mode.contact, chips: true }), HIRE_SEARCH);
+    const view = loadLinkedIn(hireViewHtml({ contact: mode.contact, chips: true }), HIRE_VIEW);
+    try {
+      const searchLines = captureLogs(search.window);
+      const viewLines = captureLogs(view.window);
+      const searchListing = search.window.parseLinkedInListing();
+      const viewListing = view.window.parseLinkedInListing();
+      assert.equal(searchListing.hiringContactVisible, mode.visible, mode.contact + ' search');
+      assert.equal(viewListing.hiringContactVisible, mode.visible, mode.contact + ' view');
+      assert.equal(searchListing.seniorityLevel, 'entry', mode.contact);
+      assert.equal(viewListing.seniorityLevel, 'entry', mode.contact);
+      assert.equal(searchListing.workArrangement, 'hybrid', mode.contact);
+      assert.equal(viewListing.workArrangement, 'hybrid', mode.contact);
+      assert.equal(searchListing.employmentType, 'full_time', mode.contact);
+      assert.equal(viewListing.employmentType, 'full_time', mode.contact);
+      const searchScore = search.window.scoreLocally(searchListing);
+      const viewScore = view.window.scoreLocally(viewListing);
+      assertLayoutScoreEqual(searchListing, viewListing, searchScore, viewScore);
+      assert.equal(hasChip(searchScore, /No hiring contact/), !mode.visible, mode.contact);
+      assert.match(
+        searchLines.find((line) => line.includes('[SkipThisJob] hiring contact source=')),
+        new RegExp('hiring contact source=' + mode.source + '$')
+      );
+      assert.match(
+        viewLines.find((line) => line.includes('[SkipThisJob] hiring contact source=')),
+        new RegExp('hiring contact source=' + mode.source + '$')
+      );
+    } finally {
+      search.window.close();
+      view.window.close();
+    }
+  }
+});
+
+test('seniority and workplace chips match across LinkedIn layouts and ignore the description', () => {
+  const search = loadLinkedIn(hireSearchHtml({ contact: 'none', chips: false }), HIRE_SEARCH);
+  const view = loadLinkedIn(hireViewHtml({ contact: 'none', chips: false }), HIRE_VIEW);
+  try {
+    const searchListing = search.window.parseLinkedInListing();
+    const viewListing = view.window.parseLinkedInListing();
+    assert.equal(searchListing.seniorityLevel, null);
+    assert.equal(viewListing.seniorityLevel, null);
+    assert.equal(searchListing.workArrangement, null);
+    assert.equal(viewListing.workArrangement, null);
+    assert.equal(searchListing.employmentType, null);
+    assert.equal(viewListing.employmentType, null);
+    assert.match(searchListing.description, /entry level/);
+    const searchScore = search.window.scoreLocally(searchListing);
+    const viewScore = view.window.scoreLocally(viewListing);
+    assertLayoutScoreEqual(searchListing, viewListing, searchScore, viewScore);
+  } finally {
+    search.window.close();
+    view.window.close();
+  }
+});
+
+test('the open job list row gets one badge', () => {
+  const dom = loadLinkedIn(hireSearchHtml({ contact: 'none', chips: true }), HIRE_SEARCH);
+  try {
+    const doc = dom.window.document;
+    const cards = dom.window.findLinkedInJobCards();
+    assert.equal(cards.length, 25);
+    const openRow = cards.find((card) => card.getAttribute('componentkey') === 'job-card-component-ref-' + HIRE_JOB);
+    assert.ok(openRow);
+    assert.equal(openRow.getAttribute('data-pos'), '2');
+    assert.equal(openRow.getAttribute('role'), 'button');
+    dom.window.refreshLinkedInListBadges();
+    assert.equal(doc.querySelectorAll('.stj-list-badge').length, 25);
+    for (const card of cards) {
+      assert.equal(card.querySelectorAll('.stj-list-badge').length, 1);
+    }
+    assert.equal(openRow.querySelectorAll('.stj-list-badge').length, 1);
+    assert.ok(openRow.querySelector('.stj-list-badge').getAttribute('data-stj-score'));
+    assert.equal(doc.querySelectorAll('#detail .stj-list-badge').length, 0);
+    assert.equal(doc.querySelector('#stray-in').closest('.stj-list-badge'), null);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('Indeed document.title city/state/ZIP is not the company', async () => {
+  const { mosaicNode } = require('./helpers/indeed-dom.js');
+  const title = 'Marketing Manager- Harley-Davidson of Alamo City - San Antonio, TX 78233 - Indeed.com';
+  const html = '<!DOCTYPE html><html><head><title>' + title + '</title></head><body>' +
+    mosaicNode([{
+      jobkey: VJK,
+      displayTitle: 'Marketing Manager- Harley-Davidson of Alamo City',
+      company: 'Ed Morse Automotive Group',
+    }]) +
+    '<div id="jobsearch-ViewjobPaneWrapper">' +
+      '<div id="jobDescriptionText">Marketing manager for the Harley-Davidson store. The team of 4 reports to the general manager and runs the local launch calendar.</div>' +
+    '</div></body></html>';
+  const dom = loadIndeed(html, 'https://www.indeed.com/viewjob?jk=' + VJK);
+  try {
+    const listing = await dom.window.parseIndeedListing();
+    assert.equal(listing.title, 'Marketing Manager- Harley-Davidson of Alamo City');
+    assert.equal(listing.companyName, 'Ed Morse Automotive Group');
+    assert.notEqual(listing.companyName, 'San Antonio, TX 78233');
+    assert.notEqual(listing.fieldSources.companyName, 'document.title');
+  } finally {
+    dom.window.close();
+  }
 });
 
 test('list badges start once the cky rows exist', () => {

@@ -640,7 +640,8 @@ async function parseIndeedListing() {
       data.title = docParsed.title;
       fieldSources.title = 'document.title';
     }
-    if (!data.companyName && docParsed && docParsed.companyName) {
+    if (!data.companyName && docParsed && docParsed.companyName &&
+        !(STJ.looksLikePlaceName && STJ.looksLikePlaceName(docParsed.companyName))) {
       data.companyName = docParsed.companyName;
       fieldSources.companyName = 'document.title';
     }
@@ -648,7 +649,8 @@ async function parseIndeedListing() {
       data.title = ogParsed.title;
       fieldSources.title = 'og:title';
     }
-    if (!data.companyName && ogParsed && ogParsed.companyName) {
+    if (!data.companyName && ogParsed && ogParsed.companyName &&
+        !(STJ.looksLikePlaceName && STJ.looksLikePlaceName(ogParsed.companyName))) {
       data.companyName = ogParsed.companyName;
       fieldSources.companyName = 'og:title';
     }

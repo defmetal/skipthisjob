@@ -1119,12 +1119,22 @@
       .trim();
   }
 
+  // "San Antonio, TX", "San Antonio, TX 78233", or a bare ZIP. "Remote"
+  // and "Ed Morse Automotive Group" are not places.
+  function looksLikePlaceName(text) {
+    const t = cleanIdentityText(text);
+    if (!t) return false;
+    if (/^\d{5}(?:-\d{4})?$/.test(t)) return true;
+    return /^[A-Za-z][A-Za-z .'-]*?,\s*[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?$/.test(t);
+  }
+
   /**
    * "Title - Company - City, ST | Indeed.com", "Title - Company - Indeed",
    * or og:title. A trailing "| Indeed" / "- Indeed" / "- job post" is
    * removed first. Two remaining segments are title and company. Three or
-   * more keep the previous city split. SERP headings and section labels
-   * ("Pay", "Job type") return null.
+   * more keep the previous city split. A city/state/ZIP is never the
+   * company — companyName stays null so mosaic or JSON-LD can fill it.
+   * SERP headings and section labels ("Pay", "Job type") return null.
    */
   function parseIndeedPageTitle(rawTitle) {
     let t = cleanIdentityText(rawTitle).replace(/\s*\|\s*Indeed(?:\.com)?\s*$/i, '').trim();
@@ -1132,13 +1142,18 @@
     if (!t || looksLikeSerpHeading(t)) return null;
     const parts = t.split(/\s+-\s+/).map(function (x) { return x.trim(); }).filter(Boolean);
     if (parts.length === 2) {
-      if (isRejectedJobTitle(parts[0]) || isRejectedJobTitle(parts[1])) return null;
+      if (isRejectedJobTitle(parts[0])) return null;
+      if (looksLikePlaceName(parts[1])) return { title: parts[0], companyName: null };
+      if (isRejectedJobTitle(parts[1])) return null;
       return { title: parts[0], companyName: parts[1] };
     }
     if (parts.length < 3) return null;
     const company = parts[parts.length - 2];
     const title = parts.slice(0, parts.length - 2).join(' - ');
-    if (!title || !company || isRejectedJobTitle(title)) return null;
+    if (!title || isRejectedJobTitle(title)) return null;
+    if (!company || looksLikePlaceName(company) || isRejectedJobTitle(company)) {
+      return { title: title, companyName: null };
+    }
     return { title: title, companyName: company };
   }
 
@@ -1206,7 +1221,10 @@
       let used = false;
       const nextTitle = sanitizeJobTitle(cand.title);
       if (!out.title && nextTitle) { out.title = nextTitle; used = true; }
-      if (!out.companyName && cand.companyName) { out.companyName = cand.companyName; used = true; }
+      if (!out.companyName && cand.companyName && !looksLikePlaceName(cand.companyName)) {
+        out.companyName = cand.companyName;
+        used = true;
+      }
       if (used) out.sources.push(label);
     };
 
@@ -1957,6 +1975,7 @@
   api.recallIndeedJobSignals = recallIndeedJobSignals;
   api.storageCall = storageCall;
   api.resolveIndeedIdentity = resolveIndeedIdentity;
+  api.looksLikePlaceName = looksLikePlaceName;
   api.parseIndeedPageTitle = parseIndeedPageTitle;
   api.isRejectedJobTitle = isRejectedJobTitle;
   api.sanitizeJobTitle = sanitizeJobTitle;

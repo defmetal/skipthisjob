@@ -298,6 +298,17 @@ function noteListingChip(data, text) {
   else if (!data.employmentType && /^(?:internship|intern)$/i.test(t)) data.employmentType = 'internship';
 }
 
+function noteSeniorityChip(data, text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t || data.seniorityLevel) return;
+  if (/^entry level$/i.test(t)) data.seniorityLevel = 'entry';
+  else if (/^(?:internship|intern)$/i.test(t)) data.seniorityLevel = 'entry';
+  else if (/^associate$/i.test(t)) data.seniorityLevel = 'entry';
+  else if (/^mid-senior level$/i.test(t)) data.seniorityLevel = 'senior';
+  else if (/^director$/i.test(t)) data.seniorityLevel = 'director';
+  else if (/^executive$/i.test(t)) data.seniorityLevel = 'c_suite';
+}
+
 function isJobCardComponent(el) {
   if (!el || !el.getAttribute) return false;
   return (el.getAttribute('componentkey') || '').indexOf('job-card-component-ref-') === 0;
@@ -449,6 +460,16 @@ function nodeIsInList(el) {
   if (el.closest && el.closest('.scaffold-layout__list, .jobs-search-results-list, .jobs-search-results__list, [data-stj-list-root]')) return true;
   if (el.closest && el.closest('[componentkey^="job-card-component-ref-"], [componentkey="SearchResultsMainContent"]')) return true;
   return false;
+}
+
+// A list CLASS on a shell that also wraps the open job is not a row.
+function nodeIsJobCardRow(el) {
+  if (!el || !el.closest) return false;
+  return !!(
+    isJobCardComponent(el) ||
+    isSearchResultsList(el) ||
+    el.closest('[componentkey^="job-card-component-ref-"], [componentkey="SearchResultsMainContent"], li.jobs-search-results__list-item, li.scaffold-layout__list-item, .job-card-container, [data-occludable-job-id], [data-job-id]')
+  );
 }
 
 function nodeFollowsAnchor(anchor, node) {
@@ -1242,6 +1263,18 @@ function readLongDetailBlock(root) {
   return best || null;
 }
 
+function textWithoutChrome(el) {
+  if (!el) return '';
+  if (!el.cloneNode || !el.querySelector) return el.textContent || '';
+  if (!isExtensionChrome(el) && !el.querySelector('[id="ghost-detector-overlay"], [data-stj-overlay], .stj-list-badge, .ghost-detector-card')) {
+    return el.textContent || '';
+  }
+  const clone = el.cloneNode(true);
+  stripExtensionNodes(clone);
+  if (isExtensionChrome(clone) && clone.parentNode) return '';
+  return clone.textContent || '';
+}
+
 function elementText(el) {
   if (!el) return '';
   const tc = el.textContent || '';
@@ -1278,6 +1311,17 @@ function stripSimilarModules(clone) {
   }
 }
 
+function subtreeHasAboutBody(el) {
+  if (!el || el.nodeType !== 1) return false;
+  if (isAboutJobHeading(el)) return true;
+  if (!el.querySelectorAll) return false;
+  const nodes = el.querySelectorAll('h1, h2, h3, h4, div, span, p, section');
+  for (let i = 0; i < nodes.length; i++) {
+    if (isAboutJobHeading(nodes[i])) return true;
+  }
+  return false;
+}
+
 function stripForeignViewSubtrees(clone, jobId) {
   if (!jobId || !clone || !clone.querySelectorAll) return;
   const links = Array.from(clone.querySelectorAll('a[href*="/jobs/view/"]'));
@@ -1290,7 +1334,14 @@ function stripForeignViewSubtrees(clone, jobId) {
     while (node.parentElement && node.parentElement !== clone) {
       const parent = node.parentElement;
       if (distinctViewIds(parent).indexOf(String(jobId)) !== -1) break;
+      // A similar-jobs link beside the description must not delete the
+      // About the job column when that column does not repeat the job id.
+      if (subtreeHasAboutBody(parent) && !subtreeHasAboutBody(node)) break;
       node = parent;
+    }
+    if (subtreeHasAboutBody(node)) {
+      if (link.parentNode) link.parentNode.removeChild(link);
+      continue;
     }
     if (node !== clone && node.parentNode) node.parentNode.removeChild(node);
   }
@@ -1327,8 +1378,13 @@ function textBeforeHeading(root, heading) {
       if (child.nodeType === 3) { parts.push(child.textContent || ''); continue; }
       if (child.nodeType !== 1) continue;
       if (isExtensionChrome(child)) continue;
+      // A shell class that also wraps the open job is not a list row.
+      // Only skip a child that actually holds result rows.
+      if (isJobCardComponent(child) || isSearchResultsList(child) || nodeContainsListRows(child)) continue;
+      const childTag = (child.tagName || '').toLowerCase();
+      if (childTag === 'nav' || (child.getAttribute && child.getAttribute('role') === 'navigation')) continue;
       if (child.contains && child.contains(heading)) { walk(child); continue; }
-      parts.push(child.textContent || '');
+      parts.push(textWithoutChrome(child));
     }
   }
   walk(root);
@@ -1342,6 +1398,173 @@ function boundedPaneText(pane) {
   const heading = firstAboutHeading(pane);
   if (!heading) return normalizeBlock(elementText(pane));
   return normalizeBlock(textBeforeHeading(pane, heading) + ' ' + collectAfterHeading(pane, heading));
+}
+
+// The title's column, stopping at the About the job heading, list rows, or body.
+// Search and /jobs/view/ share this header even when pane depth differs.
+function headerRootFromAnchor(anchor) {
+  if (!anchor) return null;
+  let node = anchor;
+  for (let i = 0; i < 20 && node && node.parentElement; i++) {
+    const parent = node.parentElement;
+    if (!parent || parent === document.body || parent === document.documentElement) break;
+    if (paneStopReason(parent)) break;
+    const heading = firstAboutHeading(parent);
+    if (heading && !(node.contains && node.contains(heading))) return parent;
+    node = parent;
+  }
+  return node && node !== anchor ? node : (anchor.parentElement || anchor);
+}
+
+function headerBeforeAbout(anchor) {
+  const root = headerRootFromAnchor(anchor);
+  if (!root) return '';
+  const heading = firstAboutHeading(root);
+  if (!heading) return '';
+  return normalizeBlock(textBeforeHeading(root, heading));
+}
+
+// Same signal text on both layouts: the header beside the title, plus the
+// About the job body. A stripped clone that lost the description does not
+// shrink /jobs/view/ relative to search.
+function stableSignalText(anchor, jobId, cleanPane) {
+  const aboutLive = readAboutJobAnywhere(jobId) || '';
+  const aboutPane = cleanPane ? (readAboutJobDescription(cleanPane) || '') : '';
+  const about = aboutLive.length >= aboutPane.length ? aboutLive : aboutPane;
+  if (!about || about.length < 200) return boundedPaneText(cleanPane);
+  const header = headerBeforeAbout(anchor);
+  return normalizeBlock((header ? header + ' ' : '') + about);
+}
+
+function chipLabel(el) {
+  if (!el || el.nodeType !== 1) return '';
+  let label = ownText(el);
+  if (!label) {
+    const full = normalizeBlock(el.textContent);
+    if (full && full.length <= 32) label = full;
+  }
+  if (!label || label.length > 32) return '';
+  return label;
+}
+
+function elementFollows(anchor, el) {
+  if (!anchor || !el || !anchor.compareDocumentPosition) return false;
+  return (anchor.compareDocumentPosition(el) & 4) !== 0;
+}
+
+// Job-insight chips beside the title (Hybrid, Full-time, Entry level).
+// The description body and the results list are not chips.
+function applyInsightChips(data, anchor) {
+  const root = headerRootFromAnchor(anchor) || linkedInDetailRoot();
+  if (!root || !root.querySelectorAll) return;
+  const heading = firstAboutHeading(root);
+  const nodes = root.querySelectorAll('a, button, span, li, p, div');
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (isExtensionChrome(el) || nodeIsJobCardRow(el)) continue;
+    if (heading && (el === heading || (el.contains && el.contains(heading)))) continue;
+    if (heading && elementFollows(heading, el)) continue;
+    const label = chipLabel(el);
+    if (!label) continue;
+    noteListingChip(data, label);
+    noteSeniorityChip(data, label);
+  }
+  const blobs = root.querySelectorAll(
+    '._81f0ce2b, [data-testid*="job-attribute"], .job-details-jobs-unified-top-card__job-insight, .jobs-unified-top-card__job-insight'
+  );
+  for (let i = 0; i < blobs.length; i++) {
+    const el = blobs[i];
+    if (isExtensionChrome(el) || nodeIsJobCardRow(el)) continue;
+    if (heading && elementFollows(heading, el)) continue;
+    const full = normalizeBlock(el.textContent);
+    if (!full || full.length > 80) continue;
+    const pieces = full.split(/\s*[·•|]\s*|\s{2,}/);
+    for (let p = 0; p < pieces.length; p++) {
+      noteListingChip(data, pieces[p]);
+      noteSeniorityChip(data, pieces[p]);
+    }
+  }
+}
+
+function hiringModuleLabel(el) {
+  if (!el || el.nodeType !== 1 || isExtensionChrome(el)) return '';
+  if (nodeIsJobCardRow(el)) return '';
+  if (el.closest && el.closest('nav, [role="navigation"], #ghost-detector-overlay, [data-stj-overlay]')) return '';
+  const own = ownText(el);
+  const full = normalizeBlock(el.textContent);
+  const label = own || (full.length > 0 && full.length <= 80 ? full : '');
+  if (!label || label.length > 80) return '';
+  if (/^(?:meet the hiring team|hiring team|posted by)$/i.test(label)) return label.replace(/\s+/g, ' ').trim();
+  return '';
+}
+
+function hiringModuleRoot(heading) {
+  let node = heading;
+  for (let i = 0; i < 8 && node && node.parentElement; i++) {
+    const parent = node.parentElement;
+    if (!parent || parent === document.body || parent === document.documentElement) break;
+    if (nodeContainsListRows(parent) || isSearchResultsList(parent)) break;
+    if (isExtensionChrome(parent)) break;
+    if (parent.closest && parent.closest('nav, [role="navigation"]')) break;
+    const parentText = normalizeBlock(parent.textContent);
+    const nodeText = normalizeBlock(node.textContent);
+    if (/about the job/i.test(parentText) && !/about the job/i.test(nodeText)) break;
+    if (parentText.length > nodeText.length + 500) break;
+    node = parent;
+  }
+  return node || heading;
+}
+
+function looksLikePersonName(text) {
+  const t = normalizeBlock(text);
+  if (!t || t.length < 3 || t.length > 60) return false;
+  if (/meet the hiring team|posted by|hiring team|message|follow|apply|linkedin/i.test(t)) return false;
+  return /^[A-Z][a-z]+(?:[-'][A-Z][a-z]+)?(?:\s+[A-Z][a-z]+(?:[-'][A-Z][a-z]+)?){1,2}$/.test(t);
+}
+
+function moduleHasContact(root, heading) {
+  if (!root || !root.querySelectorAll) return false;
+  const links = root.querySelectorAll('a[href*="/in/"]');
+  for (let i = 0; i < links.length; i++) {
+    const link = links[i];
+    if (isExtensionChrome(link) || nodeIsJobCardRow(link)) continue;
+    if (link.closest && link.closest('nav, [role="navigation"], #ghost-detector-overlay, [data-stj-overlay]')) continue;
+    return true;
+  }
+  const nodes = root.querySelectorAll('a, span, p, strong, div');
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (el === heading || isExtensionChrome(el) || nodeIsJobCardRow(el)) continue;
+    const label = ownText(el) || (normalizeBlock(el.textContent).length <= 60 ? normalizeBlock(el.textContent) : '');
+    if (looksLikePersonName(label)) return true;
+  }
+  return false;
+}
+
+// True only for a Meet the hiring team / Posted by / hiring team module
+// whose own subtree has a /in/ profile or a person name. A stray /in/ in
+// the pane, the viewer's nav, a list row, or our card does not count.
+function findHiringContactSource() {
+  if (typeof document === 'undefined' || !document.querySelectorAll) return '';
+  const nodes = document.querySelectorAll('h1, h2, h3, h4, div, span, p, section, button');
+  for (let i = 0; i < nodes.length; i++) {
+    const label = hiringModuleLabel(nodes[i]);
+    if (!label) continue;
+    const root = hiringModuleRoot(nodes[i]);
+    if (moduleHasContact(root, nodes[i])) return label;
+  }
+  const legacy = document.querySelectorAll(
+    '.job-details-people-who-can-help, .jobs-poster, .hirer-card, [data-testid="hirer-card"], [data-testid*="hiring-team"]'
+  );
+  for (let i = 0; i < legacy.length; i++) {
+    const el = legacy[i];
+    if (isExtensionChrome(el) || nodeIsJobCardRow(el)) continue;
+    if (el.closest && el.closest('nav, [role="navigation"], #ghost-detector-overlay, [data-stj-overlay]')) continue;
+    if (!moduleHasContact(el, null)) continue;
+    const heading = hiringModuleLabel(el) || 'hiring team';
+    return heading;
+  }
+  return '';
 }
 
 function stripNoise(el, jobId) {
@@ -1580,6 +1803,9 @@ function findLinkedInJobCards() {
   document.querySelectorAll('[componentkey^="job-card-component-ref-"]').forEach(add);
   document.querySelectorAll('[componentkey]').forEach(function (el) {
     if (isJobCardComponent(el) || isSearchResultsList(el)) return;
+    // A split-view shell that wraps the list and the one open-job link is
+    // not a row. Using it drops the open job's badge.
+    if (el.querySelector('[componentkey^="job-card-component-ref-"], li.jobs-search-results__list-item, li.scaffold-layout__list-item, .job-card-container, [data-occludable-job-id], [data-job-id]')) return;
     if (!el.querySelector('a[href*="/jobs/view/"]')) return;
     const ids = {};
     el.querySelectorAll('a[href*="/jobs/view/"]').forEach(function (a) {
@@ -1592,13 +1818,26 @@ function findLinkedInJobCards() {
     const row = repeatingJobRow(a);
     if (row) add(row);
   });
+  function listRowRank(el) {
+    if (!el || !el.getAttribute) return 0;
+    if (el.getAttribute('role') === 'button' && isJobCardComponent(el)) return 100;
+    if (isJobCardComponent(el)) return 80;
+    if (isLegacyListCard(el)) return 70;
+    if (el.hasAttribute('data-display-contents')) return 60;
+    if (el.querySelector('[componentkey^="job-card-component-ref-"], li.jobs-search-results__list-item, .job-card-container, [data-occludable-job-id]')) return 0;
+    return 10;
+  }
   const byId = new Map();
   found.forEach(function (el) {
     const id = jobIdFromCard(el);
     if (!id) return;
     const prev = byId.get(id);
-    if (!prev) byId.set(id, el);
-    else if (el.contains(prev)) byId.set(id, el);
+    if (!prev) { byId.set(id, el); return; }
+    const nextRank = listRowRank(el);
+    const prevRank = listRowRank(prev);
+    if (nextRank > prevRank) byId.set(id, el);
+    else if (nextRank < prevRank) return;
+    else if (prev.contains(el)) byId.set(id, el);
   });
   const rows = Array.from(byId.values());
   const visible = rows.filter(function (el) {
@@ -1745,7 +1984,7 @@ function parseLinkedInListing() {
     signalPane = jobPane;
   }
   const cleanPane = signalPane ? stripNoise(signalPane, jobIdNow) : null;
-  const boundedText = boundedPaneText(cleanPane);
+  const boundedText = stableSignalText(locatedPane && locatedPane.anchor, jobIdNow, cleanPane);
   const detailText = boundedText.toLowerCase();
   const paneChars = detailText.length;
   const paneStableHash = STJ.hashDescription ? STJ.hashDescription(boundedText) : null;
@@ -1916,44 +2155,12 @@ function parseLinkedInListing() {
     console.log('[SkipThisJob] Responses managed off LinkedIn source=about-job');
   }
 
-  // Attribute chips only. Never document.body — the filter bar says "Remote"
-  // on almost every search. If the chip row is missing, arrangement stays null.
-  const topAttributeArea = cleanPane
-    ? cleanPane.querySelector('._81f0ce2b, [data-testid*="job-attribute"], .job-details-jobs-unified-top-card__job-insight, .jobs-unified-top-card__job-insight')
-    : null;
-  const attributeText = topAttributeArea
-    ? (topAttributeArea.textContent || '').toLowerCase()
-    : '';
-
-  if (topAttributeArea) {
-    if (attributeText.includes('remote') && !attributeText.includes('hybrid')) {
-      data.workArrangement = 'remote';
-    } else if (attributeText.includes('hybrid')) {
-      data.workArrangement = 'hybrid';
-    } else if (attributeText.includes('on-site') || attributeText.includes('onsite')) {
-      data.workArrangement = 'onsite';
-    }
-
-    if (attributeText.includes('full-time')) {
-      data.employmentType = 'full_time';
-    } else if (attributeText.includes('part-time')) {
-      data.employmentType = 'part_time';
-    } else if (attributeText.includes('contract')) {
-      data.employmentType = 'contract';
-    } else     if (attributeText.includes('intern')) {
-      data.employmentType = 'internship';
-    }
-  }
-
-  // New layouts put Remote / Full-time on anchors that share the job URL.
-  // List-row chips and the filter bar stay out of the open job.
-  if (jobIdNow && document.querySelectorAll && (!data.workArrangement || !data.employmentType)) {
-    const chipAnchors = document.querySelectorAll('a[href*="/jobs/view/' + jobIdNow + '"]');
-    for (let i = 0; i < chipAnchors.length; i++) {
-      if (anchorIsResultsRow(chipAnchors[i])) continue;
-      noteListingChip(data, chipAnchors[i].textContent);
-    }
-  }
+  // Insight chips beside the title, on both layouts. Never the description
+  // body and never the results list or the filter bar.
+  const chipAnchor = (locatedPane && locatedPane.anchor) ||
+    (legacyRoot && legacyRoot.querySelector && legacyRoot.querySelector('h1, .jobs-unified-top-card__job-title, .job-details-jobs-unified-top-card__job-title'));
+  applyInsightChips(data, chipAnchor);
+  const attributeText = [data.workArrangement || '', data.employmentType || '', data.seniorityLevel || ''].join(' ');
 
   const salaryHaystack = [attributeText, detailText, data.description || ''].join('\n');
   // A header cluster (title, company, metadata) is not the job body. Missing
@@ -1977,37 +2184,17 @@ function parseLinkedInListing() {
     data.salaryListed = false;
   }
 
-  // Hiring contact: only the hirer card inside the detail pane.
-  // A page-wide /in/ link matches the nav "Me" profile on every logged-in page.
+  // Hiring contact is the hiring-team module only. A stray /in/ link in the
+  // pane, the viewer's nav, a list row, or our card is not a contact.
   if (!bodyLoaded) {
     data.hiringContactVisible = null;
-  } else if (!cleanPane) {
-    data.hiringContactVisible = false;
+    console.log('[SkipThisJob] hiring contact source=none');
   } else {
-    const hiringEl =
-      cleanPane.querySelector('.job-details-people-who-can-help') ||
-      cleanPane.querySelector('.jobs-poster__name') ||
-      cleanPane.querySelector('.jobs-poster') ||
-      cleanPane.querySelector('.hirer-card__hirer-information') ||
-      cleanPane.querySelector('.hirer-card') ||
-      cleanPane.querySelector('[data-testid="hirer-card"]') ||
-      cleanPane.querySelector('[data-testid*="hiring-team"]');
-    const profileInCard = cleanPane.querySelector(
-      '.job-details-people-who-can-help a[href*="/in/"], .hirer-card a[href*="/in/"], [data-testid="hirer-card"] a[href*="/in/"], .jobs-poster a[href*="/in/"]'
-    );
-    const hasHiringTeamText = detailText.includes('meet the hiring team') ||
-                              detailText.includes('people you can reach out to') ||
-                              String(description || '').toLowerCase().includes('meet the hiring team');
-    data.hiringContactVisible = !!(hiringEl || profileInCard || hasHiringTeamText);
+    const hiringSource = findHiringContactSource();
+    data.hiringContactVisible = !!hiringSource;
+    console.log('[SkipThisJob] hiring contact source=' + (hiringSource || 'none'));
   }
-
   console.log('[GhostDetector] Hiring contact visible:', data.hiringContactVisible);
-
-  // Seniority from detail panel text
-  if (detailText.includes('entry level') || detailText.includes('internship')) data.seniorityLevel = 'entry';
-  else if (detailText.includes('mid-senior')) data.seniorityLevel = 'senior';
-  else if (detailText.includes('director')) data.seniorityLevel = 'director';
-  else if (detailText.includes('executive')) data.seniorityLevel = 'c_suite';
 
   // Job ID from URL
   const href = pageHref();
