@@ -168,7 +168,7 @@ test('new search-results layout reads the detail pane from the job link', async 
     assert.equal(doc.querySelector('#detail-a').querySelectorAll('.stj-list-badge').length, 0);
     assert.equal(doc.querySelector('#detail-b').querySelectorAll('.stj-list-badge').length, 0);
 
-    const overlay = await waitFor(() => doc.getElementById('ghost-detector-overlay'), 2000);
+    const overlay = await waitFor(() => doc.getElementById('ghost-detector-overlay'), 4500);
     assert.ok(overlay);
     assert.equal(overlays(doc).length, 1);
     assert.equal(overlay.getAttribute('data-stj-job-id'), '4423270116');

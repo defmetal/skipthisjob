@@ -649,6 +649,160 @@ test('open-job pane is the highest ancestor without list rows', () => {
   }
 });
 
+function parityBody() {
+  const sentence = 'You will report to the Vice President of Product Marketing. The team of 8 uses Salesforce, HubSpot, and Tableau. Eight years of experience are required. You own the outbound dialer narrative and the quarterly launch plan with the San Ramon office. ';
+  let desc = '';
+  while (desc.length < 1500) desc += sentence;
+  return '<h2>About the job</h2>' +
+    '<div id="jd">' + desc + '</div>' +
+    '<div data-testid="expandable-text-box">EXPANDABLE_BODY_MARKER The team of 8 uses Salesforce every week.</div>';
+}
+
+function parityHeaderNest() {
+  let block = '<div id="hdr"><p><a id="title-anchor" href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">Senior Product Marketing Manager</a></p>' +
+    '<p><a href="https://www.linkedin.com/company/five9/">Five9</a></p>' +
+    '<p>United States · Reposted 3 months ago · Over 100 applicants</p></div>';
+  for (let i = 0; i < 6; i++) block = '<div class="nest">' + block + '</div>';
+  return block;
+}
+
+function similarJobsModule() {
+  return '<section id="similar"><h3>Similar jobs</h3>' +
+    '<a href="https://www.linkedin.com/jobs/view/9999999999/">Other Role</a>' +
+    '<p>Easy Apply</p>' +
+    '<p>Actively reviewing applicants</p>' +
+    '<p>Over 500 people clicked apply</p>' +
+    '<p>Responses managed off LinkedIn</p></section>';
+}
+
+function parityColumn(opts) {
+  return '<div id="pane-top"><div id="above-uuid">' +
+    '<div id="uuid" componentkey="8f3a1c2e-1111-4222-8333-444455556666">' +
+    parityHeaderNest() +
+    (opts.body ? parityBody() : '') +
+    (opts.similar ? similarJobsModule() : '') +
+    '</div></div></div>';
+}
+
+function paritySearchHtml(opts) {
+  const list = '<div componentkey="SearchResultsMainContent">' +
+    realJobCard('4467585708', {
+      title: 'VP Media Operations',
+      company: 'Daniel Brian Advertising',
+      location: 'Rochester, MI (Hybrid)',
+      reviewing: true,
+      easy: true,
+    }) +
+    '</div>';
+  return '<!DOCTYPE html><html><head><title>Jobs | LinkedIn</title></head><body>' +
+    '<div id="shell" class="jobs-search-results-list">' + list + parityColumn(opts) + '</div>' +
+    '</body></html>';
+}
+
+function parityViewHtml() {
+  return '<!DOCTYPE html><html><head><title>Jobs | LinkedIn</title></head><body>' +
+    parityColumn({ body: true, similar: false }) +
+    '</body></html>';
+}
+
+function chipSet(score) {
+  return Array.from(score.signals).map(String).sort();
+}
+
+test('search results with a similar-jobs link score the same as /jobs/view/', () => {
+  const search = loadLinkedIn(paritySearchHtml({ body: true, similar: true }), LI_SEARCH);
+  const view = loadLinkedIn(parityViewHtml(), LI_VIEW);
+  try {
+    const searchListing = search.window.parseLinkedInListing();
+    const viewListing = view.window.parseLinkedInListing();
+    assert.equal(searchListing.fieldSources.description, 'about-job');
+    assert.equal(viewListing.fieldSources.description, 'about-job');
+    assert.match(searchListing.description, /EXPANDABLE_BODY_MARKER/);
+    assert.equal(searchListing.description, viewListing.description);
+    assert.equal(/easy apply/i.test(searchListing.description), false);
+    assert.equal(searchListing.easyApply, false);
+    assert.equal(viewListing.easyApply, false);
+    assert.equal(searchListing.activelyReviewing, false);
+    assert.equal(viewListing.activelyReviewing, false);
+    assert.equal(searchListing.responseManagedOffsite, false);
+    assert.equal(viewListing.responseManagedOffsite, false);
+    assert.equal(searchListing.applicantCount, 100);
+    assert.equal(viewListing.applicantCount, 100);
+    assert.equal(searchListing.salaryListed, false);
+    assert.equal(viewListing.salaryListed, false);
+    assert.equal(searchListing.hiringContactVisible, false);
+    assert.equal(viewListing.hiringContactVisible, false);
+    assert.ok(searchListing.paneChars >= 600, 'search paneChars ' + searchListing.paneChars);
+    assert.ok(viewListing.paneChars >= 600, 'view paneChars ' + viewListing.paneChars);
+    const pane = search.window.openJobDetailRoot(LI_JOB);
+    assert.equal(pane.querySelector('h2').textContent, 'About the job');
+    assert.equal(pane.querySelector('[componentkey^="job-card-component-ref-"]'), null);
+    const searchScore = search.window.scoreLocally(searchListing);
+    const viewScore = view.window.scoreLocally(viewListing);
+    assert.equal(searchScore.score, viewScore.score);
+    assert.deepEqual(chipSet(searchScore), chipSet(viewScore));
+    assert.equal(hasChip(searchScore, /No salary listed/), true);
+    assert.equal(hasChip(searchScore, /No active review signals/), true);
+    assert.equal(hasChip(searchScore, /No hiring contact/), true);
+    assert.equal(hasChip(searchScore, /Detailed, specific job description/), true);
+    assert.equal(hasChip(searchScore, /Easy Apply/i), false);
+    assert.equal(hasChip(searchScore, /Responses managed off LinkedIn/), false);
+    assert.equal(hasChip(searchScore, /actively reviewing/i), false);
+  } finally {
+    search.window.close();
+    view.window.close();
+  }
+});
+
+test('a late About the job section re-scores to the same result as a loaded pane', () => {
+  const late = loadLinkedIn(paritySearchHtml({ body: false, similar: false }), LI_SEARCH);
+  const ready = loadLinkedIn(parityViewHtml(), LI_VIEW);
+  try {
+    const lines = captureLogs(late.window);
+    const early = late.window.parseLinkedInListing();
+    const earlyScore = late.window.scoreLocally(early);
+    assert.equal(early.description, null);
+    assert.equal(early.fieldSources.description || 'none', 'none');
+    assert.ok(early.paneChars < 600, 'header paneChars ' + early.paneChars);
+    const ancestors = lines.filter((line) => line.includes('[SkipThisJob] LinkedIn pane ancestor L'));
+    assert.ok(ancestors.length >= 1);
+    assert.match(ancestors[0], /tag=/);
+    assert.match(ancestors[0], /role=/);
+    assert.match(ancestors[0], /childCount=/);
+    assert.match(ancestors[0], /text=/);
+    assert.match(ancestors[0], /listRows=/);
+    assert.match(ancestors[0], /viewIds=/);
+    assert.match(ancestors[0], /reason=/);
+    const summary = lines.find((line) => line.includes('[SkipThisJob] LinkedIn pane diagnostic'));
+    assert.match(summary, /description=/);
+    assert.match(summary, /descriptionLen=/);
+    assert.match(summary, /stop=/);
+    late.window.parseLinkedInListing();
+    assert.equal(
+      lines.filter((line) => line.includes('[SkipThisJob] LinkedIn pane ancestor L')).length,
+      ancestors.length
+    );
+
+    const readyListing = ready.window.parseLinkedInListing();
+    const readyScore = ready.window.scoreLocally(readyListing);
+    assert.notEqual(earlyScore.score, readyScore.score);
+
+    late.window.rememberScoredPane(early);
+    const uuid = late.window.document.getElementById('uuid');
+    uuid.insertAdjacentHTML('beforeend', parityBody());
+    const rescored = late.window.rescoreLinkedInIfPaneGrew();
+    assert.ok(rescored);
+    assert.equal(rescored.score, readyScore.score);
+    assert.deepEqual(chipSet(rescored), chipSet(readyScore));
+    assert.equal(late.window.document.querySelectorAll('#ghost-detector-overlay').length, 1);
+    assert.equal(late.window.rescoreLinkedInIfPaneGrew(), null);
+    assert.equal(late.window.document.querySelectorAll('#ghost-detector-overlay').length, 1);
+  } finally {
+    late.window.close();
+    ready.window.close();
+  }
+});
+
 test('list badges start once the cky rows exist', () => {
   const dom = loadLinkedIn('<!DOCTYPE html><html><body><div id="shell"></div></body></html>', LI_SEARCH);
   try {

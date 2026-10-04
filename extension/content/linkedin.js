@@ -13,6 +13,12 @@ let lastOverlayScore = null;
 let lastOverlayBackend = null;
 let _liRaf = 0;
 let _liMute = false;
+let _scoredPaneChars = -1;
+let _scoredDescLen = -1;
+let _scoredDescSource = '';
+let _rescoreCount = 0;
+let _paneRescoreTimer = 0;
+const _paneDiagLogged = {};
 
 // ============================================================
 // DOM PARSING
@@ -142,7 +148,10 @@ function companyLinkIn(container, titleAnchor) {
   const links = container.querySelectorAll('a[href*="/company/"]');
   for (let i = 0; i < links.length; i++) {
     if (titleAnchor && links[i] === titleAnchor) continue;
-    if (isLinkedInListNode(links[i])) continue;
+    // A list CLASS on a shell that also wraps the open job is not a row.
+    // Only skip company links that sit in the results list itself.
+    if (links[i].closest && links[i].closest('[componentkey^="job-card-component-ref-"], [componentkey="SearchResultsMainContent"], .jobs-search-results__list-item, .scaffold-layout__list-item, .job-card-container, .scaffold-layout__list')) continue;
+    if (anchorIsResultsRow(links[i])) continue;
     return links[i];
   }
   return null;
@@ -198,45 +207,102 @@ const EXTENSION_CHROME_SELECTOR = '#ghost-detector-overlay, [data-stj-overlay], 
 function distinctViewIds(el) {
   const ids = {};
   if (!el) return [];
-  if (el.getAttribute) {
+  if (el.getAttribute && !nodeInSimilarModule(el)) {
     const own = jobIdFromHref(el.getAttribute('href'));
     if (own) ids[own] = true;
   }
   if (!el.querySelectorAll) return Object.keys(ids);
   const links = el.querySelectorAll('a[href*="/jobs/view/"]');
   for (let i = 0; i < links.length; i++) {
+    if (nodeInSimilarModule(links[i])) continue;
     const id = jobIdFromHref(links[i].getAttribute('href'));
     if (id) ids[id] = true;
   }
   return Object.keys(ids);
 }
 
-// A usable open-job ancestor: no results-list rows, and at most the one
-// job this title link belongs to. A list CLASS on a wide shell is not
-// enough — the shell's parent is where the rows actually appear.
-function paneCandidateOk(el, jobId) {
+// Similar-jobs / more-jobs / people-also-viewed modules carry other
+// /jobs/view/ ids inside the open column. They are not list rows.
+function nodeInSimilarModule(el) {
   if (!el || el === document.body || el === document.documentElement) return false;
-  if (isJobCardComponent(el) || isSearchResultsList(el) || nodeContainsListRows(el)) return false;
+  let node = el;
+  for (let i = 0; i < 8 && node && node !== document.body && node !== document.documentElement; i++) {
+    if (isSimilarJobsHeading(node)) return true;
+    const parent = node.parentElement;
+    if (!parent) break;
+    let siblingHit = false;
+    for (let c = 0; c < parent.children.length; c++) {
+      const sib = parent.children[c];
+      if (sib !== node && isSimilarJobsHeading(sib)) siblingHit = true;
+    }
+    if (siblingHit) {
+      const parentText = normalizeBlock(parent.textContent);
+      if (/about the job/i.test(parentText) && parentText.length > 500) return false;
+      return true;
+    }
+    node = parent;
+  }
+  return false;
+}
+
+function ancestorText(el) {
+  return normalizeBlock(el && el.textContent);
+}
+
+// List rows and the document itself are hard stops. A second /jobs/view/
+// id is not: similar-jobs modules sit inside the real column on the live
+// page, and refusing that ancestor leaves the pane stuck on the header.
+function paneStopReason(el) {
+  if (!el || el === document.body || el === document.documentElement) return 'body';
+  if (isJobCardComponent(el) || isSearchResultsList(el) || nodeContainsListRows(el)) return 'list-rows';
+  return '';
+}
+
+function paneHasForeignView(el, jobId) {
   const ids = distinctViewIds(el);
-  if (ids.length > 1) return false;
-  if (jobId && ids.length === 1 && ids[0] !== String(jobId)) return false;
+  if (ids.length > 1) return true;
+  if (jobId && ids.length === 1 && ids[0] !== String(jobId)) return true;
+  return false;
+}
+
+// Header clusters are a couple hundred characters and have no job body.
+// Keep climbing until the text is long enough to include About the job.
+function paneTextReady(el) {
+  const text = ancestorText(el);
+  return text.length >= 600 && /about the job/i.test(text);
+}
+
+// Metadata stays inside the single-job header. A similar-jobs link must
+// not donate a second applicant count. The pane walk is looser.
+function paneCandidateOk(el, jobId) {
+  if (paneStopReason(el)) return false;
+  if (paneHasForeignView(el, jobId)) return false;
   return true;
 }
 
 // Highest ancestor of the title link that still does not contain list rows.
-// Depth 1 is the link's parent. The walk stops one level before the first
-// ancestor that contains job-card rows or a second /jobs/view/ id.
+// Depth 1 is the link's parent. While the best pane is still the header
+// (under ~600 chars, or no About the job), keep climbing past other
+// /jobs/view/ anchors. Stop at list rows, at body, or at a foreign job
+// link only after the body is already in hand.
 function paneFromTitleAnchor(anchor, jobId) {
   let el = anchor && anchor.parentElement;
   let best = null;
   let depth = 0;
-  for (let i = 1; i <= 40 && el && el !== document.body && el !== document.documentElement; i++) {
-    if (!paneCandidateOk(el, jobId)) break;
+  let stop = 'cap';
+  for (let i = 1; i <= 40 && el; i++) {
+    const blocked = paneStopReason(el);
+    if (blocked) { stop = blocked; break; }
+    if (paneHasForeignView(el, jobId) && best && paneTextReady(best)) {
+      stop = 'foreign-view-id';
+      break;
+    }
     best = el;
     depth = i;
     el = el.parentElement;
+    if (!el) { stop = 'no-parent'; break; }
   }
-  return { el: best, depth: depth, anchor: anchor || null };
+  return { el: best, depth: depth, anchor: anchor || null, stop: stop };
 }
 
 function nodeIsInList(el) {
@@ -413,6 +479,7 @@ function bestMetadataIn(root, anchor) {
   for (let i = 0; i < nodes.length; i++) {
     const el = nodes[i];
     if (isExtensionChrome(el)) continue;
+    if (nodeInSimilarModule(el)) continue;
     if (el.closest && el.closest('[componentkey^="job-card-component-ref-"], [componentkey="SearchResultsMainContent"], .jobs-search-results__list-item, .scaffold-layout__list-item, .job-card-container')) continue;
     if (el.closest && el.closest(EXTENSION_CHROME_SELECTOR)) continue;
     if (!nodeFollowsAnchor(anchor, el)) continue;
@@ -852,7 +919,8 @@ function textAfterHeading(heading) {
     const parent = node.parentElement;
     if (!parent || parent === document.body || parent === document.documentElement) break;
     if (nodeContainsListRows(parent) || isSearchResultsList(parent)) break;
-    if (distinctViewIds(parent).length > 1) break;
+    // A similar-jobs link in the same column is not a reason to drop the
+    // description. collectAfterHeading stops at that section heading.
     node = parent;
   }
   return '';
@@ -879,6 +947,75 @@ function readAboutJobDescription(root, opts) {
   return null;
 }
 
+function isSimilarJobsHeading(el) {
+  if (!el || el.nodeType !== 1 || isExtensionChrome(el)) return false;
+  const own = ownText(el);
+  const full = normalizeBlock(el.textContent);
+  const label = own || (full.length < 80 ? full : '');
+  return /^(?:similar jobs|more jobs|people also viewed)$/i.test(label);
+}
+
+function sectionRootForHeading(heading) {
+  let node = heading;
+  for (let depth = 0; depth < 30 && node; depth++) {
+    const parent = node.parentElement;
+    if (!parent || parent === document.body || parent === document.documentElement) return node;
+    if (nodeContainsListRows(parent) || isSearchResultsList(parent)) return node;
+    const chunk = collectAfterHeading(parent, heading);
+    if (chunk.length > 200) return parent;
+    node = parent;
+  }
+  return heading;
+}
+
+function withExpandableBox(text, section) {
+  if (!section || !section.querySelector) return text || '';
+  const box = section.querySelector('[data-testid="expandable-text-box"]');
+  if (!box) return text || '';
+  const extra = normalizeBlock(box.textContent)
+    .replace(/\b(?:show|see)\s+(?:more|less)\b/ig, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (extra.length <= 80) return text || '';
+  if (text && text.indexOf(extra.slice(0, 60)) !== -1) return text;
+  return normalizeBlock((text || '') + ' ' + extra);
+}
+
+// The open pane can stay header-sized when the live column is shaped
+// differently from a saved snapshot. The description still lives under an
+// "About the job" heading that is not inside a results row.
+function readAboutJobAnywhere(jobId) {
+  if (typeof document === 'undefined' || !document.body || !document.body.querySelectorAll) return null;
+  const nodes = document.body.querySelectorAll('h1, h2, h3, h4, div, span, p, section');
+  let best = '';
+  let bestRank = -1;
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (isExtensionChrome(el)) continue;
+    if (el.closest && el.closest('[componentkey^="job-card-component-ref-"], [componentkey="SearchResultsMainContent"], #ghost-detector-overlay, [data-stj-overlay]')) continue;
+    if (!isAboutJobHeading(el)) continue;
+    const section = sectionRootForHeading(el);
+    const text = withExpandableBox(textAfterHeading(el), section);
+    if (!text || text.length <= 200) continue;
+    let rank = text.length;
+    if (jobId) {
+      let walk = el;
+      for (let d = 0; d < 30 && walk && walk !== document.body && walk !== document.documentElement; d++) {
+        if (walk.querySelector && walk.querySelector('a[href*="/jobs/view/' + jobId + '"]')) {
+          rank += 1000000;
+          break;
+        }
+        walk = walk.parentElement;
+      }
+    }
+    if (rank > bestRank) {
+      best = text;
+      bestRank = rank;
+    }
+  }
+  return best || null;
+}
+
 function readLongDetailBlock(root) {
   if (!root || !root.querySelectorAll) return null;
   const nodes = root.querySelectorAll('section, article, div, p, span');
@@ -903,7 +1040,54 @@ function elementText(el) {
   return tc.length >= it.length ? tc : it;
 }
 
-function stripNoise(el) {
+function stripSimilarModules(clone) {
+  if (!clone || !clone.querySelectorAll) return;
+  const nodes = Array.from(clone.querySelectorAll('h1, h2, h3, h4, div, span, p, section, li'));
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (!el.parentNode || !isSimilarJobsHeading(el)) continue;
+    let moduleRoot = el;
+    const parent = el.parentElement;
+    if (parent && parent !== clone && !/about the job/i.test(normalizeBlock(parent.textContent))) {
+      moduleRoot = parent;
+    }
+    if (moduleRoot !== el) {
+      if (moduleRoot !== clone && moduleRoot.parentNode) moduleRoot.parentNode.removeChild(moduleRoot);
+      continue;
+    }
+    let sib = el;
+    while (sib) {
+      const next = sib.nextSibling;
+      if (sib !== el && sib.nodeType === 1) {
+        const label = ownText(sib) || normalizeBlock(sib.textContent).slice(0, 80);
+        if (/^(?:about the company|meet the hiring team|about the job)\b/i.test(label)) break;
+        if (/about the job/i.test(normalizeBlock(sib.textContent).slice(0, 200))) break;
+      }
+      if (sib.parentNode) sib.parentNode.removeChild(sib);
+      sib = next;
+    }
+  }
+}
+
+function stripForeignViewSubtrees(clone, jobId) {
+  if (!jobId || !clone || !clone.querySelectorAll) return;
+  const links = Array.from(clone.querySelectorAll('a[href*="/jobs/view/"]'));
+  for (let i = 0; i < links.length; i++) {
+    const link = links[i];
+    if (!link.parentNode) continue;
+    const id = jobIdFromHref(link.getAttribute('href'));
+    if (!id || id === String(jobId)) continue;
+    let node = link;
+    while (node.parentElement && node.parentElement !== clone) {
+      const parent = node.parentElement;
+      if (distinctViewIds(parent).indexOf(String(jobId)) !== -1) break;
+      node = parent;
+    }
+    if (node !== clone && node.parentNode) node.parentNode.removeChild(node);
+  }
+}
+
+function stripNoise(el, jobId) {
   if (!el || !el.cloneNode) return el;
   const clone = el.cloneNode(true);
   if (!clone.querySelectorAll) return clone;
@@ -914,13 +1098,22 @@ function stripNoise(el) {
   for (let i = 0; i < junk.length; i++) {
     if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
   }
+  const asides = clone.querySelectorAll('aside');
+  for (let i = 0; i < asides.length; i++) {
+    const aside = asides[i];
+    if (!aside.parentNode || aside === clone) continue;
+    if (/about the job/i.test(normalizeBlock(aside.textContent))) continue;
+    aside.parentNode.removeChild(aside);
+  }
+  stripSimilarModules(clone);
+  stripForeignViewSubtrees(clone, jobId);
   return clone;
 }
 
-function textExcludingList(el) {
+function textExcludingList(el, jobId) {
   if (!el) return '';
   if (isJobCardComponent(el) || isSearchResultsList(el)) return '';
-  return elementText(stripNoise(el));
+  return elementText(stripNoise(el, jobId));
 }
 
 function locateOpenJobPane(jobId) {
@@ -935,7 +1128,7 @@ function locateOpenJobPane(jobId) {
     if (anchorIsResultsRow(anchor)) continue;
     const located = paneFromTitleAnchor(anchor, jobId);
     if (!located.el) continue;
-    const len = normalizeBlock(textExcludingList(located.el)).length;
+    const len = normalizeBlock(textExcludingList(located.el, jobId)).length;
     if (len > bestLen) {
       best = located;
       bestLen = len;
@@ -946,6 +1139,56 @@ function locateOpenJobPane(jobId) {
 
 function openJobDetailRoot(jobId) {
   return locateOpenJobPane(jobId).el;
+}
+
+// Printed once per job when the pane is still header-sized, so a live
+// retest can show which ancestor stopped the walk.
+function logPaneDiagnostic(anchor, jobId, located, paneChars, descSource, descLen) {
+  const key = String(jobId || 'none');
+  if (_paneDiagLogged[key]) return;
+  _paneDiagLogged[key] = true;
+  const depth = located && located.depth != null ? located.depth : 'none';
+  const stop = located && located.stop ? located.stop : 'none';
+  console.log(
+    '[SkipThisJob] LinkedIn pane diagnostic job=' + key +
+    ' paneDepth=' + depth +
+    ' paneChars=' + paneChars +
+    ' description=' + (descSource || 'none') +
+    ' descriptionLen=' + descLen +
+    ' stop=' + stop
+  );
+  if (!anchor) return;
+  let el = anchor;
+  let passedStop = false;
+  for (let i = 1; i <= 25; i++) {
+    el = el.parentElement;
+    if (!el) break;
+    const tag = (el.tagName || '').toLowerCase();
+    const role = el.getAttribute ? (el.getAttribute('role') || '') : '';
+    const childCount = el.children ? el.children.length : 0;
+    const textLen = ancestorText(el).length;
+    const listRows = !!(isJobCardComponent(el) || isSearchResultsList(el) || nodeContainsListRows(el));
+    const ids = distinctViewIds(el);
+    const foreign = paneHasForeignView(el, jobId);
+    let reason = 'climbed';
+    if (el === document.body || el === document.documentElement) reason = 'body';
+    else if (listRows) reason = 'list-rows';
+    else if (located && located.el === el) reason = 'chosen';
+    else if (passedStop && foreign) reason = 'foreign-view-id';
+    else if (passedStop) reason = 'not-chosen';
+    if ((located && located.el === el) || reason === 'list-rows' || reason === 'body') passedStop = true;
+    console.log(
+      '[SkipThisJob] LinkedIn pane ancestor L' + i +
+      ' tag=' + tag +
+      ' role=' + (role || '-') +
+      ' childCount=' + childCount +
+      ' text=' + textLen +
+      ' listRows=' + (listRows ? 'true' : 'false') +
+      ' viewIds=' + (ids.length ? ids.join('|') : 'none') +
+      ' reason=' + reason
+    );
+    if (reason === 'body') break;
+  }
 }
 
 function chooseSignalPane(scope, jobPane) {
@@ -992,6 +1235,7 @@ function singleJobIdIn(el) {
   const links = el.querySelectorAll('a[href*="/jobs/view/"]');
   for (let i = 0; i < links.length; i++) {
     if (links[i] === el) continue;
+    if (nodeInSimilarModule(links[i])) continue;
     const k = jobIdFromHref(links[i].getAttribute('href'));
     if (!k) continue;
     if (id && id !== k) return null;
@@ -1234,7 +1478,7 @@ function parseLinkedInListing() {
   if (jobPane && (!signalPane || (jobPane.contains && jobPane.contains(signalPane) && jobPane !== signalPane))) {
     signalPane = jobPane;
   }
-  const cleanPane = signalPane ? stripNoise(signalPane) : null;
+  const cleanPane = signalPane ? stripNoise(signalPane, jobIdNow) : null;
   const detailText = normalizeBlock(cleanPane ? elementText(cleanPane) : '').toLowerCase();
   const paneChars = detailText.length;
   let paneDepth = locatedPane.depth;
@@ -1358,15 +1602,25 @@ function parseLinkedInListing() {
   // was wrongly scored as a ghost-risk signal. textContent returns the entire
   // subtree regardless of the collapse, so read that and take whichever of
   // the two is longer across all candidate containers.
-  let description = legacyRoot ? readLinkedInDescription(legacyRoot) : null;
-  if (description) sources.description = 'legacy-selectors';
+  let description = null;
+  // The About the job heading is the description, including a collapsed
+  // expandable box under that heading. Generic description selectors stay
+  // a fallback so a legacy pane without that heading still wins.
+  if (cleanPane) {
+    description = readAboutJobDescription(cleanPane);
+    if (description) sources.description = 'about-job';
+  }
+  if (!description) {
+    description = readAboutJobAnywhere(jobIdNow);
+    if (description) sources.description = 'about-job';
+  }
+  if (!description && legacyRoot) {
+    description = readLinkedInDescription(legacyRoot);
+    if (description) sources.description = 'legacy-selectors';
+  }
   if (!description && cleanPane && signalPane !== legacyRoot) {
     description = readLinkedInDescription(cleanPane);
     if (description) sources.description = 'href-detail';
-  }
-  if (!description && cleanPane) {
-    description = readAboutJobDescription(cleanPane);
-    if (description) sources.description = 'about-job';
   }
   if (!description && cleanPane) {
     description = readLongDetailBlock(cleanPane);
@@ -1385,6 +1639,12 @@ function parseLinkedInListing() {
   }
   data.description = description;
   data.descriptionParsed = !!description;
+  if (!data.responseManagedOffsite && description &&
+      /responses?\s+managed\s+off\s+linkedin|managed\s+off\s+linkedin/i.test(description)) {
+    data.responseManagedOffsite = true;
+    sources.responseManagedOffsite = 'about-job';
+    console.log('[SkipThisJob] Responses managed off LinkedIn source=about-job');
+  }
 
   // Attribute chips only. Never document.body — the filter bar says "Remote"
   // on almost every search. If the chip row is missing, arrangement stays null.
@@ -1420,13 +1680,18 @@ function parseLinkedInListing() {
   // salary, hiring contact, and review activity there are unparsed, so both
   // the search-results pane and /jobs/view/ charge those only when the body
   // actually loaded.
-  const bodyLoaded = paneHasJobBody(cleanPane);
-  data.engagementParsed = !!(signalPane && (bodyLoaded || data.engagementSignals.length));
-  const sawSalary = !!(signalPane && STJ.looksLikeSalary && STJ.looksLikeSalary(salaryHaystack));
+  const descriptionLen = description ? String(description).length : 0;
+  // A header-sized pane still leaves salary and hiring unknown. A real
+  // About the job section, even when it arrives after the first score,
+  // is the job body on both the search page and /jobs/view/.
+  const bodyFromAbout = (sources.description === 'about-job' || sources.description === 'detail-text') && descriptionLen > 300;
+  const bodyLoaded = paneHasJobBody(cleanPane) || bodyFromAbout;
+  data.engagementParsed = !!((signalPane || bodyFromAbout) && (bodyLoaded || data.engagementSignals.length));
+  const sawSalary = !!((signalPane || bodyFromAbout) && STJ.looksLikeSalary && STJ.looksLikeSalary(salaryHaystack));
   if (sawSalary) {
     data.salaryListed = true;
     console.log('[GhostDetector] Salary found');
-  } else if (!signalPane || !bodyLoaded) {
+  } else if (!bodyLoaded) {
     data.salaryListed = null;
   } else {
     data.salaryListed = false;
@@ -1434,8 +1699,10 @@ function parseLinkedInListing() {
 
   // Hiring contact: only the hirer card inside the detail pane.
   // A page-wide /in/ link matches the nav "Me" profile on every logged-in page.
-  if (!cleanPane || !bodyLoaded) {
+  if (!bodyLoaded) {
     data.hiringContactVisible = null;
+  } else if (!cleanPane) {
+    data.hiringContactVisible = false;
   } else {
     const hiringEl =
       cleanPane.querySelector('.job-details-people-who-can-help') ||
@@ -1449,7 +1716,8 @@ function parseLinkedInListing() {
       '.job-details-people-who-can-help a[href*="/in/"], .hirer-card a[href*="/in/"], [data-testid="hirer-card"] a[href*="/in/"], .jobs-poster a[href*="/in/"]'
     );
     const hasHiringTeamText = detailText.includes('meet the hiring team') ||
-                              detailText.includes('people you can reach out to');
+                              detailText.includes('people you can reach out to') ||
+                              String(description || '').toLowerCase().includes('meet the hiring team');
     data.hiringContactVisible = !!(hiringEl || profileInCard || hasHiringTeamText);
   }
 
@@ -1471,11 +1739,17 @@ function parseLinkedInListing() {
   }
   data.descriptionHash = STJ.hashDescription ? STJ.hashDescription(data.description) : null;
   data.fieldSources = sources;
+  data.paneChars = paneChars;
+  data.paneDepth = paneDepth;
   const trackedFields = ['title', 'companyName', 'location', 'daysOpen', 'isRepost', 'applicantCount', 'description', 'responseManagedOffsite', 'easyApply', 'activelyReviewing'];
   const sourceBits = trackedFields.map(function (k) { return k + '=' + (sources[k] || 'none'); });
   sourceBits.push('paneDepth=' + (paneDepth == null ? 'none' : String(paneDepth)));
   sourceBits.push('paneChars=' + String(paneChars));
+  sourceBits.push('descriptionLen=' + String(descriptionLen));
   console.log('[SkipThisJob] LinkedIn field sources: ' + sourceBits.join(', '));
+  if (paneChars < 600) {
+    logPaneDiagnostic(locatedPane && locatedPane.anchor, jobIdNow, locatedPane, paneChars, sources.description || 'none', descriptionLen);
+  }
 
   console.log('[GhostDetector] Full parsed data:', JSON.stringify(data, null, 2));
 
@@ -2060,7 +2334,15 @@ async function waitForLinkedInJobContent(maxWaitMs = 6500) {
     const hasDesc = descSelectors.some(s => document.querySelector(s));
     const hasAge = readLinkedInDaysOpen().days != null;
     const jobId = getCurrentJobId();
-    if (jobId && readHrefDetail(jobId)) return true;
+    if (jobId && readHrefDetail(jobId)) {
+      const located = locateOpenJobPane(jobId);
+      const raw = located.el ? ancestorText(located.el) : '';
+      const aboutReady = (raw.length >= 600 && /about the job/i.test(raw)) || !!readAboutJobAnywhere(jobId);
+      if (aboutReady) return true;
+      // The header paints first. Score a still-missing description after
+      // a short wait, then re-score when About the job arrives.
+      if (Date.now() - start >= 2500) return true;
+    }
     // Prefer both description AND a parsed top-card age (Baton/First Point
     // soak scored 6 because we ran before "5 months ago" was in the DOM).
     if (hasDesc && hasAge) return true;
@@ -2104,6 +2386,7 @@ function refreshLinkedInAfterMutation() {
     processCurrentListing();
     return;
   }
+  if (!isProcessing && String(jobId) === String(lastProcessedJobId)) schedulePaneRescore();
   const overlay = document.getElementById('ghost-detector-overlay');
   if (!overlay && !isProcessing && lastOverlayScore && currentListingData &&
       String(currentListingData.platformJobId) === String(jobId)) {
@@ -2177,6 +2460,73 @@ function beginLinkedInJob(jobId) {
   document.querySelectorAll('#ghost-detector-overlay, [data-stj-overlay="1"]').forEach(function (el) {
     if (!jobId || el.getAttribute('data-stj-job-id') !== String(jobId)) el.remove();
   });
+  _rescoreCount = 0;
+  _scoredPaneChars = -1;
+  _scoredDescLen = -1;
+  _scoredDescSource = '';
+}
+
+function rememberScoredPane(listing) {
+  if (!listing) return;
+  const jobId = listing.platformJobId || getCurrentJobId();
+  if (jobId) lastProcessedJobId = String(jobId);
+  _scoredPaneChars = listing.paneChars != null ? listing.paneChars : 0;
+  _scoredDescLen = listing.description ? String(listing.description).length : 0;
+  _scoredDescSource = (listing.fieldSources && listing.fieldSources.description) || 'none';
+}
+
+function paneGrew(listing) {
+  if (!listing || _scoredDescSource === '') return false;
+  const chars = listing.paneChars != null ? listing.paneChars : 0;
+  const descLen = listing.description ? String(listing.description).length : 0;
+  const source = (listing.fieldSources && listing.fieldSources.description) || 'none';
+  if (_scoredDescSource === 'none' && source !== 'none') return true;
+  if (chars >= _scoredPaneChars + 400) return true;
+  if (descLen >= _scoredDescLen + 200) return true;
+  return false;
+}
+
+// Re-locate the pane and replace the one card when About the job (or any
+// material pane growth) shows up after the first score. No second track.
+function rescoreLinkedInIfPaneGrew() {
+  const jobId = getCurrentJobId();
+  if (!jobId) return null;
+  if (String(jobId) !== String(lastProcessedJobId)) return null;
+  if (_rescoreCount >= 8) return null;
+  const listing = parseLinkedInListing();
+  if (!listing || !listing.title || !listing.companyName) return null;
+  if (listing.platformJobId && String(listing.platformJobId) !== String(jobId)) return null;
+  if (!paneGrew(listing)) return null;
+  _rescoreCount += 1;
+  const localScore = scoreLocally(listing);
+  currentListingData = Object.assign({}, listing, {
+    platform: 'linkedin',
+    userClickedApply: false,
+    listingHeuristic: localScore.score,
+  });
+  rememberScoredPane(listing);
+  const backend = lastOverlayBackend;
+  const blended = backend && backend.found ? blendGhostScore(localScore, backend) : localScore;
+  lastOverlayScore = localScore;
+  injectOverlay(localScore, backend, listing);
+  stampListBadgeForCurrentJob(listing, blended);
+  if (STJ.publishActiveListing) {
+    lastPublishedScore = STJ.publishActiveListing(currentListingData, blended, 'linkedin');
+  }
+  return localScore;
+}
+
+function schedulePaneRescore() {
+  if (_paneRescoreTimer) return;
+  _paneRescoreTimer = setTimeout(function () {
+    _paneRescoreTimer = 0;
+    if (_liMute) return;
+    if (isProcessing) {
+      schedulePaneRescore();
+      return;
+    }
+    rescoreLinkedInIfPaneGrew();
+  }, 350);
 }
 
 async function runLinkedInListing(jobId) {
@@ -2299,7 +2649,9 @@ async function runLinkedInListing(jobId) {
     stampListBadgeForCurrentJob(listing, blended);
   }
 
+  rememberScoredPane(listing);
   isProcessing = false;
+  rescoreLinkedInIfPaneGrew();
 }
 
 // Poll every 1 second for URL changes (LinkedIn is a SPA)
