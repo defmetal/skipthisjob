@@ -374,6 +374,171 @@ test('cky display-contents rows get one badge each, including a remembered score
   }
 });
 
+function realJobCard(id, opts) {
+  const title = opts.title;
+  const verified = opts.verified === false
+    ? ''
+    : '<span>' + title + ' (Verified job)</span>';
+  const visible = opts.verified === false
+    ? '<span>' + title + '</span>'
+    : '<span aria-hidden="true">' + title + '<span> </span></span>';
+  const reviewing = opts.reviewing ? '<p><span>Actively reviewing applicants</span></p>' : '';
+  const easy = opts.easy ? '<p>Easy Apply</p>' : '';
+  const viewed = opts.viewed ? '<p>Viewed</p>' : '';
+  const benefits = opts.benefits ? '<p>401(k), +1 benefit</p>' : '';
+  const age = opts.age || '2 weeks ago';
+  return '<div role="button" tabindex="0" class="ckyrow" componentkey="job-card-component-ref-' + id + '">' +
+    '<div class="ckyinner" componentkey="job-card-component-ref-' + id + '">' +
+      '<div data-display-contents="true"><p>' + verified + visible + '</p></div>' +
+      '<div><p>' + opts.company + '</p></div>' +
+      '<p>' + opts.location + '</p>' +
+      benefits + reviewing + viewed +
+      '<p><span class="ckya5p">Posted ' + age + '</span><span aria-hidden="true">' + age + '</span></p>' +
+      easy +
+      '<p>Over 500 people clicked apply</p>' +
+    '</div></div>';
+}
+
+function realResultsList() {
+  const rows = [];
+  for (let i = 0; i < 25; i++) {
+    const id = String(4467585708 + i);
+    rows.push(realJobCard(id, {
+      title: i === 0 ? 'VP Media Operations' : (i === 1 ? 'Programmatic Media Group Manager' : 'Role ' + i),
+      company: i === 0 ? 'Daniel Brian Advertising' : (i === 1 ? 'Citi' : 'Company ' + i),
+      location: i === 0 ? 'Rochester, MI (Hybrid)' : (i === 1 ? 'Irving, TX (Hybrid)' : 'Austin, TX (On-site)'),
+      reviewing: i < 6,
+      easy: i < 15,
+      viewed: i === 0,
+      benefits: i === 1,
+      verified: i !== 2,
+      age: i === 3 ? '5 days ago' : (i === 1 ? '1 week ago' : '2 weeks ago'),
+    }));
+    if (i < 24) rows.push('<hr>');
+  }
+  return '<div componentkey="SearchResultsMainContent">' + rows.join('') + '</div>';
+}
+
+const OPEN_JD = ('Five9 is hiring a Senior Product Marketing Manager for the contact center. ' +
+  'You will report to the Vice President of Product Marketing. The team of 8 uses Salesforce, HubSpot, and Tableau. ' +
+  'Compensation is $180,000 per year. Eight years of experience are required. You own the outbound narrative and the quarterly launch plan. ').repeat(3);
+
+function openJobPane() {
+  return '<div id="detail" componentkey="8f3a1c2e-1111-4222-8333-444455556666">' +
+    '<p><a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">Senior Product Marketing Manager</a></p>' +
+    '<p><a href="https://www.linkedin.com/company/five9/">Five9</a></p>' +
+    '<p>United States · Reposted 3 months ago · Over 100 applicants</p>' +
+    '<div id="jd">' + OPEN_JD + '</div>' +
+    '</div>';
+}
+
+test('real job-card rows have no view links and log 25', () => {
+  const html = '<!DOCTYPE html><html><body>' + realResultsList() + openJobPane() + '</body></html>';
+  const dom = loadLinkedIn(html, LI_SEARCH);
+  try {
+    const doc = dom.window.document;
+    const lines = captureLogs(dom.window);
+    const cards = dom.window.findLinkedInJobCards();
+    assert.equal(cards.length, 25);
+    assert.match(
+      lines.find((line) => line.includes('[SkipThisJob] LinkedIn list rows:')),
+      /LinkedIn list rows: 25/
+    );
+    assert.equal(doc.querySelectorAll('a[href*="/jobs/view/"]').length, 1);
+    assert.equal(doc.querySelectorAll('[componentkey^="job-card-component-ref-"]').length, 50);
+    for (const card of cards) {
+      assert.equal(card.getAttribute('role'), 'button');
+      assert.match(card.getAttribute('componentkey'), /^job-card-component-ref-\d+$/);
+      assert.equal(card.querySelector('a[href*="/jobs/view/"]'), null);
+    }
+    const first = cards.find((card) => card.getAttribute('componentkey') === 'job-card-component-ref-4467585708');
+    const parsed = dom.window.parseLinkedInCard(first);
+    assert.equal(parsed.title, 'VP Media Operations');
+    assert.equal(parsed.companyName, 'Daniel Brian Advertising');
+    assert.equal(parsed.location, 'Rochester, MI (Hybrid)');
+    assert.equal(parsed.daysOpen, 14);
+    assert.equal(parsed.platformJobId, '4467585708');
+    assert.equal(parsed.easyApply, true);
+    assert.equal(parsed.viewed, true);
+    assert.equal(parsed.engagementSignals.length, 1);
+    assert.equal(String(parsed.engagementSignals[0]), 'actively_reviewing');
+    assert.equal(dom.window.SkipThisJobShared.listBadgeKey(first, parsed), '4467585708');
+    const plain = cards.find((card) => card.getAttribute('componentkey') === 'job-card-component-ref-4467585710');
+    assert.equal(dom.window.parseLinkedInCard(plain).title, 'Role 2');
+
+    dom.window.refreshLinkedInListBadges();
+    dom.window.refreshLinkedInListBadges();
+    assert.equal(doc.querySelectorAll('.stj-list-badge').length, 25);
+    for (const card of cards) {
+      assert.equal(card.querySelectorAll('.stj-list-badge').length, 1);
+      assert.equal(card.querySelector('.stj-list-badge').parentElement.tagName, 'P');
+    }
+    assert.equal(doc.querySelectorAll('#detail .stj-list-badge').length, 0);
+    dom.window.SkipThisJobShared.applyListDim(first, 90, 75);
+    assert.equal(first.classList.contains('stj-dimmed'), true);
+    assert.equal(first.querySelector('.ckyinner').classList.contains('stj-dimmed'), false);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('list-row review and Easy Apply text does not score the open job', () => {
+  const search = loadLinkedIn(
+    '<!DOCTYPE html><html><head><title>Jobs | LinkedIn</title></head><body>' +
+      realResultsList() + openJobPane() + '</body></html>',
+    LI_SEARCH
+  );
+  const view = loadLinkedIn(
+    '<!DOCTYPE html><html><head><title>Jobs | LinkedIn</title></head><body>' +
+      openJobPane() + '</body></html>',
+    LI_VIEW
+  );
+  try {
+    const searchLines = captureLogs(search.window);
+    const viewLines = captureLogs(view.window);
+    const searchListing = search.window.parseLinkedInListing();
+    const viewListing = view.window.parseLinkedInListing();
+    assert.equal(searchListing.easyApply, false);
+    assert.equal(viewListing.easyApply, false);
+    assert.equal(searchListing.activelyReviewing, false);
+    assert.equal(viewListing.activelyReviewing, false);
+    assert.equal(searchListing.engagementSignals.length, 0);
+    assert.equal(searchListing.applicantCount, 100);
+    assert.equal(viewListing.applicantCount, 100);
+    assert.equal(searchListing.daysOpen, 90);
+    assert.equal(viewListing.daysOpen, 90);
+    assert.equal(searchListing.fieldSources.description, 'detail-text');
+    assert.equal(viewListing.fieldSources.description, 'detail-text');
+    assert.match(
+      searchLines.find((line) => line.includes('[SkipThisJob] LinkedIn field sources:')),
+      /easyApply=none/
+    );
+    assert.match(
+      searchLines.find((line) => line.includes('[SkipThisJob] LinkedIn field sources:')),
+      /activelyReviewing=none/
+    );
+    assert.match(
+      viewLines.find((line) => line.includes('[SkipThisJob] LinkedIn field sources:')),
+      /activelyReviewing=none/
+    );
+    const searchScore = search.window.scoreLocally(searchListing);
+    const viewScore = view.window.scoreLocally(viewListing);
+    assert.equal(searchScore.score, viewScore.score);
+    assert.deepEqual(
+      Array.from(searchScore.signals).map(String).sort(),
+      Array.from(viewScore.signals).map(String).sort()
+    );
+    assert.equal(hasChip(searchScore, /actively reviewing/i), false);
+    assert.equal(hasChip(viewScore, /actively reviewing/i), false);
+    assert.equal(hasChip(searchScore, /Easy Apply/i), false);
+    assert.equal(hasChip(viewScore, /No active review signals/), true);
+    assert.equal(hasChip(viewScore, /No active review signals/), true);
+  } finally {
+    search.window.close();
+    view.window.close();
+  }
+});
+
 test('list badges start once the cky rows exist', () => {
   const dom = loadLinkedIn('<!DOCTYPE html><html><body><div id="shell"></div></body></html>', LI_SEARCH);
   try {

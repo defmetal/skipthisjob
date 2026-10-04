@@ -1727,6 +1727,14 @@
           host.getAttribute('data-occludable-job-id') ||
           host.getAttribute('data-jk');
       }
+      const ownKey = card.getAttribute('componentkey') || '';
+      const ownId = ownKey.match(/^job-card-component-ref-(\d{5,})$/);
+      if (ownId) return ownId[1];
+      const keyed = card.closest ? card.closest('[componentkey^="job-card-component-ref-"]') : null;
+      if (keyed) {
+        const nested = String(keyed.getAttribute('componentkey') || '').match(/^job-card-component-ref-(\d{5,})$/);
+        if (nested) return nested[1];
+      }
     }
     if (parsed && parsed.title) {
       return normalizeTitle(parsed.title) + '|' + normalizeTitle(parsed.companyName || '');
