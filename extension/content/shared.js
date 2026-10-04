@@ -1083,6 +1083,25 @@
       /\bjobs?\s*,?\s*employment\b/i.test(t);
   }
 
+  // Page chrome, not a job title. "Welcome, Austin" is the logged-in
+  // Indeed home heading. It must never become a stored title.
+  function isRejectedJobTitle(text) {
+    const t = cleanIdentityText(text);
+    if (!t) return true;
+    if (looksLikeSerpHeading(t)) return true;
+    if (/^(?:welcome|hi|hello|hey|good\s+(?:morning|afternoon|evening))\b/i.test(t)) return true;
+    if (/^jobs?\s+for\s+you\b/i.test(t)) return true;
+    if (/^recommended(?:\s+for\s+you|\s+jobs)?$/i.test(t)) return true;
+    if (/^(?:sign[\s-]?in|log[\s-]?in|create an account|please (?:sign|log)\s*in)\b/i.test(t)) return true;
+    return false;
+  }
+
+  function sanitizeJobTitle(text) {
+    const t = cleanIdentityText(text);
+    if (!t || isRejectedJobTitle(t)) return null;
+    return t;
+  }
+
   function cleanIdentityText(text) {
     return String(text || '')
       .replace(/\s*-\s*job post$/i, '')
@@ -1149,15 +1168,15 @@
   function resolveIndeedIdentity(src) {
     const s = src || {};
     const cur = s.current || {};
-    const out = { title: cur.title || null, companyName: cur.companyName || null, sources: [] };
+    const out = { title: sanitizeJobTitle(cur.title), companyName: cur.companyName || null, sources: [] };
     const fill = function (cand, label) {
       if (!cand) return;
       let used = false;
-      if (!out.title && cand.title && !looksLikeSerpHeading(cand.title)) { out.title = cand.title; used = true; }
+      const nextTitle = sanitizeJobTitle(cand.title);
+      if (!out.title && nextTitle) { out.title = nextTitle; used = true; }
       if (!out.companyName && cand.companyName) { out.companyName = cand.companyName; used = true; }
       if (used) out.sources.push(label);
     };
-    if (out.title && looksLikeSerpHeading(out.title)) out.title = null;
 
     const key = s.jobKey ? String(s.jobKey).toLowerCase() : null;
     if (key && Array.isArray(s.mosaicJobs)) {
@@ -1220,7 +1239,7 @@
     const rawUrl = listing.listingUrl || extra.listingUrl || extra.url || null;
     return {
       companyName: listing.companyName || extra.companyName || null,
-      jobTitle: listing.title || extra.jobTitle || null,
+      jobTitle: sanitizeJobTitle(listing.title || extra.jobTitle),
       platform: platform,
       platformJobId: platformJobId,
       listingUrl: canonicalListingUrl(rawUrl, platform, platformJobId),
@@ -1253,7 +1272,7 @@
     }
     return {
       companyName: message.companyName || last.companyName || null,
-      jobTitle: message.jobTitle || last.jobTitle || last.title || null,
+      jobTitle: sanitizeJobTitle(message.jobTitle || last.jobTitle || last.title),
       platform: platform,
       platformJobId: platformJobId,
       listingUrl: canonicalListingUrl(listingUrl, platform, platformJobId),
@@ -1391,8 +1410,16 @@
   function publishActiveListing(listing, blended, platform) {
     if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return;
     if (!listing || !blended) return;
+    const safeTitle = sanitizeJobTitle(listing.title);
+    if (!safeTitle) {
+      try {
+        if (chrome.storage.local.remove) chrome.storage.local.remove('stjActiveListing');
+        else chrome.storage.local.set({ stjActiveListing: null });
+      } catch (e) { /* orphaned extension context */ }
+      return null;
+    }
     const payload = {
-      title: listing.title || null,
+      title: safeTitle,
       companyName: listing.companyName || null,
       platform: platform || listing.platform || null,
       platformJobId: listing.platformJobId || null,
@@ -1823,6 +1850,8 @@
   api.storageCall = storageCall;
   api.resolveIndeedIdentity = resolveIndeedIdentity;
   api.parseIndeedPageTitle = parseIndeedPageTitle;
+  api.isRejectedJobTitle = isRejectedJobTitle;
+  api.sanitizeJobTitle = sanitizeJobTitle;
   api.readJobPostingIdentity = readJobPostingIdentity;
   api.INDEED_SIGNAL_CACHE_TTL_MS = INDEED_SIGNAL_CACHE_TTL_MS;
   api.extractLinkedInJobId = extractLinkedInJobId;

@@ -27,7 +27,13 @@ function readBridgedViewJob() {
 function applyBridgedViewJob(data) {
   const viewJob = readBridgedViewJob();
   if (!viewJob || !data) return;
-  if (!data.title && viewJob.title) data.title = viewJob.title;
+  const pageKey = data.platformJobId ? String(data.platformJobId).toLowerCase() : '';
+  const viewKey = String(viewJob.jobkey || viewJob.jobKey || '').toLowerCase();
+  if (pageKey && viewKey && pageKey !== viewKey) return;
+  const bridgedTitle = viewJob.title && !(STJ.isRejectedJobTitle && STJ.isRejectedJobTitle(viewJob.title))
+    ? viewJob.title
+    : '';
+  if (!data.title && bridgedTitle) data.title = bridgedTitle;
   if (!data.companyName && viewJob.company) data.companyName = viewJob.company;
   if (!data.location && viewJob.location) data.location = viewJob.location;
   const bridgedDesc = viewJob.description && String(viewJob.description).trim();
@@ -99,13 +105,20 @@ function getIndeedJobFromMosaic() {
     let pageTitle = '';
     let pageCompany = '';
 
-    const titleEl = document.querySelector('[data-testid="jobsearch-JobInfoHeader-title"]') ||
-                    document.querySelector('h2.jobsearch-JobInfoHeader-title') ||
-                    document.querySelector('h1');
-    if (titleEl) pageTitle = titleEl.textContent.trim().toLowerCase();
+    const hintRoot = getIndeedDetailRoot();
+    const titleEl = hintRoot && (
+      hintRoot.querySelector('[data-testid="jobsearch-JobInfoHeader-title"]') ||
+      hintRoot.querySelector('h2.jobsearch-JobInfoHeader-title')
+    );
+    if (titleEl) {
+      const hint = titleEl.textContent.trim();
+      if (!(STJ.isRejectedJobTitle && STJ.isRejectedJobTitle(hint))) pageTitle = hint.toLowerCase();
+    }
 
-    const companyEl = document.querySelector('[data-testid="inlineHeader-companyName"]') ||
-                      document.querySelector('[data-testid="jobsearch-CompanyInfoContainer"]');
+    const companyEl = hintRoot && (
+      hintRoot.querySelector('[data-testid="inlineHeader-companyName"]') ||
+      hintRoot.querySelector('[data-testid="jobsearch-CompanyInfoContainer"]')
+    );
     if (companyEl) pageCompany = companyEl.textContent.trim().toLowerCase();
 
     const jobs = STJ.flattenMosaicJobs
@@ -251,6 +264,101 @@ function readParsedIndeedDescription(detailRoot) {
     }
   }
   return null;
+}
+
+function paneContainsJobKey(pane, jobKey) {
+  if (!pane || !jobKey || !pane.querySelectorAll) return false;
+  const key = String(jobKey).toLowerCase();
+  const ownAttr = function (el) {
+    if (!el || !el.getAttribute) return '';
+    return el.getAttribute('data-jk') || el.getAttribute('data-jobkey') || el.getAttribute('data-job-key') || '';
+  };
+  if (String(ownAttr(pane)).toLowerCase() === key) return true;
+  const nodes = pane.querySelectorAll('[data-jk], [data-jobkey], [data-job-key], a[href]');
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (String(ownAttr(el)).toLowerCase() === key) return true;
+    const href = (el.getAttribute('href') || '').toLowerCase();
+    if (!href) continue;
+    if (href.indexOf('jk=' + key) !== -1 || href.indexOf('vjk=' + key) !== -1) return true;
+    if (href.indexOf('/viewjob/' + key) !== -1) return true;
+  }
+  return false;
+}
+
+function paneHasDifferentJobKey(pane, jobKey) {
+  if (!pane || !jobKey || !pane.querySelectorAll) return false;
+  const key = String(jobKey).toLowerCase();
+  const nodes = pane.querySelectorAll('[data-jk], [data-jobkey], [data-job-key]');
+  let saw = false;
+  const consider = function (el) {
+    if (!el || !el.getAttribute) return;
+    const attr = el.getAttribute('data-jk') || el.getAttribute('data-jobkey') || el.getAttribute('data-job-key');
+    if (!attr) return;
+    saw = true;
+    if (String(attr).toLowerCase() === key) saw = 'match';
+  };
+  consider(pane);
+  for (let i = 0; i < nodes.length; i++) consider(nodes[i]);
+  return saw === true;
+}
+
+function indeedTitleText(el) {
+  if (!el) return '';
+  const spans = el.querySelectorAll('span');
+  for (let i = 0; i < spans.length; i++) {
+    const span = spans[i];
+    if (span.classList && span.classList.contains('stj-list-badge')) continue;
+    if (span.closest && span.closest('.stj-list-badge')) continue;
+    return String(span.textContent || '')
+      .replace(/\s*-\s*job post$/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  return String(el.textContent || '')
+    .replace(/\s*-\s*job post$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function readTitleFromPane(pane) {
+  if (!pane || !pane.querySelectorAll) return null;
+  const selectors = [
+    '[data-testid="jobsearch-JobInfoHeader-title"]',
+    'h1[data-testid="jobTitle"]',
+    'h2[data-testid="jobTitle"]',
+    'h2.jobsearch-JobInfoHeader-title',
+    'h1.jobsearch-JobInfoHeader-title',
+    '.jobsearch-JobInfoHeader-title',
+    'h2.jobTitle',
+    'h2',
+    'h1',
+  ];
+  for (let s = 0; s < selectors.length; s++) {
+    const nodes = pane.querySelectorAll(selectors[s]);
+    for (let i = 0; i < nodes.length; i++) {
+      const text = indeedTitleText(nodes[i]);
+      if (!text) continue;
+      if (STJ.isRejectedJobTitle && STJ.isRejectedJobTitle(text)) continue;
+      return text;
+    }
+  }
+  return null;
+}
+
+function readCompanyFromPane(pane) {
+  if (!pane || !pane.querySelector) return null;
+  const companyEl =
+    pane.querySelector('[data-testid="jobsearch-CompanyInfoContainer"] a') ||
+    pane.querySelector('[data-testid="inlineHeader-companyName"] a') ||
+    pane.querySelector('[data-testid="inlineHeader-companyName"]') ||
+    pane.querySelector('[data-testid="jobsearch-CompanyInfoContainer"]') ||
+    pane.querySelector('.jobsearch-InlineCompanyRating a') ||
+    pane.querySelector('.jobsearch-CompanyInfoContainer a') ||
+    pane.querySelector('[data-testid="company-name"]');
+  if (!companyEl) return null;
+  const name = companyEl.textContent.trim();
+  return name || null;
 }
 
 function getIndeedDetailRoot() {
@@ -420,61 +528,40 @@ async function parseIndeedListing() {
     employmentType: null,
   };
 
-  // --- Job title ---
-  const titleEl =
-    document.querySelector('[data-testid="jobsearch-JobInfoHeader-title"]') ||
-    document.querySelector('h1[data-testid="jobTitle"]') ||
-    document.querySelector('h2.jobsearch-JobInfoHeader-title') ||
-    document.querySelector('h1.jobsearch-JobInfoHeader-title') ||
-    document.querySelector('.jobsearch-JobInfoHeader-title') ||
-    // Bare h2.jobTitle matches the FIRST RESULT CARD in the left rail on a
-    // SERP, so only accept it inside the detail pane.
-    (getIndeedDetailRoot() && getIndeedDetailRoot().querySelector('h2.jobTitle')) ||
-    document.querySelector('h1');
-  if (titleEl && !(STJ.resolveIndeedIdentity && /\bjobs?\s+(in|near|hiring)\b/i.test(titleEl.textContent))) {
-    // Indeed appends "- job post" via a nested span — grab just the first text
-    const firstSpan = titleEl.querySelector('span');
-    data.title = (firstSpan || titleEl).textContent.trim().replace(/\s*-\s*job post$/i, '');
-    console.log('[SkipThisJob] Title:', data.title);
-  } else {
-    console.log('[SkipThisJob] Title not found');
-  }
-
-  // --- Company name ---
-  // [data-testid="company-name"] also matches every result card on the SERP,
-  // so only trust it inside the detail pane (or on a standalone /viewjob).
-  const paneForCompany = getIndeedDetailRoot();
-  const companyEl =
-    document.querySelector('[data-testid="jobsearch-CompanyInfoContainer"] a') ||
-    document.querySelector('[data-testid="inlineHeader-companyName"] a') ||
-    document.querySelector('[data-testid="inlineHeader-companyName"]') ||
-    document.querySelector('[data-testid="jobsearch-CompanyInfoContainer"]') ||
-    document.querySelector('.jobsearch-InlineCompanyRating a') ||
-    document.querySelector('.jobsearch-CompanyInfoContainer a') ||
-    (paneForCompany && paneForCompany.querySelector('[data-testid="company-name"]')) ||
-    (/\/viewjob/.test(window.location.pathname) ? document.querySelector('[data-testid="company-name"]') : null);
-  if (companyEl) {
-    data.companyName = companyEl.textContent.trim();
-    console.log('[SkipThisJob] Company:', data.companyName);
-  } else {
-    console.log('[SkipThisJob] Company not found');
-  }
-
-  // --- Location ---
-  const locationEl =
-    document.querySelector('[data-testid="inlineHeader-companyLocation"]') ||
-    document.querySelector('[data-testid="job-location"]') ||
-    document.querySelector('.jobsearch-JobInfoHeader-subtitle > div:nth-child(2)') ||
-    document.querySelector('.jobsearch-CompanyInfoContainer div:last-child');
-  if (locationEl) {
-    data.location = locationEl.textContent.trim();
-  }
-
   // Job ID first — every later signal is keyed to jk/vjk so SPA and
   // /viewjob cannot score two different identities.
   data.platformJobId = STJ.extractIndeedJobKey
     ? STJ.extractIndeedJobKey(window.location.href)
     : ((window.location.href.match(/[?&#](?:vjk|jk)=([a-f0-9]+)/i) || [])[1] || null);
+
+  // Title and company come from the open job's pane, never a page-level
+  // greeting ("Welcome, Austin") or a homepage module for a different employer.
+  // On /?vjk= the pane must carry that jk. A standalone /viewjob page is
+  // that job unless the pane is stamped with a different key.
+  const detailRoot = getIndeedDetailRoot();
+  const onViewJob = /\/viewjob(?:\/|$)/.test(window.location.pathname);
+  const foreignPane = paneHasDifferentJobKey(detailRoot, data.platformJobId);
+  const paneTrusted = !!(detailRoot && (
+    paneContainsJobKey(detailRoot, data.platformJobId) ||
+    (onViewJob && !foreignPane)
+  ));
+  // A pane stamped with some other jk is not this listing. Leave its
+  // title, company, date, and description unread so they cannot be scored.
+  const signalRoot = foreignPane ? null : detailRoot;
+  if (paneTrusted) {
+    data.title = readTitleFromPane(detailRoot);
+    data.companyName = readCompanyFromPane(detailRoot);
+    const locationEl =
+      detailRoot.querySelector('[data-testid="inlineHeader-companyLocation"]') ||
+      detailRoot.querySelector('[data-testid="job-location"]') ||
+      detailRoot.querySelector('.jobsearch-JobInfoHeader-subtitle > div:nth-child(2)') ||
+      detailRoot.querySelector('.jobsearch-CompanyInfoContainer div:last-child');
+    if (locationEl) data.location = locationEl.textContent.trim();
+  }
+  if (data.title) console.log('[SkipThisJob] Title:', data.title);
+  else console.log('[SkipThisJob] Title not found');
+  if (data.companyName) console.log('[SkipThisJob] Company:', data.companyName);
+  else console.log('[SkipThisJob] Company not found');
 
   // Identity fallback (title/company) when detail-pane selectors miss or the
   // pane lives in another frame: bridged mosaic row by jk, selected [data-jk]
@@ -524,13 +611,12 @@ async function parseIndeedListing() {
 
   // Detail pane only. Never document.body / role=main — those include
   // left-rail cards on search SPA ("Often replies in", other jobs' ages).
-  const detailRoot = getIndeedDetailRoot();
   // innerText is empty in non-visual environments and on some hidden panes.
   // Fall back to textContent so a date buried in the description is still read.
-  const detailText = ((detailRoot && (detailRoot.innerText || detailRoot.textContent)) || '').toLowerCase();
+  const detailText = ((signalRoot && (signalRoot.innerText || signalRoot.textContent)) || '').toLowerCase();
   const selectedCardText = readSelectedIndeedCardText(data.platformJobId);
 
-  let dateText = detailRoot ? findIndeedDateText(detailRoot) : '';
+  let dateText = signalRoot ? findIndeedDateText(signalRoot) : '';
   if (!dateText && detailText) {
     const patterns = [
       /(posted|active|reposted)\s+(\d+)\+?\s*(?:d|days?)\s*ago/i,
@@ -619,11 +705,12 @@ async function parseIndeedListing() {
 
   // Salary must come from the viewed pane. The first
   // [data-testid="attribute_snippet_testid"] on a SERP is another card.
-  const salaryPane =
+  const salaryPane = foreignPane ? null : (
     document.querySelector('#jobsearch-ViewjobPaneWrapper') ||
     document.querySelector('.jobsearch-JobComponent') ||
     document.querySelector('#viewJobSSRRoot') ||
-    detailRoot;
+    signalRoot
+  );
   if (!salaryPane) {
     data.salaryListed = null;
   } else {
@@ -674,7 +761,7 @@ async function parseIndeedListing() {
   // snippet is not a parsed description (0 risk, no length chip). The
   // full text lives in #jobDescriptionText inside the view pane, or in
   // the mosaic bridge viewJob.description.
-  const parsedDesc = readParsedIndeedDescription(detailRoot);
+  const parsedDesc = foreignPane ? null : readParsedIndeedDescription(signalRoot);
   data.descriptionParsed = false;
   data.descriptionSource = null;
   if (parsedDesc) {
@@ -706,7 +793,7 @@ async function parseIndeedListing() {
     console.log('[SkipThisJob] Known staffing/aggregator:', data.companyName);
   }
 
-  const insightsEl = detailRoot && detailRoot.querySelector(
+  const insightsEl = signalRoot && signalRoot.querySelector(
     '.jobsearch-HiringInsights, [data-testid*="hiringInsights"], [data-testid*="HiringInsights"]'
   );
   data.engagementParsed = !!insightsEl;
@@ -722,7 +809,7 @@ async function parseIndeedListing() {
   if (data.employerResponsive) console.log('[SkipThisJob] Employer responsive (this job only)');
 
   // "Apply on company site" — detail apply button, not page-wide copy
-  const applyRoot = detailRoot || document;
+  const applyRoot = signalRoot || document;
   const applyBtn = applyRoot.querySelector('[data-testid="apply-button-container"]') ||
                    applyRoot.querySelector('.jobsearch-IndeedApplyButton-newDesign') ||
                    applyRoot.querySelector('button[id*="apply"], a[id*="apply"]');
@@ -732,8 +819,8 @@ async function parseIndeedListing() {
   }
 
   // Indeed employer rating from the detail header (not a sibling card)
-  const ratingEl = (detailRoot || document).querySelector('[data-testid="inlineHeader-companyRating"]') ||
-                   (detailRoot || document).querySelector('.jobsearch-CompanyInfoContainer .ratingsDisplay');
+  const ratingEl = (signalRoot || document).querySelector('[data-testid="inlineHeader-companyRating"]') ||
+                   (signalRoot || document).querySelector('.jobsearch-CompanyInfoContainer .ratingsDisplay');
   if (ratingEl) {
     const ratingText = ratingEl.textContent.match(/(\d\.\d)/);
     if (ratingText) data.indeedRating = parseFloat(ratingText[1]);
@@ -769,6 +856,8 @@ async function parseIndeedListing() {
       salaryListed: data.salaryListed,
     });
   }
+
+  if (data.title && STJ.isRejectedJobTitle && STJ.isRejectedJobTitle(data.title)) data.title = null;
 
   console.log('[SkipThisJob] Parsed:', JSON.stringify({
     title: data.title, company: data.companyName, days: data.daysOpen,
@@ -1464,6 +1553,7 @@ function parseIndeedCard(card) {
     'h2.jobTitle a, [data-testid="jobTitle"], a.jcs-JobTitle, h2.jobTitle span'
   );
   const title = (titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
+  if (title && STJ.isRejectedJobTitle && STJ.isRejectedJobTitle(title)) return null;
   const jk = (card.getAttribute && (card.getAttribute('data-jk') || card.getAttribute('data-job-id'))) ||
     (card.closest && card.closest('[data-jk]') && card.closest('[data-jk]').getAttribute('data-jk'));
   if (!title || title.length < 3) {
