@@ -157,12 +157,144 @@ function companyLinkIn(container, titleAnchor) {
   return null;
 }
 
-function metadataSnippet(text) {
-  const raw = String(text || '').replace(/\s+/g, ' ').trim();
+function isWorkplaceChip(text) {
+  return /^(?:remote|hybrid|on-?site|on site)$/i.test(String(text || '').replace(/\s+/g, ' ').trim());
+}
+
+function isEmploymentChip(text) {
+  return /^(?:full-?time|part-?time|contract|internship|temporary|intern)$/i.test(String(text || '').replace(/\s+/g, ' ').trim());
+}
+
+// Workplace and employment chips share the job's /jobs/view/ href. They are
+// not the job title. "Promoted by hirer" is longer than a one-word chip.
+function isRejectedTitleChip(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return true;
+  if (isWorkplaceChip(t) || isEmploymentChip(t)) return true;
+  return /^(?:easy apply|promoted|promoted by hirer)$/i.test(t);
+}
+
+function linkedInPageTitleParsed() {
+  if (!STJ.parseLinkedInPageTitle || typeof document === 'undefined') return null;
+  const doc = STJ.parseLinkedInPageTitle(document.title);
+  if (doc && doc.title && !isRejectedTitleChip(doc.title)) {
+    return { title: doc.title, companyName: doc.companyName || null, source: 'document-title' };
+  }
+  const ogEl = document.querySelector && document.querySelector('meta[property="og:title"]');
+  const og = STJ.parseLinkedInPageTitle(ogEl && ogEl.getAttribute('content'));
+  if (og && og.title && !isRejectedTitleChip(og.title)) {
+    return { title: og.title, companyName: og.companyName || null, source: 'og-meta' };
+  }
+  return null;
+}
+
+function linkedInPageTitleText() {
+  const parsed = linkedInPageTitleParsed();
+  return parsed && parsed.title ? parsed.title : '';
+}
+
+function titlesAgree(a, b) {
+  const x = String(a || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const y = String(b || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (x.length >= 12 && y.length >= 12 && (x.indexOf(y) === 0 || y.indexOf(x) === 0)) return true;
+  return false;
+}
+
+function isRejectedAsTitle(text, pageTitle) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t || t.length > 180) return true;
+  if (/[·|•]/.test(t)) return true;
+  const confirmed = !!(pageTitle && titlesAgree(t, pageTitle));
+  if (isRejectedTitleChip(t) && !confirmed) return true;
+  // A short label is a chip unless the page title confirms it. With no
+  // page title, keep a short non-chip so a real brief title still scores.
+  if (t.length <= 12 && pageTitle && !confirmed) return true;
+  return false;
+}
+
+function trailingPlace(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  const named = t.match(/(?:^|\s)(United States|United Kingdom|United Arab Emirates)\s*$/);
+  if (named) return named[1];
+  const city = t.match(/(?:^|\s)((?:[A-Z][A-Za-z.]+(?:\s+[A-Z][A-Za-z.]+){0,3}),\s*[A-Z]{2})\s*$/);
+  return city ? city[1] : '';
+}
+
+function locationBeforeAge(before) {
+  if (!before) return '';
+  let rest = String(before).replace(/\s+/g, ' ').trim();
+  const pageTitle = linkedInPageTitleText();
+  if (pageTitle) {
+    const at = rest.toLowerCase().lastIndexOf(pageTitle.toLowerCase());
+    if (at !== -1) rest = rest.slice(at + pageTitle.length).replace(/^[\s·]+/, '').trim();
+  }
+  const parts = rest.split(/\s*·\s*/).map(function (s) { return s.trim(); }).filter(Boolean);
+  let workplace = '';
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const part = parts[i];
+    if (!part) continue;
+    if (isWorkplaceChip(part)) {
+      if (!workplace) workplace = part;
+      continue;
+    }
+    if (isEmploymentChip(part) || isRejectedTitleChip(part)) continue;
+    if (part.length <= 40 && !/\s-\s/.test(part)) return part;
+    const trail = trailingPlace(part);
+    if (trail) return trail;
+  }
+  return workplace || trailingPlace(rest);
+}
+
+// The metadata line is the place, the age, and the applicant count.
+// A fixed character window was cutting the title mid-word and gluing
+// "Promoted by hirer" and "Responses managed off LinkedIn" onto the age.
+function cleanMetadataLine(text) {
+  let raw = String(text || '')
+    .replace(/[\u00a0\u202f\u2007\u2009\u200a\u2060]/g, ' ')
+    .replace(/[·•・∙⋅\u2022\u2219\u2027\u30fb\u00b7|]/g, ' · ')
+    .replace(/([A-Za-z])(?=(?:Reposted|Posted|Over|Be among|Promoted|Responses)\b)/g, '$1 ')
+    .replace(/([A-Za-z])(?=\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\b)/gi, '$1 ')
+    .replace(/\bpromoted by hirer\b/ig, ' ')
+    .replace(/\bresponses?\s+managed\s+off\s+linkedin\b/ig, ' ')
+    .replace(/\beasy apply\b/ig, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/(?:\s*·\s*){2,}/g, ' · ')
+    .replace(/^\s*·\s*|\s*·\s*$/g, '')
+    .trim();
   if (!raw) return '';
-  const m = raw.match(/.{0,80}(?:\b(?:reposted|posted)\b.{0,40})?\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\s+ago.{0,80}/i);
-  const line = m ? m[0].trim() : raw;
-  return line.slice(0, 200);
+  if (!metadataSignal(raw)) return raw.length <= 80 ? raw : '';
+  const ageRe = /((?:reposted|posted)\s+\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\s+ago|\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\s+ago)/i;
+  const age = raw.match(ageRe);
+  if (!age) return raw.length <= 160 ? raw : '';
+  const appRe = /((?:over\s+)?\d[\d,]*\+?\s+(?:applicants?|people\s+clicked\s+apply)|be among the first(?:\s+\d+)?(?:\s+applicants?)?)/i;
+  const after = raw.slice(age.index + age[0].length);
+  const app = after.match(appRe);
+  const before = raw.slice(0, age.index).replace(/(?:\s*·\s*)+$/g, '').trim();
+  const location = locationBeforeAge(before);
+  const parts = [];
+  if (location) parts.push(location);
+  parts.push(age[1].replace(/\s+/g, ' ').trim());
+  if (app) parts.push(app[1].replace(/\s+/g, ' ').trim());
+  return parts.join(' · ');
+}
+
+function metadataSnippet(text) {
+  return cleanMetadataLine(text);
+}
+
+function noteListingChip(data, text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return;
+  if (!data.workArrangement && /^remote$/i.test(t)) data.workArrangement = 'remote';
+  else if (!data.workArrangement && /^hybrid$/i.test(t)) data.workArrangement = 'hybrid';
+  else if (!data.workArrangement && /^on-?site$/i.test(t)) data.workArrangement = 'onsite';
+  else if (!data.employmentType && /^full-?time$/i.test(t)) data.employmentType = 'full_time';
+  else if (!data.employmentType && /^part-?time$/i.test(t)) data.employmentType = 'part_time';
+  else if (!data.employmentType && /^contract$/i.test(t)) data.employmentType = 'contract';
+  else if (!data.employmentType && /^(?:internship|intern)$/i.test(t)) data.employmentType = 'internship';
 }
 
 function isJobCardComponent(el) {
@@ -358,6 +490,20 @@ function pieceHasAge(text) {
   return !!(parsed && (parsed.daysOpen != null || parsed.isRepost));
 }
 
+// A job title sitting beside the age line is not metadata. Stop the sibling
+// walk so "Senior … Outbound" is not glued onto "United States".
+function isTitleLeak(text) {
+  const t = normalizePiece(text);
+  if (!t) return false;
+  if (metadataSignal(t) || pieceHasAge(t)) return false;
+  if (isWorkplaceChip(t) || isEmploymentChip(t)) return false;
+  const pageTitle = linkedInPageTitleText();
+  if (pageTitle && (titlesAgree(t, pageTitle) || t.toLowerCase().indexOf(pageTitle.toLowerCase()) !== -1)) return true;
+  if (t.length > 40) return true;
+  if (/\s-\s/.test(t)) return true;
+  return false;
+}
+
 function siblingCluster(node) {
   const parent = node && node.parentElement;
   if (!parent) return String(node && node.textContent || '');
@@ -372,6 +518,7 @@ function siblingCluster(node) {
     const prevEl = kids[start - 1];
     const prev = normalizePiece(prevEl && prevEl.textContent);
     if (!prev) { start--; continue; }
+    if (isTitleLeak(prev)) break;
     if (prev.length > 80) break;
     if (pieceHasAge(prev)) break;
     start--;
@@ -382,6 +529,7 @@ function siblingCluster(node) {
     const nextEl = kids[end + 1];
     const next = normalizePiece(nextEl && nextEl.textContent);
     if (!next) { end++; continue; }
+    if (isTitleLeak(next)) break;
     if (next.length > 80) break;
     if (pieceHasAge(next)) break;
     end++;
@@ -485,7 +633,7 @@ function bestMetadataIn(root, anchor) {
     if (!nodeFollowsAnchor(anchor, el)) continue;
     const own = String(el.textContent || '').replace(/\s+/g, ' ').trim();
     if (!own || own.length > 220) continue;
-    const text = lineTextAround(el);
+    const text = cleanMetadataLine(lineTextAround(el));
     if (!text) continue;
     consider(text, el);
     if (found && found.parsed.daysOpen != null && found.parsed.applicantCount != null) break;
@@ -572,37 +720,67 @@ function anchorIsResultsRow(anchor) {
   return anchorInRepeatingRow(anchor);
 }
 
+function anchorLabel(anchor) {
+  return String(anchor && anchor.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+// Workplace and employment chips share the job href. The title is the
+// longest title-like label, preferring one that matches the page title.
+function pickDetailTitleAnchor(anchors) {
+  const pageTitle = linkedInPageTitleText();
+  let best = null;
+  let bestScore = -1;
+  for (let i = 0; i < anchors.length; i++) {
+    const text = anchorLabel(anchors[i]);
+    if (isRejectedAsTitle(text, pageTitle)) continue;
+    const score = text.length + (titlesAgree(text, pageTitle) ? 1000 : 0);
+    if (score > bestScore) {
+      best = anchors[i];
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
 function readHrefDetail(jobId) {
   if (!jobId || typeof document === 'undefined' || !document.querySelectorAll) return null;
   const anchors = Array.from(document.querySelectorAll('a[href*="/jobs/view/' + jobId + '"]'));
   const outside = anchors.filter(function (a) { return !anchorIsResultsRow(a); });
-  let chosen = null;
+  const titleAnchor = pickDetailTitleAnchor(outside);
+  // The first chip whose pane holds the company link is only a walk
+  // start. Its text is not the title when a real title anchor exists.
+  let metaAnchor = null;
   let container = null;
   for (let i = 0; i < outside.length; i++) {
     const c = containerForTitleAnchor(outside[i], jobId);
     if (!c) continue;
     if (companyLinkIn(c, outside[i])) {
-      chosen = outside[i];
+      metaAnchor = outside[i];
       container = c;
       break;
     }
   }
-  if (!chosen && outside.length) {
-    chosen = outside[outside.length - 1];
-    container = containerForTitleAnchor(chosen, jobId) || chosen.parentElement;
+  if (!metaAnchor && titleAnchor) {
+    metaAnchor = titleAnchor;
+    container = containerForTitleAnchor(titleAnchor, jobId) || titleAnchor.parentElement;
   }
-  if (!chosen || !container) return null;
-  const company = companyLinkIn(container, chosen);
+  if (!metaAnchor && outside.length) {
+    metaAnchor = outside[outside.length - 1];
+    container = containerForTitleAnchor(metaAnchor, jobId) || metaAnchor.parentElement;
+  }
+  if (!metaAnchor || !container) return null;
+  const company = companyLinkIn(container, metaAnchor);
   // Age, repost, and applicants may sit outside the company-link wrapper.
   // Walk ancestors and, if needed, the detail pane. One value per field.
-  const meta = readMetadataAround(chosen, jobId);
+  const meta = readMetadataAround(metaAnchor, jobId);
   const parsed = meta && meta.parsed;
   // A bare list-row title is not a loaded detail pane. Keep the title if
   // that is all we have, and leave scope unset so salary and hiring
   // contact stay unknown instead of false.
   const loaded = !!(company || parsed);
+  const titleText = titleAnchor ? anchorLabel(titleAnchor) : null;
   return {
-    title: (chosen.textContent || '').replace(/\s+/g, ' ').trim() || null,
+    title: titleText,
     company: company ? (company.textContent || '').replace(/\s+/g, ' ').trim() : null,
     location: parsed ? parsed.location : null,
     daysOpen: parsed ? parsed.daysOpen : null,
@@ -626,7 +804,9 @@ function readComponentKeyDetail(jobId) {
     const meta = readMetadataAround(el, jobId) || findMetadataElement(el);
     const parsed = meta && meta.parsed;
     const company = companyLinkIn(el, null);
+    const pageTitle = linkedInPageTitleText();
     let title = null;
+    let titleScore = -1;
     const ps = el.querySelectorAll('p');
     for (let p = 0; p < ps.length; p++) {
       if (meta && ps[p] === meta.el) continue;
@@ -636,11 +816,14 @@ function readComponentKeyDetail(jobId) {
         if (only === companyText) continue;
       }
       const t = (ps[p].textContent || '').replace(/\s+/g, ' ').trim();
-      if (t && t.length > 3 && t.length < 180 && !/[·|•]/.test(t)) { title = t; break; }
+      if (isRejectedAsTitle(t, pageTitle)) continue;
+      const score = t.length + (titlesAgree(t, pageTitle) ? 1000 : 0);
+      if (score > titleScore) { title = t; titleScore = score; }
     }
     if (!title) {
       const heading = el.querySelector('h1, h2, strong');
-      if (heading) title = (heading.textContent || '').replace(/\s+/g, ' ').trim();
+      const headingText = heading ? (heading.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      if (headingText && !isRejectedAsTitle(headingText, pageTitle)) title = headingText;
     }
     return {
       title: title,
@@ -665,6 +848,7 @@ function readGhostJobTopCard() {
     if (isLinkedInListNode(h1)) continue;
     const title = (h1.textContent || '').replace(/\s+/g, ' ').trim();
     if (!title || title.length < 3 || title.length > 180) continue;
+    if (isRejectedAsTitle(title, linkedInPageTitleText())) continue;
     if (/\bjobs?\s+(in|near|hiring)\b/i.test(title)) continue;
     let el = h1.parentElement;
     const jobId = getCurrentJobId();
@@ -759,6 +943,25 @@ function fillField(data, sources, field, value, approach) {
   data[field] = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : value;
   sources[field] = approach;
   return true;
+}
+
+// href-detail can lock onto a Remote/Easy Apply chip that shares the job
+// URL. When that label disagrees with the page title, the page title wins
+// and the log names document-title or og-meta. An agreeing href title stays.
+function reconcileLinkedInTitle(data, sources) {
+  const page = linkedInPageTitleParsed();
+  if (!page || !page.title) return;
+  const src = sources.title || '';
+  const fromDomWalk = src === 'href-detail' || src === 'componentkey' || src === 'ghostjob-top-card';
+  if (src && !fromDomWalk) return;
+  const current = data.title;
+  if (current && !isRejectedAsTitle(current, page.title) && titlesAgree(current, page.title)) return;
+  data.title = page.title;
+  sources.title = page.source;
+  if (!data.companyName && page.companyName) {
+    data.companyName = page.companyName;
+    sources.companyName = page.source;
+  }
 }
 
 function applyDetailFields(data, sources, detail, approach) {
@@ -1397,12 +1600,19 @@ function parseLinkedInListing() {
       legacyRoot.querySelector('.job-details-jobs-unified-top-card__job-title') ||
       legacyRoot.querySelector('.t-24.t-bold') ||
       legacyRoot.querySelector('h1');
-    if (!fillField(data, sources, 'title', titleEl && titleEl.textContent, 'legacy-selectors')) {
+    const pageTitleNow = linkedInPageTitleText();
+    // The dedicated title element is the job title even when it is short.
+    // Only a workplace or employment chip is rejected here.
+    const legacyTitle = titleEl ? String(titleEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+    if (legacyTitle && !isRejectedTitleChip(legacyTitle)) {
+      fillField(data, sources, 'title', legacyTitle, 'legacy-selectors');
+    }
+    if (!data.title) {
       const jobLinks = legacyRoot.querySelectorAll('a[href*="/jobs/view/"]');
       for (const link of jobLinks) {
         if (isLinkedInListNode(link)) continue;
         const text = link.textContent.trim();
-        if (text && text.length > 3 && text.length < 150 && !text.includes('\n')) {
+        if (text && !isRejectedAsTitle(text, pageTitleNow) && text.length < 150 && !text.includes('\n')) {
           fillField(data, sources, 'title', text, 'legacy-selectors');
           break;
         }
@@ -1460,6 +1670,7 @@ function parseLinkedInListing() {
     fillField(data, sources, 'title', docParsed.title, 'document-title');
     fillField(data, sources, 'companyName', docParsed.companyName, 'document-title');
   }
+  reconcileLinkedInTitle(data, sources);
 
   const scope = legacyRoot ||
     (hrefDetail && hrefDetail.container) ||
@@ -1502,12 +1713,14 @@ function parseLinkedInListing() {
   } else {
     console.log('[SkipThisJob] Days open: null');
   }
-  const metadataLine = (hrefDetail && hrefDetail.metadataText)
-    || (keyedDetail && keyedDetail.metadataText)
-    || (ghostDetail && ghostDetail.metadataText)
-    || '';
+  const metadataLine = cleanMetadataLine(
+    (hrefDetail && hrefDetail.metadataText) ||
+    (keyedDetail && keyedDetail.metadataText) ||
+    (ghostDetail && ghostDetail.metadataText) ||
+    ''
+  );
   data.metadataLine = metadataLine;
-  console.log('[SkipThisJob] LinkedIn metadata line:', metadataLine ? String(metadataLine).slice(0, 200) : '(none)');
+  console.log('[SkipThisJob] LinkedIn metadata line:', metadataLine || '(none)');
 
   data.easyApply = signalPane ? /easy apply/.test(detailText) : false;
   sources.easyApply = data.easyApply ? 'detail' : 'none';
@@ -1670,8 +1883,18 @@ function parseLinkedInListing() {
       data.employmentType = 'part_time';
     } else if (attributeText.includes('contract')) {
       data.employmentType = 'contract';
-    } else if (attributeText.includes('intern')) {
+    } else     if (attributeText.includes('intern')) {
       data.employmentType = 'internship';
+    }
+  }
+
+  // New layouts put Remote / Full-time on anchors that share the job URL.
+  // List-row chips and the filter bar stay out of the open job.
+  if (jobIdNow && document.querySelectorAll && (!data.workArrangement || !data.employmentType)) {
+    const chipAnchors = document.querySelectorAll('a[href*="/jobs/view/' + jobIdNow + '"]');
+    for (let i = 0; i < chipAnchors.length; i++) {
+      if (anchorIsResultsRow(chipAnchors[i])) continue;
+      noteListingChip(data, chipAnchors[i].textContent);
     }
   }
 
@@ -2741,28 +2964,36 @@ function parseJobCardParagraphs(card) {
   return { title: title, companyName: companyName, location: location, viewed: viewed };
 }
 
+function acceptableCardTitle(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length < 3 || t.length >= 180) return false;
+  if (isRejectedTitleChip(t) && !titlesAgree(t, linkedInPageTitleText())) return false;
+  return true;
+}
+
 function cardTitleText(card) {
   const fromParagraph = parseJobCardParagraphs(card).title;
-  if (fromParagraph && fromParagraph.length >= 3 && fromParagraph.length < 180) return fromParagraph;
+  if (acceptableCardTitle(fromParagraph)) return fromParagraph;
   const links = card.querySelectorAll('a[href*="/jobs/view/"]');
   let best = '';
   for (let i = 0; i < links.length; i++) {
     const raw = STJ.extensionChromeText ? STJ.extensionChromeText(links[i]) : (links[i].textContent || '');
     const t = String(raw).replace(/\s+/g, ' ').trim();
-    if (t.length > best.length && t.length < 180) best = t;
+    if (acceptableCardTitle(t) && t.length > best.length) best = t;
   }
   if (best.length < 3) {
     for (let i = 0; i < links.length; i++) {
       const aria = links[i].getAttribute('aria-label') || links[i].getAttribute('title') || '';
       const t = String(aria).replace(/\s+/g, ' ').trim();
-      if (t.length > best.length && t.length < 180) best = t;
+      if (acceptableCardTitle(t) && t.length > best.length) best = t;
     }
   }
   if (best.length >= 3) return best;
   const titleEl = card.querySelector(
     'a.job-card-list__title, a.job-card-container__link, .job-card-list__title--link, strong'
   );
-  return String(titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
+  const fallback = String(titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
+  return acceptableCardTitle(fallback) ? fallback : '';
 }
 
 function cardRowMetadata(card) {

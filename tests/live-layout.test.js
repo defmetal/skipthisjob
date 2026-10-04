@@ -803,6 +803,126 @@ test('a late About the job section re-scores to the same result as a loaded pane
   }
 });
 
+const CHIP_TITLE = 'Senior Product Marketing Manager - Campaign Management & Outbound';
+const CHIP_META = 'United States · Reposted 2 weeks ago · Over 100 people clicked apply';
+
+function chipTitleHtml() {
+  return CHIP_TITLE.replace(/&/g, '&amp;');
+}
+
+function chipDetail(withTitleAnchor) {
+  const titleAnchor = withTitleAnchor
+    ? '<p><a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">' + chipTitleHtml() + '</a></p>'
+    : '';
+  return '<div id="detail">' +
+    '<a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">Remote</a>' +
+    '<a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">Full-time</a>' +
+    '<a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">Easy Apply</a>' +
+    titleAnchor +
+    '<a href="https://www.linkedin.com/company/five9/">Five9</a>' +
+    '<div id="meta">' +
+      '<span>' + chipTitleHtml() + '</span>' +
+      '<span>United States</span>' +
+      '<span>Reposted 2 weeks ago</span>' +
+      '<span>Over 100 people clicked apply</span>' +
+      '<span>Promoted by hirer</span>' +
+      '<span>Responses managed off LinkedIn</span>' +
+    '</div>' +
+  '</div>';
+}
+
+function chipList() {
+  return '<div componentkey="SearchResultsMainContent">' +
+    '<div role="button" componentkey="job-card-component-ref-' + LI_JOB + '">' +
+      '<p><a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">Remote</a></p>' +
+      '<p><a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">Easy Apply</a></p>' +
+      '<p><a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">' + chipTitleHtml() + '</a></p>' +
+    '</div>' +
+    '<div role="button" componentkey="job-card-component-ref-1111111111">' +
+      '<p><a href="https://www.linkedin.com/jobs/view/1111111111/">Remote</a></p>' +
+      '<p><a href="https://www.linkedin.com/jobs/view/1111111111/">Easy Apply</a></p>' +
+      '<p><a href="https://www.linkedin.com/jobs/view/1111111111/">Other Role</a></p>' +
+    '</div>' +
+  '</div>';
+}
+
+function chipPage(opts) {
+  return '<!DOCTYPE html><html><head><title>' + chipTitleHtml() + ' | Five9 | LinkedIn</title></head><body>' +
+    (opts.list ? chipList() : '') +
+    chipDetail(opts.titleAnchor !== false) +
+    '</body></html>';
+}
+
+function assertCleanLinkedInTitle(listing, lines, titleSource) {
+  assert.equal(listing.title, CHIP_TITLE);
+  assert.notEqual(listing.title, 'Remote');
+  assert.notEqual(listing.title, 'Easy Apply');
+  assert.notEqual(listing.title, 'Full-time');
+  assert.equal(listing.companyName, 'Five9');
+  assert.equal(listing.location, 'United States');
+  assert.equal(listing.daysOpen, 14);
+  assert.equal(listing.isRepost, true);
+  assert.equal(listing.applicantCount, 100);
+  assert.equal(listing.metadataLine, CHIP_META);
+  assert.equal(listing.metadataLine.includes(CHIP_TITLE), false);
+  assert.equal(/Promoted by hirer|Responses managed off LinkedIn|nior|Linked$/.test(listing.metadataLine), false);
+  assert.equal(listing.workArrangement, 'remote');
+  assert.equal(listing.employmentType, 'full_time');
+  assert.equal(listing.fieldSources.title, titleSource);
+  const metaLog = lines.find((line) => line.includes('[SkipThisJob] LinkedIn metadata line:'));
+  assert.equal(metaLog, '[SkipThisJob] LinkedIn metadata line: ' + CHIP_META);
+  const sourceLine = lines.find((line) => line.includes('[SkipThisJob] LinkedIn field sources:'));
+  assert.match(sourceLine, new RegExp('title=' + titleSource));
+}
+
+test('a Remote chip sharing the job href is not the /jobs/view/ title', () => {
+  const dom = loadLinkedIn(chipPage({ titleAnchor: true }), LI_VIEW);
+  try {
+    const lines = captureLogs(dom.window);
+    const listing = dom.window.parseLinkedInListing();
+    assertCleanLinkedInTitle(listing, lines, 'href-detail');
+    const scored = dom.window.scoreLocally(listing);
+    assert.equal(
+      Array.from(scored.signals).filter((s) => s === 'Responses managed off LinkedIn — less accountability').length,
+      1
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('a Remote-only chip falls through to the /jobs/view/ document title', () => {
+  const dom = loadLinkedIn(chipPage({ titleAnchor: false }), LI_VIEW);
+  try {
+    const lines = captureLogs(dom.window);
+    const listing = dom.window.parseLinkedInListing();
+    assertCleanLinkedInTitle(listing, lines, 'document-title');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('search-results list chips do not replace the open job title', () => {
+  const dom = loadLinkedIn(chipPage({ titleAnchor: true, list: true }), LI_SEARCH);
+  try {
+    const doc = dom.window.document;
+    const lines = captureLogs(dom.window);
+    const listing = dom.window.parseLinkedInListing();
+    assertCleanLinkedInTitle(listing, lines, 'href-detail');
+    const openRow = doc.querySelector('[componentkey="job-card-component-ref-' + LI_JOB + '"]');
+    const otherRow = doc.querySelector('[componentkey="job-card-component-ref-1111111111"]');
+    assert.equal(dom.window.parseLinkedInCard(openRow).title, CHIP_TITLE);
+    assert.equal(dom.window.parseLinkedInCard(otherRow).title, 'Other Role');
+    const scored = dom.window.scoreLocally(listing);
+    assert.equal(
+      Array.from(scored.signals).filter((s) => s === 'Responses managed off LinkedIn — less accountability').length,
+      1
+    );
+  } finally {
+    dom.window.close();
+  }
+});
+
 test('list badges start once the cky rows exist', () => {
   const dom = loadLinkedIn('<!DOCTYPE html><html><body><div id="shell"></div></body></html>', LI_SEARCH);
   try {
