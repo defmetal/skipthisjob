@@ -160,6 +160,18 @@
     });
   }
 
+  // Opt-in only. Checking the box does not start a scan and does not ask
+  // for confirmation. The scan starts from the on-page button.
+  const scanToggle = document.getElementById('stj-scan-visible');
+  if (scanToggle) {
+    chrome.storage.local.get('stjScanVisible', (res) => {
+      scanToggle.checked = !!(res && res.stjScanVisible === true);
+    });
+    scanToggle.addEventListener('change', () => {
+      chrome.storage.local.set({ stjScanVisible: scanToggle.checked === true });
+    });
+  }
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes.stjActiveListing) return;
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
