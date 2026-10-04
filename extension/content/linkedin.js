@@ -117,6 +117,7 @@ function stampListBadgeForCurrentJob(listing, result) {
     'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link'
   ) || card;
   STJ.injectListBadge(card, stamped, anchor);
+  if (STJ.applyCurrentListDim) STJ.applyCurrentListDim(card, stamped.score);
 }
 
 function jobIdFromHref(href) {
@@ -2021,6 +2022,30 @@ function cardTitleText(card) {
   return String(titleEl && titleEl.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
+function cardRowMetadata(card) {
+  if (!card || !card.querySelectorAll || !STJ.parseLinkedInMetadataLine) return null;
+  const nodes = card.querySelectorAll('p, div, span, li, time');
+  const slot = { location: null, daysOpen: null, isRepost: null, applicantCount: null };
+  let any = false;
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    // A node that also holds the title link glues the title onto the place.
+    if (el.querySelector && el.querySelector('a[href*="/jobs/view/"]')) continue;
+    const own = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!own || own.length > 220) continue;
+    const parsed = STJ.parseLinkedInMetadataLine(own);
+    if (!parsed) continue;
+    const hasSignal = parsed.daysOpen != null || parsed.applicantCount != null || parsed.isRepost;
+    if (!hasSignal) continue;
+    any = true;
+    if (!slot.location && parsed.location) slot.location = parsed.location;
+    if (slot.daysOpen == null && parsed.daysOpen != null) slot.daysOpen = parsed.daysOpen;
+    if (slot.isRepost == null && parsed.isRepost) slot.isRepost = true;
+    if (slot.applicantCount == null && parsed.applicantCount != null) slot.applicantCount = parsed.applicantCount;
+  }
+  return any ? slot : null;
+}
+
 function parseLinkedInCard(card) {
   if (!card || !card.querySelector) return null;
   const title = cardTitleText(card);
@@ -2042,19 +2067,28 @@ function parseLinkedInCard(card) {
     'time, .job-card-container__listed-time, .job-card-list__footer-wrapper, .tvm__text'
   );
   const text = (card.innerText || card.textContent || '').toLowerCase();
+  const meta = cardRowMetadata(card);
   const parseAge = STJ.parseLinkedInPostedAge || STJ.parseRelativeDays;
-  return {
-    title,
-    companyName: companyEl ? companyEl.textContent.trim() : null,
-    platformJobId: platformJobId,
-    daysOpen: parseAge && parseAge(text) != null
+  const daysOpen = meta && meta.daysOpen != null
+    ? meta.daysOpen
+    : (parseAge && parseAge(text) != null
       ? parseAge(text)
       : (STJ.daysOpenFromCard
         ? STJ.daysOpenFromCard(card, dateEl, text)
-        : null),
-    isRepost: /reposted/.test(text),
+        : null));
+  const applicantCount = meta && meta.applicantCount != null
+    ? meta.applicantCount
+    : (STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null);
+  const isRepost = (meta && meta.isRepost) || /reposted/.test(text) ? true : null;
+  return {
+    title,
+    companyName: companyEl ? companyEl.textContent.trim() : null,
+    location: meta && meta.location ? meta.location : null,
+    platformJobId: platformJobId,
+    daysOpen: daysOpen,
+    isRepost: isRepost,
     salaryListed: STJ.looksLikeSalary && STJ.looksLikeSalary(text) ? true : undefined,
-    applicantCount: STJ.parseApplicantCount ? STJ.parseApplicantCount(text) : null,
+    applicantCount: applicantCount,
     easyApply: /easy apply/.test(text),
     engagementSignals: /actively reviewing/.test(text) ? ['actively_reviewing'] : [],
     // Cards do not read the hiring-insights block. Absence is unparsed (0),
@@ -2079,16 +2113,35 @@ function refreshLinkedInListBadges() {
       if (id && seen[id]) continue;
       if (id) seen[id] = true;
       const preview = STJ.scoreListPreview(parsed);
+      const key = STJ.listBadgeKey ? STJ.listBadgeKey(card, parsed) : (id || null);
+      const remembered = (STJ.lookupListBadgeScore && key && STJ.lookupListBadgeScore(key)) ||
+        (STJ.readExistingBadge && STJ.readExistingBadge(card));
+      const resolved = STJ.resolveListBadge
+        ? STJ.resolveListBadge(preview, parsed, remembered)
+        : { result: preview, kept: false };
+      if (key && STJ.rememberListBadgeScore && !resolved.kept) {
+        STJ.rememberListBadgeScore(key, resolved.result, {
+          source: 'preview',
+          daysOpen: parsed.daysOpen,
+        });
+      }
       const anchor = card.querySelector(
         'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link'
       ) || card;
-      STJ.injectListBadge(card, Object.assign({}, preview, {
-        source: 'preview',
-        daysOpen: parsed.daysOpen,
-      }), anchor);
+      const stamped = Object.assign({}, resolved.result, {
+        source: (resolved.result && resolved.result.source) || 'preview',
+        daysOpen: resolved.result && resolved.result.daysOpen != null
+          ? resolved.result.daysOpen
+          : parsed.daysOpen,
+      });
+      STJ.injectListBadge(card, stamped, anchor);
+      if (STJ.applyCurrentListDim) STJ.applyCurrentListDim(card, stamped.score);
     }
   } finally {
-    setTimeout(function () { _liMute = false; }, 0);
+    // Clear before returning. The detail observer delivers our badge writes
+    // and a later page mutation in one batch; a timer would still be muted
+    // when that batch runs, and the Ghost Risk card would not come back.
+    _liMute = false;
   }
 }
 

@@ -1508,8 +1508,15 @@
     const nextAttr = on ? String(limit) : null;
     const curAttr = card.getAttribute ? card.getAttribute('data-stj-dim') : null;
     if (nextAttr && curAttr !== nextAttr && card.setAttribute) card.setAttribute('data-stj-dim', nextAttr);
-    else if (!nextAttr && curAttr != null && card.removeAttribute) card.removeAttribute('data-stj-dim');
+    else     if (!nextAttr && curAttr != null && card.removeAttribute) card.removeAttribute('data-stj-dim');
     return card;
+  }
+
+  // List refreshes outside watchListBadges (detail stamp, mutation rescan)
+  // must use the threshold the popup last stored. A missing argument to
+  // applyListDim stays "off" so callers that pass undefined do not dim.
+  function applyCurrentListDim(card, score) {
+    return applyListDim(card, score, dimThreshold);
   }
 
   function loadDimThreshold(done) {
@@ -1854,6 +1861,7 @@
   api.DIM_STORAGE_KEY = DIM_STORAGE_KEY;
   api.dimThresholdFromSetting = dimThresholdFromSetting;
   api.applyListDim = applyListDim;
+  api.applyCurrentListDim = applyCurrentListDim;
   api.parseRelativeDays = parseRelativeDays;
   api.parseLinkedInPostedAge = parseLinkedInPostedAge;
   api.normalizeAgeText = normalizeAgeText;

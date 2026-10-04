@@ -26,6 +26,7 @@ function load(html, url, hooks) {
       onChanged: { addListener() {} },
     },
   };
+  if (hooks && typeof hooks.decorateChrome === 'function') hooks.decorateChrome(w.chrome);
   w.eval(sharedSrc);
   w.eval(linkedinSrc);
   return dom;
