@@ -16,6 +16,7 @@ let _liMute = false;
 let _scoredPaneChars = -1;
 let _scoredDescLen = -1;
 let _scoredDescSource = '';
+let _scoredPaneHash = '';
 let _rescoreCount = 0;
 let _paneRescoreTimer = 0;
 const _paneDiagLogged = {};
@@ -321,15 +322,19 @@ function nodeContainsListRows(el) {
 function isExtensionChrome(el) {
   if (!el || el.nodeType !== 1) return false;
   if (el.id === 'ghost-detector-overlay') return true;
-  if (el.hasAttribute && el.hasAttribute('data-stj-overlay')) return true;
+  if (el.attributes) {
+    for (let i = 0; i < el.attributes.length; i++) {
+      const name = String(el.attributes[i].name || '');
+      if (name.indexOf('data-stj') === 0) return true;
+    }
+  }
   const cl = el.classList;
   if (!cl) return false;
-  return cl.contains('stj-list-badge') ||
-    cl.contains('stj-fresh-badge') ||
-    cl.contains('stj-fresh-row') ||
-    cl.contains('ghost-detector-card') ||
-    cl.contains('ghost-detector-signals') ||
-    cl.contains('ghost-detector-signal');
+  for (let i = 0; i < cl.length; i++) {
+    const name = cl[i];
+    if (name.indexOf('stj-') === 0 || name.indexOf('ghost-detector') === 0) return true;
+  }
+  return false;
 }
 
 // Injected Ghost Risk card and list badges. Reading them back in would
@@ -1057,8 +1062,9 @@ function isSectionStop(el) {
   if (!el || isDisclosureControl(el)) return false;
   const own = ownText(el);
   const full = normalizeBlock(el.textContent);
-  const label = own || (full.length < 48 ? full : '');
+  const label = own || (full.length < 90 ? full : '');
   if (!label) return false;
+  if (/job search faster with premium/i.test(label)) return true;
   return /^(?:about the company|set alert|similar jobs|more jobs|people also viewed|premium insights|meet the hiring team|job alerts)$/i.test(label);
 }
 
@@ -1248,7 +1254,7 @@ function stripSimilarModules(clone) {
   const nodes = Array.from(clone.querySelectorAll('h1, h2, h3, h4, div, span, p, section, li'));
   for (let i = 0; i < nodes.length; i++) {
     const el = nodes[i];
-    if (!el.parentNode || !isSimilarJobsHeading(el)) continue;
+    if (!el.parentNode || !(isSimilarJobsHeading(el) || isSectionStop(el))) continue;
     let moduleRoot = el;
     const parent = el.parentElement;
     if (parent && parent !== clone && !/about the job/i.test(normalizeBlock(parent.textContent))) {
@@ -1290,10 +1296,59 @@ function stripForeignViewSubtrees(clone, jobId) {
   }
 }
 
+function stripExtensionNodes(clone) {
+  if (!clone || !clone.querySelectorAll) return;
+  const nodes = Array.from(clone.querySelectorAll('*'));
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (!el.parentNode || el === clone) continue;
+    if (isExtensionChrome(el)) el.parentNode.removeChild(el);
+  }
+}
+
+function firstAboutHeading(root) {
+  if (!root || !root.querySelectorAll) return null;
+  const nodes = root.querySelectorAll('*');
+  for (let i = 0; i < nodes.length; i++) {
+    if (isAboutJobHeading(nodes[i])) return nodes[i];
+  }
+  return null;
+}
+
+function textBeforeHeading(root, heading) {
+  const parts = [];
+  let hit = false;
+  function walk(el) {
+    if (hit || !el || !el.childNodes) return;
+    for (let i = 0; i < el.childNodes.length; i++) {
+      if (hit) return;
+      const child = el.childNodes[i];
+      if (child === heading) { hit = true; return; }
+      if (child.nodeType === 3) { parts.push(child.textContent || ''); continue; }
+      if (child.nodeType !== 1) continue;
+      if (isExtensionChrome(child)) continue;
+      if (child.contains && child.contains(heading)) { walk(child); continue; }
+      parts.push(child.textContent || '');
+    }
+  }
+  walk(root);
+  return parts.join(' ');
+}
+
+// Header plus the About the job section. Modules that load later
+// (similar jobs, premium, hiring team, our own card) stay out of the score.
+function boundedPaneText(pane) {
+  if (!pane) return '';
+  const heading = firstAboutHeading(pane);
+  if (!heading) return normalizeBlock(elementText(pane));
+  return normalizeBlock(textBeforeHeading(pane, heading) + ' ' + collectAfterHeading(pane, heading));
+}
+
 function stripNoise(el, jobId) {
   if (!el || !el.cloneNode) return el;
   const clone = el.cloneNode(true);
   if (!clone.querySelectorAll) return clone;
+  stripExtensionNodes(clone);
   const junk = clone.querySelectorAll(
     '[componentkey^="job-card-component-ref-"], [componentkey="SearchResultsMainContent"], .scaffold-layout__list, .jobs-search-results-list, .jobs-search-results__list, ' +
     EXTENSION_CHROME_SELECTOR
@@ -1690,8 +1745,10 @@ function parseLinkedInListing() {
     signalPane = jobPane;
   }
   const cleanPane = signalPane ? stripNoise(signalPane, jobIdNow) : null;
-  const detailText = normalizeBlock(cleanPane ? elementText(cleanPane) : '').toLowerCase();
+  const boundedText = boundedPaneText(cleanPane);
+  const detailText = boundedText.toLowerCase();
   const paneChars = detailText.length;
+  const paneStableHash = STJ.hashDescription ? STJ.hashDescription(boundedText) : null;
   let paneDepth = locatedPane.depth;
   if (signalPane && locatedPane.anchor && signalPane !== jobPane) {
     let walk = locatedPane.anchor;
@@ -1964,6 +2021,8 @@ function parseLinkedInListing() {
   data.fieldSources = sources;
   data.paneChars = paneChars;
   data.paneDepth = paneDepth;
+  data.paneStableHash = paneStableHash;
+  console.log('[SkipThisJob] pane stable hash ' + (paneStableHash || 'none'));
   const trackedFields = ['title', 'companyName', 'location', 'daysOpen', 'isRepost', 'applicantCount', 'description', 'responseManagedOffsite', 'easyApply', 'activelyReviewing'];
   const sourceBits = trackedFields.map(function (k) { return k + '=' + (sources[k] || 'none'); });
   sourceBits.push('paneDepth=' + (paneDepth == null ? 'none' : String(paneDepth)));
@@ -2687,6 +2746,7 @@ function beginLinkedInJob(jobId) {
   _scoredPaneChars = -1;
   _scoredDescLen = -1;
   _scoredDescSource = '';
+  _scoredPaneHash = '';
 }
 
 function rememberScoredPane(listing) {
@@ -2696,17 +2756,17 @@ function rememberScoredPane(listing) {
   _scoredPaneChars = listing.paneChars != null ? listing.paneChars : 0;
   _scoredDescLen = listing.description ? String(listing.description).length : 0;
   _scoredDescSource = (listing.fieldSources && listing.fieldSources.description) || 'none';
+  _scoredPaneHash = listing.paneStableHash || '';
 }
 
 function paneGrew(listing) {
   if (!listing || _scoredDescSource === '') return false;
-  const chars = listing.paneChars != null ? listing.paneChars : 0;
-  const descLen = listing.description ? String(listing.description).length : 0;
+  const hash = listing.paneStableHash || '';
+  if (hash) return hash !== _scoredPaneHash;
   const source = (listing.fieldSources && listing.fieldSources.description) || 'none';
   if (_scoredDescSource === 'none' && source !== 'none') return true;
-  if (chars >= _scoredPaneChars + 400) return true;
-  if (descLen >= _scoredDescLen + 200) return true;
-  return false;
+  const descLen = listing.description ? String(listing.description).length : 0;
+  return descLen >= _scoredDescLen + 200;
 }
 
 // Re-locate the pane and replace the one card when About the job (or any

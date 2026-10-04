@@ -923,6 +923,175 @@ test('search-results list chips do not replace the open job title', () => {
   }
 });
 
+function jobIdentity(listing) {
+  return {
+    title: listing.title,
+    companyName: listing.companyName,
+    location: listing.location,
+    daysOpen: listing.daysOpen,
+    isRepost: listing.isRepost,
+    applicantCount: listing.applicantCount,
+    descriptionHash: listing.descriptionHash,
+    easyApply: listing.easyApply,
+    activelyReviewing: listing.activelyReviewing,
+    responseManagedOffsite: listing.responseManagedOffsite,
+    hiringContactVisible: listing.hiringContactVisible,
+    paneStableHash: listing.paneStableHash,
+  };
+}
+
+function trailingPaneNoise() {
+  return similarJobsModule() +
+    '<section id="premium"><h2>Job search faster with Premium</h2>' +
+      '<p>Actively reviewing applicants. Easy Apply. Salary: $90,000 per year. Responses managed off LinkedIn.</p>' +
+    '</section>' +
+    '<section id="company"><h2>About the company</h2>' +
+      '<p>Meet the hiring team at Five9. Responses managed off LinkedIn.</p>' +
+    '</section>' +
+    '<section id="hiring"><h2>Meet the hiring team</h2>' +
+      '<a class="hirer-card" href="https://www.linkedin.com/in/pat-lee/">Pat Lee</a>' +
+    '</section>' +
+    '<div id="ghost-detector-overlay" data-stj-overlay="1" data-stj-job-id="' + LI_JOB + '">' +
+      '<div class="ghost-detector-card">' +
+        '<span class="ghost-detector-signal">Employer actively reviewing applications</span>' +
+        '<span class="ghost-detector-signal">Easy Apply on a 90+ day listing — low-intent signal</span>' +
+        '<span class="ghost-detector-signal">Salary: $90,000 per year</span>' +
+        '<span class="ghost-detector-signal">Responses managed off LinkedIn — less accountability</span>' +
+      '</div>' +
+    '</div>';
+}
+
+test('On-site and Hybrid chips are not the LinkedIn title on either layout', () => {
+  const cases = [
+    { chip: 'On-site', title: 'Founding Product Marketing Manager', company: 'Synthpop - Healthcare AI' },
+    { chip: 'Hybrid', title: 'Product Marketing Manager Agentforce', company: 'Salesforce' },
+  ];
+  for (const row of cases) {
+    for (const url of [LI_VIEW, LI_SEARCH]) {
+      const list = url === LI_SEARCH
+        ? '<div componentkey="SearchResultsMainContent">' +
+            '<div role="button" componentkey="job-card-component-ref-' + LI_JOB + '">' +
+              '<p><a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">' + row.chip + '</a></p>' +
+              '<p><a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">' + row.title + '</a></p>' +
+            '</div></div>'
+        : '';
+      const html = '<!DOCTYPE html><html><head><title>' + row.title + ' | ' + row.company + ' | LinkedIn</title></head><body>' +
+        list +
+        '<div id="detail">' +
+          '<a href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">' + row.chip + '</a>' +
+          '<a href="https://www.linkedin.com/company/acme/">' + row.company + '</a>' +
+          '<p><span>' + row.title + '</span><span>United States</span><span>Reposted 2 weeks ago</span><span>Over 100 people clicked apply</span></p>' +
+        '</div></body></html>';
+      const dom = loadLinkedIn(html, url);
+      try {
+        const lines = captureLogs(dom.window);
+        const listing = dom.window.parseLinkedInListing();
+        assert.equal(listing.title, row.title, row.chip + ' ' + url);
+        assert.notEqual(listing.title, row.chip, row.chip);
+        assert.equal(listing.fieldSources.title, 'document-title', row.chip + ' ' + url);
+        assert.equal(listing.companyName, row.company, row.chip);
+        assert.equal(listing.location, 'United States', row.chip);
+        assert.match(
+          lines.find((line) => line.includes('[SkipThisJob] LinkedIn field sources:')),
+          /title=document-title/
+        );
+        if (url === LI_SEARCH) {
+          const card = dom.window.document.querySelector('[componentkey="job-card-component-ref-' + LI_JOB + '"]');
+          assert.equal(dom.window.parseLinkedInCard(card).title, row.title);
+        }
+      } finally {
+        dom.window.close();
+      }
+    }
+  }
+});
+
+test('trailing pane modules do not change the parsed job or the score', () => {
+  const dom = loadLinkedIn(parityViewHtml(), LI_VIEW);
+  try {
+    const lines = captureLogs(dom.window);
+    const first = dom.window.parseLinkedInListing();
+    const firstScore = dom.window.scoreLocally(first);
+    assert.match(lines.find((line) => line.includes('[SkipThisJob] pane stable hash')), /pane stable hash [0-9a-f]{8}/);
+    dom.window.document.getElementById('uuid').insertAdjacentHTML('beforeend', trailingPaneNoise());
+    const second = dom.window.parseLinkedInListing();
+    const secondScore = dom.window.scoreLocally(second);
+    assert.deepEqual(jobIdentity(second), jobIdentity(first));
+    assert.equal(second.paneChars, first.paneChars);
+    assert.equal(secondScore.score, firstScore.score);
+    assert.deepEqual(chipSet(secondScore), chipSet(firstScore));
+    assert.equal(/90,000|actively reviewing|easy apply|responses managed off linkedin|meet the hiring team/i.test(second.description), false);
+    dom.window.rememberScoredPane(first);
+    assert.equal(dom.window.rescoreLinkedInIfPaneGrew(), null);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('search-results and /jobs/view/ parse the same LinkedIn job fields', () => {
+  const search = loadLinkedIn(paritySearchHtml({ body: true, similar: true }), LI_SEARCH);
+  const view = loadLinkedIn(parityViewHtml(), LI_VIEW);
+  try {
+    search.window.document.getElementById('uuid').insertAdjacentHTML('beforeend', trailingPaneNoise());
+    const searchListing = search.window.parseLinkedInListing();
+    const viewListing = view.window.parseLinkedInListing();
+    assert.deepEqual(jobIdentity(searchListing), jobIdentity(viewListing));
+    assert.equal(searchListing.paneChars, viewListing.paneChars);
+    const searchScore = search.window.scoreLocally(searchListing);
+    const viewScore = view.window.scoreLocally(viewListing);
+    assert.equal(searchScore.score, viewScore.score);
+    assert.deepEqual(chipSet(searchScore), chipSet(viewScore));
+  } finally {
+    search.window.close();
+    view.window.close();
+  }
+});
+
+test('a one-month posting is not a repost on either LinkedIn layout', () => {
+  const job = '4454746875';
+  const title = 'Senior Product Marketing Manager';
+  const searchUrl = 'https://www.linkedin.com/jobs/search-results/?currentJobId=' + job;
+  const viewUrl = 'https://www.linkedin.com/jobs/view/' + job + '/';
+  function page(repost) {
+    const age = repost ? 'Reposted 1 month ago' : '1 month ago';
+    return '<!DOCTYPE html><html><head><title>' + title + ' | Scanner | LinkedIn</title></head><body>' +
+      '<div id="detail">' +
+        '<a href="https://www.linkedin.com/jobs/view/' + job + '/">Hybrid</a>' +
+        '<p><a href="https://www.linkedin.com/jobs/view/' + job + '/">' + title + '</a></p>' +
+        '<a href="https://www.linkedin.com/company/scanner/">Scanner</a>' +
+        '<p><span>San Francisco Bay Area</span> · <span>' + age + '</span> · <span>Over 100 people clicked apply</span></p>' +
+        '<h2>About the job</h2><div>' + 'Scanner builds a security data lake for the security team. '.repeat(12) + '</div>' +
+      '</div></body></html>';
+  }
+  const posted = [];
+  const reposted = [];
+  for (const url of [searchUrl, viewUrl]) {
+    const plain = loadLinkedIn(page(false), url);
+    const again = loadLinkedIn(page(true), url);
+    try {
+      const listing = plain.window.parseLinkedInListing();
+      const repost = again.window.parseLinkedInListing();
+      assert.equal(listing.title, title, url);
+      assert.notEqual(listing.title, 'Hybrid', url);
+      assert.equal(listing.companyName, 'Scanner', url);
+      assert.equal(listing.location, 'San Francisco Bay Area', url);
+      assert.equal(listing.daysOpen, 30, url);
+      assert.equal(listing.isRepost, null, url);
+      assert.equal(listing.fieldSources.isRepost, undefined, url);
+      assert.equal(repost.isRepost, true, url);
+      assert.equal(repost.daysOpen, 30, url);
+      assert.equal(repost.fieldSources.isRepost, 'href-detail', url);
+      posted.push(jobIdentity(listing));
+      reposted.push(jobIdentity(repost));
+    } finally {
+      plain.window.close();
+      again.window.close();
+    }
+  }
+  assert.deepEqual(posted[0], posted[1]);
+  assert.deepEqual(reposted[0], reposted[1]);
+});
+
 test('list badges start once the cky rows exist', () => {
   const dom = loadLinkedIn('<!DOCTYPE html><html><body><div id="shell"></div></body></html>', LI_SEARCH);
   try {
