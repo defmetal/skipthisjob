@@ -907,9 +907,6 @@ function scoreLocally(listing) {
           score += 24;
           signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
         }
-        if (listing.isRepost) {
-          signals.push('High Volume Repost');
-        }
         if (isHighTurnover) {
           signals.push('⚡ High turnover role — expect frequent reposting');
         }
@@ -1141,8 +1138,6 @@ function injectOverlay(localScore, backendData, listing) {
       ${localScore.isHighTurnover ? 
         `<div style="font-size:9px; background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fde68a;">High Turnover Role – Scoring Adjusted</div>` : ''}
 
-      ${finalSignals.some(s => s.includes('High Volume Repost')) ? 
-        `<div style="font-size:9px; background:#fee2e2; color:#991b1b; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fecaca;">High Volume Repost</div>` : ''}
       ${STJ.overlaySignalsHtml ? STJ.overlaySignalsHtml(finalSignals) : ''}
       ${STJ.glassdoorBlockHtml ? STJ.glassdoorBlockHtml(backendData && backendData.glassdoor) : ''}
       ${STJ.communityBlockHtml ? STJ.communityBlockHtml(backendData) : (backendData && backendData.totalReports > 0 ? `

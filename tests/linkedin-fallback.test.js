@@ -119,6 +119,9 @@ test('new search-results layout reads the detail pane from the job link', async 
     assert.equal(listing.applicantCount, 100);
     assert.equal(listing.platformJobId, '4423270116');
     assert.equal(listing.descriptionParsed, false);
+    assert.equal(listing.salaryListed, null);
+    assert.equal(listing.hiringContactVisible, null);
+    assert.equal(listing.engagementParsed, false);
     assert.equal(again.title, listing.title);
     assert.equal(again.companyName, listing.companyName);
     assert.equal(again.daysOpen, listing.daysOpen);
@@ -141,6 +144,11 @@ test('new search-results layout reads the detail pane from the job link', async 
     assert.equal(scored.signals.filter((s) => /recycled listing/i.test(s)).length, 1);
     assert.equal(scored.signals.filter((s) => s === 'Open 14 days').length, 1);
     assert.equal(scored.signals.filter((s) => /100\+ applicants/i.test(s)).length, 1);
+    assert.equal(scored.signals.filter((s) => /high volume repost/i.test(s)).length, 0);
+    assert.equal(scored.signals.filter((s) => s === 'No salary listed').length, 0);
+    assert.equal(scored.signals.filter((s) => /no hiring contact/i.test(s)).length, 0);
+    assert.equal(scored.signals.filter((s) => /no active review/i.test(s)).length, 0);
+    assert.equal(scored.score, 40);
     assertOneEach(scored.signals);
 
     const cards = dom.window.findLinkedInJobCards();
@@ -170,6 +178,7 @@ test('new search-results layout reads the detail pane from the job link', async 
     dom.window.injectOverlay(scored, null, listing);
     assert.equal(overlays(doc).length, 1);
     assert.equal(doc.getElementById('ghost-detector-overlay').getAttribute('data-stj-job-id'), '4423270116');
+    assert.equal((doc.body.textContent.match(/High Volume Repost/g) || []).length, 0);
 
     doc.getElementById('ghost-detector-overlay').remove();
     dom.window.refreshLinkedInAfterMutation();
@@ -397,12 +406,88 @@ test('every approach succeeding at once keeps the first value, one card, and one
     assert.equal(overlays(doc).length, 1);
     assert.equal(doc.getElementById('ghost-detector-overlay').getAttribute('data-stj-job-id'), '4242424242');
 
+    assert.equal((doc.body.textContent.match(/High Volume Repost/g) || []).length, 0);
     dom.window.beginLinkedInJob('7777777777');
     const replacement = Object.assign({}, listing, { platformJobId: '7777777777', title: 'Next Title' });
     dom.window.history.pushState({}, '', 'https://www.linkedin.com/jobs/view/7777777777');
     dom.window.injectOverlay(scored, null, replacement);
     assert.equal(overlays(doc).length, 1);
     assert.equal(doc.getElementById('ghost-detector-overlay').getAttribute('data-stj-job-id'), '7777777777');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('About the job scores the same on search-results and /jobs/view/', () => {
+  const searchHtml = readFixture('linkedin-five9-about.html');
+  const start = searchHtml.indexOf('<div id="detail-a">');
+  const end = searchHtml.lastIndexOf('</div>') + '</div>'.length;
+  const viewHtml = '<!DOCTYPE html><html><head><title>Jobs | LinkedIn</title></head><body>' +
+    searchHtml.slice(start, end).replace('<div id="detail-a">', '<div class="jobs-details" id="detail-a">') +
+    '</body></html>';
+  const search = load(searchHtml, SEARCH_URL);
+  const view = load(viewHtml, 'https://www.linkedin.com/jobs/view/4423270116/');
+  try {
+    const searchListing = search.window.parseLinkedInListing();
+    const viewListing = view.window.parseLinkedInListing();
+    const searchScore = search.window.scoreLocally(searchListing);
+    const viewScore = view.window.scoreLocally(viewListing);
+    assert.equal(searchListing.fieldSources.description, 'about-job');
+    assert.equal(viewListing.fieldSources.description, 'about-job');
+    assert.ok(searchListing.description.length > 500);
+    assert.equal(searchListing.description, viewListing.description);
+    assert.equal(searchListing.salaryListed, true);
+    assert.equal(viewListing.salaryListed, true);
+    assert.equal(searchListing.daysOpen, 14);
+    assert.equal(viewListing.daysOpen, 14);
+    assert.equal(searchListing.isRepost, true);
+    assert.equal(viewListing.isRepost, true);
+    assert.equal(searchListing.applicantCount, 100);
+    assert.equal(viewListing.applicantCount, 100);
+    assert.equal(searchScore.score, 59);
+    assert.equal(viewScore.score, 59);
+    assert.deepEqual(
+      Array.from(searchScore.signals).map(String).sort(),
+      Array.from(viewScore.signals).map(String).sort()
+    );
+    assert.equal(searchScore.signals.filter((s) => /high volume repost/i.test(s)).length, 0);
+    assert.equal(searchScore.signals.filter((s) => /recycled listing/i.test(s)).length, 1);
+    assert.equal(searchScore.signals.filter((s) => /100\+ applicants/i.test(s)).length, 1);
+    assertOneEach(searchScore.signals);
+
+    search.window.refreshLinkedInListBadges();
+    search.window.refreshLinkedInListBadges();
+    const doc = search.window.document;
+    assert.equal(doc.querySelectorAll('.stj-list-badge').length, 2);
+    assert.equal(doc.querySelectorAll('#row-a .stj-list-badge').length, 1);
+    assert.equal(doc.querySelectorAll('#row-b .stj-list-badge').length, 1);
+    assert.equal(doc.querySelectorAll('#detail-a .stj-list-badge').length, 0);
+    const cards = search.window.findLinkedInJobCards();
+    assert.equal(cards.length, 2);
+    assert.ok(cards.every((card) => card.id === 'row-a' || card.id === 'row-b'));
+  } finally {
+    search.window.close();
+    view.window.close();
+  }
+});
+
+test('a long detail block is the description when the heading is absent', () => {
+  const jd = 'Reports to the engineering manager. Team of 6 people. Uses Salesforce and HubSpot. ' +
+    'Eight years of experience required. '.repeat(12);
+  const html = '<!DOCTYPE html><html><head><title>Jobs | LinkedIn</title></head><body>' +
+    '<div id="list"><div><a href="https://www.linkedin.com/jobs/view/4423270116/">Senior Product Marketing Manager</a></div>' +
+    '<div><a href="https://www.linkedin.com/jobs/view/1111111111/">Other Role</a></div></div>' +
+    '<div id="detail"><p><a href="https://www.linkedin.com/jobs/view/4423270116/">Senior Product Marketing Manager</a></p>' +
+    '<p><a href="https://www.linkedin.com/company/five9/">Five9</a></p>' +
+    '<p>United States · Reposted 2 weeks ago · Over 100 applicants</p>' +
+    '<div id="body">' + jd + '</div></div></body></html>';
+  const dom = load(html, SEARCH_URL);
+  try {
+    const listing = dom.window.parseLinkedInListing();
+    assert.equal(listing.fieldSources.description, 'detail-text');
+    assert.equal(listing.descriptionParsed, true);
+    assert.ok(listing.description.includes('Reports to the engineering manager'));
+    assert.ok(!/Senior Product Marketing Manager/.test(listing.description));
   } finally {
     dom.window.close();
   }

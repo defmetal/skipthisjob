@@ -409,10 +409,21 @@ function containerForTitleAnchor(anchor, jobId) {
   return best;
 }
 
+function anchorInRepeatingRow(anchor) {
+  let el = anchor;
+  for (let i = 0; i < 14 && el; i++) {
+    if (isRepeatingJobRow(el)) return true;
+    el = el.parentElement;
+  }
+  return false;
+}
+
 function readHrefDetail(jobId) {
   if (!jobId || typeof document === 'undefined' || !document.querySelectorAll) return null;
   const anchors = Array.from(document.querySelectorAll('a[href*="/jobs/view/' + jobId + '"]'));
-  const outside = anchors.filter(function (a) { return !isLinkedInListNode(a); });
+  const outside = anchors.filter(function (a) {
+    return !isLinkedInListNode(a) && !anchorInRepeatingRow(a);
+  });
   let chosen = null;
   let container = null;
   for (let i = 0; i < outside.length; i++) {
@@ -635,21 +646,101 @@ function readLinkedInDescription(root) {
   return best.length > 80 ? best : null;
 }
 
+function normalizeBlock(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function readAboutJobDescription(root) {
+  if (!root || !root.querySelectorAll) return null;
+  const nodes = root.querySelectorAll('h1, h2, h3, h4, h5, strong, span, p, div, button');
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (nodeIsInList(el)) continue;
+    const full = normalizeBlock(el.textContent);
+    if (!/^about the job:?$/i.test(full)) continue;
+    const next = el.nextElementSibling;
+    if (next && !nodeIsInList(next)) {
+      const t = normalizeBlock(next.textContent).replace(/^about the job:?\s*/i, '');
+      if (t.length > 80) return t;
+    }
+    const parent = el.parentElement;
+    if (parent && parent !== root && !nodeIsInList(parent)) {
+      const t = normalizeBlock(parent.textContent).replace(/^about the job:?\s*/i, '');
+      if (t.length > 80 && t.length < 20000) return t;
+    }
+  }
+  return null;
+}
+
+function readLongDetailBlock(root) {
+  if (!root || !root.querySelectorAll) return null;
+  const nodes = root.querySelectorAll('section, article, div, p');
+  let best = '';
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i];
+    if (el === root || nodeIsInList(el)) continue;
+    if (el.closest && el.closest('[data-stj-overlay], #ghost-detector-overlay')) continue;
+    if (el.querySelector && el.querySelector('a[href*="/jobs/view/"]')) continue;
+    const t = normalizeBlock(el.textContent);
+    if (t.length < 400 || t.length > 20000) continue;
+    if (!best || t.length < best.length) best = t;
+  }
+  return best || null;
+}
+
+function paneHasJobBody(pane) {
+  if (!pane) return false;
+  const legacy = pane.matches && pane.matches(
+    '.jobs-search__job-details, .scaffold-layout__detail, .jobs-details, .job-details-jobs-unified-top-card, .jobs-unified-top-card'
+  );
+  if (legacy) return true;
+  if (pane.querySelector && pane.querySelector(
+    '.jobs-description, .jobs-description__content, .jobs-description-content__text, .jobs-box__html-content, [data-testid="expandable-text-box"], .jobs-details__main-content'
+  )) return true;
+  if (readAboutJobDescription(pane)) return true;
+  if (normalizeBlock(pane.textContent).length > 700) return true;
+  return false;
+}
+
+function singleJobIdIn(el) {
+  if (!el || !el.querySelectorAll) return null;
+  const links = el.querySelectorAll('a[href*="/jobs/view/"]');
+  let id = null;
+  for (let i = 0; i < links.length; i++) {
+    const k = jobIdFromHref(links[i].getAttribute('href'));
+    if (!k) continue;
+    if (id && id !== k) return null;
+    id = k;
+  }
+  return id;
+}
+
+function isRepeatingJobRow(el) {
+  if (!el || !el.parentElement) return false;
+  const parent = el.parentElement;
+  // The page body holds the list column and the detail column. Rows repeat
+  // inside the list, not as direct children of body.
+  if (parent === document.body || parent === document.documentElement) return false;
+  if (!singleJobIdIn(el)) return false;
+  const rows = Array.from(parent.children).filter(function (ch) { return !!singleJobIdIn(ch); });
+  const ids = {};
+  for (let i = 0; i < rows.length; i++) ids[singleJobIdIn(rows[i])] = true;
+  return rows.length >= 2 && Object.keys(ids).length >= 2 && rows.indexOf(el) !== -1;
+}
+
 function isDetailContainer(el) {
   if (!el || !el.querySelector) return false;
+  if (isRepeatingJobRow(el)) return false;
   if (el.hasAttribute && (el.hasAttribute('data-job-id') || el.hasAttribute('data-occludable-job-id'))) return false;
   return !!(companyLinkIn(el, null) && findMetadataElement(el));
 }
 
 function repeatingJobRow(anchor) {
   let el = anchor;
-  for (let i = 0; i < 10 && el && el.parentElement; i++) {
+  for (let i = 0; i < 14 && el && el.parentElement; i++) {
+    if (isRepeatingJobRow(el)) return el;
     const parent = el.parentElement;
     if (parent === document.body || parent === document.documentElement) break;
-    const siblings = Array.from(parent.children).filter(function (ch) {
-      return ch.querySelector && ch.querySelector('a[href*="/jobs/view/"]') && !isDetailContainer(ch);
-    });
-    if (siblings.length >= 2 && siblings.indexOf(el) !== -1 && !isDetailContainer(el)) return el;
     el = parent;
   }
   const keyed = anchor.closest && anchor.closest('[componentkey]');
@@ -905,7 +996,7 @@ function parseLinkedInListing() {
 
   // === 0.1.8: Engagement signals and response time detection ===
   const engagementPatterns = [
-    { pattern: /actively reviewing applications/i, key: 'actively_reviewing' },
+    { pattern: /actively reviewing applicant/i, key: 'actively_reviewing' },
     { pattern: /hiring multiple candidates/i, key: 'hiring_multiple' },
     { pattern: /urgently hiring/i, key: 'urgently_hiring' },
   ];
@@ -917,7 +1008,7 @@ function parseLinkedInListing() {
       }
     }
   }
-  data.engagementParsed = !!scope;
+  data.engagementParsed = false;
   data.activelyReviewing = STJ.isActivelyReviewing
     ? STJ.isActivelyReviewing(data)
     : data.engagementSignals.includes('actively_reviewing');
@@ -946,9 +1037,17 @@ function parseLinkedInListing() {
   // the two is longer across all candidate containers.
   let description = legacyRoot ? readLinkedInDescription(legacyRoot) : null;
   if (description) sources.description = 'legacy-selectors';
-  if (!description && hrefDetail && hrefDetail.container && hrefDetail.container !== legacyRoot) {
-    description = readLinkedInDescription(hrefDetail.container);
+  if (!description && scope && scope !== legacyRoot) {
+    description = readLinkedInDescription(scope);
     if (description) sources.description = 'href-detail';
+  }
+  if (!description && scope) {
+    description = readAboutJobDescription(scope);
+    if (description) sources.description = 'about-job';
+  }
+  if (!description && scope) {
+    description = readLongDetailBlock(scope);
+    if (description) sources.description = 'detail-text';
   }
   if (!description && jsonLd && jsonLd.description) {
     description = jsonLd.description;
@@ -987,19 +1086,25 @@ function parseLinkedInListing() {
   }
 
   const salaryHaystack = [attributeText, detailText, data.description || ''].join('\n');
-  if (!scope) {
-    data.salaryListed = null;
-  } else if (STJ.looksLikeSalary ? STJ.looksLikeSalary(salaryHaystack) : false) {
+  // A header cluster (title, company, metadata) is not the job body. Missing
+  // salary, hiring contact, and review activity there are unparsed, so both
+  // the search-results pane and /jobs/view/ charge those only when the body
+  // actually loaded.
+  const bodyLoaded = paneHasJobBody(scope);
+  data.engagementParsed = !!(scope && (bodyLoaded || data.engagementSignals.length));
+  const sawSalary = !!(scope && STJ.looksLikeSalary && STJ.looksLikeSalary(salaryHaystack));
+  if (sawSalary) {
     data.salaryListed = true;
     console.log('[GhostDetector] Salary found');
+  } else if (!scope || !bodyLoaded) {
+    data.salaryListed = null;
   } else {
-    // The detail pane loaded and did not list pay. That is evidence.
     data.salaryListed = false;
   }
 
   // Hiring contact: only the hirer card inside the detail pane.
   // A page-wide /in/ link matches the nav "Me" profile on every logged-in page.
-  if (!scope) {
+  if (!scope || !bodyLoaded) {
     data.hiringContactVisible = null;
   } else {
     const hiringEl =
@@ -1172,10 +1277,8 @@ function scoreLocally(listing) {
           score += 20;
           signals.push('Stale posting with multiple missing basics — low effort or ghost risk');
         }
-        if (listing.isRepost && listing.applicantCount >= 100) {
-          score += 16;
-          signals.push('High Volume Repost (Easy Apply + high applicants)');
-        }
+        // Repost (+24) and applicant volume are already scored. A second
+        // "high volume repost" add would count those same two facts again.
         if (listing.daysOpen >= 30 && listing.applicantCount >= 200) {
           score += 16;
           signals.push('30+ days old with 200+ applicants — very low chance of being seen');
@@ -1402,8 +1505,6 @@ function injectOverlay(localScore, backendData, listing) {
       ${localScore.isHighTurnover ? 
         `<div style="font-size:9px; background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fde68a;">High Turnover Role – Scoring Adjusted</div>` : ''}
 
-      ${finalSignals.some(s => s.includes('High Volume Repost')) ? 
-        `<div style="font-size:9px; background:#fee2e2; color:#991b1b; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fecaca;">High Volume Repost</div>` : ''}
       ${STJ.overlaySignalsHtml ? STJ.overlaySignalsHtml(finalSignals) : (finalSignals.length > 0 ? `
         <div class="ghost-detector-signals">
           ${finalSignals.map(s => `<span class="ghost-detector-signal">${STJ.escapeOverlayText ? STJ.escapeOverlayText(s) : s}</span>`).join('')}
