@@ -44,7 +44,7 @@ test('required origins equal restored host_permissions job sites only', () => {
   const jobHosts = m.host_permissions.filter((h) => /linkedin\.com|indeed\.com/.test(h));
   assert.deepEqual(A.REQUIRED_ORIGINS, jobHosts);
   assert.equal(A.REQUIRED_ORIGINS.some((o) => /skipthisjob/.test(o)), false);
-  assert.equal(m.version, '0.2.5');
+  assert.equal(m.version, '0.2.6');
   for (const cs of m.content_scripts) {
     for (const match of cs.matches) assert.ok(match.startsWith('*://'), match);
   }
