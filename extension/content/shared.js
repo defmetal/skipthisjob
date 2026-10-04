@@ -1385,7 +1385,7 @@
 
   function isExtensionChromeNode(el) {
     if (!el || !el.closest) return false;
-    return !!el.closest('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]');
+    return !!el.closest('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, #stj-scan-bar, [data-stj-overlay="1"]');
   }
 
   function extensionChromeText(el) {
@@ -1394,11 +1394,11 @@
     const read = function (node) {
       return String((node && node.textContent) || '');
     };
-    if (!el.querySelector || !el.querySelector('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]')) {
+    if (!el.querySelector || !el.querySelector('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, #stj-scan-bar, [data-stj-overlay="1"]')) {
       return read(el);
     }
     const copy = el.cloneNode(true);
-    const junk = copy.querySelectorAll('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]');
+    const junk = copy.querySelectorAll('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, #stj-scan-bar, [data-stj-overlay="1"]');
     for (let i = 0; i < junk.length; i++) {
       if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
     }

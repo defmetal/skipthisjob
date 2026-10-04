@@ -21,6 +21,14 @@ let _rescoreCount = 0;
 let _paneRescoreTimer = 0;
 const _paneDiagLogged = {};
 
+// Opt-in list scan. Off until the popup stores stjScanVisible === true.
+const SCAN_VISIBLE_KEY = 'stjScanVisible';
+let scanSettingOn = false;
+let _scanRunning = false;
+let _scanStopRequested = false;
+let _stjRowScanClick = false;
+let _scanSettingBound = false;
+
 // ============================================================
 // DOM PARSING
 // ============================================================
@@ -350,7 +358,7 @@ function isExtensionChrome(el) {
 
 // Injected Ghost Risk card and list badges. Reading them back in would
 // score our own "actively reviewing" / Easy Apply chips as the job's.
-const EXTENSION_CHROME_SELECTOR = '#ghost-detector-overlay, [data-stj-overlay], .stj-list-badge, .stj-fresh-badge, .stj-fresh-row, .ghost-detector-card, .ghost-detector-signals, .ghost-detector-signal';
+const EXTENSION_CHROME_SELECTOR = '#ghost-detector-overlay, #stj-scan-bar, [data-stj-overlay], .stj-list-badge, .stj-fresh-badge, .stj-fresh-row, .ghost-detector-card, .ghost-detector-signals, .ghost-detector-signal';
 
 function distinctViewIds(el) {
   const ids = {};
@@ -2887,9 +2895,11 @@ function setupJobDetailObserver() {
   if (!container || container._ghostObserverAttached) return;
 
   try { if (_ghostObserver) _ghostObserver.disconnect(); } catch (e) {}
-  _ghostObserver = new MutationObserver(() => {
+  _ghostObserver = new MutationObserver((records) => {
     if (!extensionAlive()) { teardownGhostDetector(); return; }
     if (_liMute) return;
+    // Progress text on the scan bar is our own UI. It must not rescore.
+    if (mutationRecordsAreScanBar(records)) return;
     scheduleLinkedInRefresh();
   });
 
@@ -3407,12 +3417,16 @@ if (isOnJobPage()) {
   processCurrentListing();
   setupJobDetailObserver();
 }
+// Register before list badges so a storage stub that keeps one listener
+// still delivers the dim setting. Both listeners run in Chrome.
+bindScanSetting();
 startLinkedInListBadges();
 
 // Handle navigation within LinkedIn (SPA)
 let lastObserverUrl = pageHref();
 _ghostTimers.push(setInterval(() => {
   if (!extensionAlive()) { teardownGhostDetector(); return; }
+  syncScanBar();
   const href = pageHref();
   if (!href) return;
   if (isOnJobPage() && !_listBadgeObserver) startLinkedInListBadges({ rescan: true });
@@ -3435,10 +3449,526 @@ _ghostTimers.push(setInterval(() => {
   }
 }, 800));
 
+// --- Opt-in "Scan visible listings" ------------------------------------
+// The popup stores stjScanVisible, default off. Nothing here starts a scan
+// on load, on a timer, or in a background tab, and nothing fetches in the
+// background. A scan begins only when the user clicks the on-page button.
+// It clicks visible list rows in this tab so the existing parser can score
+// each opened job and stamp the remembered per-listing badge.
+
+function visibleScanConfig() {
+  return {
+    cap: 25,
+    batchSize: 5,
+    rowDelayMin: 1500,
+    rowDelayMax: 4000,
+    batchPauseMin: 6000,
+    batchPauseMax: 12000,
+  };
+}
+
+function visibleScanDelayMs(completedCount, rng) {
+  const cfg = visibleScanConfig();
+  const roll = typeof rng === 'function' ? Number(rng()) : Math.random();
+  const unit = roll !== roll ? 0 : Math.min(1, Math.max(0, roll));
+  const batchBoundary = completedCount > 0 && completedCount % cfg.batchSize === 0;
+  const min = batchBoundary ? cfg.batchPauseMin : cfg.rowDelayMin;
+  const max = batchBoundary ? cfg.batchPauseMax : cfg.rowDelayMax;
+  return Math.round(min + unit * (max - min));
+}
+
+function capVisibleScanRows(rows, cap) {
+  const cfg = visibleScanConfig();
+  const limit = cap == null ? cfg.cap : cap;
+  const out = [];
+  const seen = {};
+  const list = rows || [];
+  for (let i = 0; i < list.length && out.length < limit; i++) {
+    const row = list[i];
+    const id = row && row.id != null ? String(row.id) : '';
+    if (!id || seen[id]) continue;
+    seen[id] = true;
+    out.push(row);
+  }
+  return out;
+}
+
+function pathFromHref(href) {
+  try {
+    return new URL(String(href || ''), 'https://www.linkedin.com').pathname || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function scanSafetyReason(snapshot) {
+  const info = snapshot || {};
+  const href = String(info.href || '');
+  const path = String(info.path || pathFromHref(href));
+  const surface = (String(info.title || '') + '\n' + String(info.challengeText || '')).toLowerCase();
+  const pathL = path.toLowerCase();
+  const hrefL = href.toLowerCase();
+
+  if (/captcha|recaptcha|hcaptcha/.test(surface) || /captcha|recaptcha|hcaptcha/.test(hrefL)) {
+    return 'Stopped: CAPTCHA';
+  }
+  if (/unusual activity/.test(surface)) return 'Stopped: unusual activity';
+  if (/rate[\s-]?limit|too many requests/.test(surface)) return 'Stopped: rate limit';
+  if (
+    /\/checkpoint(?:\/|$)/.test(pathL) ||
+    /\/challenge(?:\/|$)/.test(pathL) ||
+    /authwall|security-check/.test(pathL) ||
+    /security check|verify your identity|verification required|quick verification/.test(surface)
+  ) {
+    return 'Stopped: verification checkpoint';
+  }
+  if (!/\/jobs(?:\/|$)/.test(path)) return 'Stopped: left the jobs page';
+  return null;
+}
+
+function elementInJobContent(el) {
+  if (!el || !el.closest) return false;
+  return !!(el.closest(
+    '.jobs-search__job-details, .scaffold-layout__detail, .jobs-details, .jobs-description, .jobs-description__content, .jobs-box__html-content, [data-testid="expandable-text-box"], .scaffold-layout__list, .jobs-search-results-list, .jobs-search-results__list, [componentkey="SearchResultsMainContent"], [componentkey^="job-card-component-ref-"], #stj-scan-bar, #ghost-detector-overlay, [data-stj-overlay="1"]'
+  ));
+}
+
+function pageLooksLikeJobsSurface(doc) {
+  if (!doc || !doc.querySelector) return false;
+  return !!doc.querySelector(
+    '.scaffold-layout__list, .jobs-search-results-list, .jobs-search-results__list, [componentkey="SearchResultsMainContent"], [componentkey^="job-card-component-ref-"], .jobs-search__job-details, .jobs-details, .job-details-jobs-unified-top-card, .jobs-unified-top-card'
+  );
+}
+
+function readScanChallengeText(doc) {
+  const documentRef = doc || (typeof document !== 'undefined' ? document : null);
+  if (!documentRef || !documentRef.querySelectorAll) return '';
+  const chunks = [];
+  const widgets = documentRef.querySelectorAll(
+    '#captcha-internal, #captcha, iframe[src*="captcha" i], iframe[src*="recaptcha" i], iframe[src*="hcaptcha" i], .checkpoint, .checkpoint__wrapper, .challenge-dialog'
+  );
+  for (let i = 0; i < widgets.length; i++) {
+    const el = widgets[i];
+    chunks.push(String((el.getAttribute && el.getAttribute('src')) || '') + ' ' + String(el.textContent || ''));
+  }
+  const headings = documentRef.querySelectorAll('h1, h2');
+  for (let i = 0; i < headings.length; i++) {
+    if (elementInJobContent(headings[i])) continue;
+    chunks.push(String(headings[i].textContent || ''));
+  }
+  // A challenge page replaces the jobs UI. Don't read a real listing body:
+  // postings mention "verification" without being a checkpoint.
+  if (!pageLooksLikeJobsSurface(documentRef) && documentRef.body) {
+    const copy = documentRef.body.cloneNode(true);
+    const chromeNodes = copy.querySelectorAll('#stj-scan-bar, #ghost-detector-overlay, [data-stj-overlay="1"]');
+    for (let i = 0; i < chromeNodes.length; i++) {
+      if (chromeNodes[i].parentNode) chromeNodes[i].parentNode.removeChild(chromeNodes[i]);
+    }
+    chunks.push(String(copy.textContent || ''));
+  }
+  return chunks.join('\n');
+}
+
+function currentScanSafetyReason() {
+  if (typeof document === 'undefined') return 'Stopped: left the jobs page';
+  return scanSafetyReason({
+    href: pageHref(),
+    title: document.title || '',
+    challengeText: readScanChallengeText(document),
+  });
+}
+
+function tabIsForeground() {
+  if (typeof document === 'undefined') return false;
+  if (document.visibilityState && document.visibilityState !== 'visible') return false;
+  if (document.hidden === true) return false;
+  return true;
+}
+
+function isApplyControl(el) {
+  if (!el || el.nodeType !== 1) return false;
+  // The list row itself is the thing we click. Easy Apply text inside it
+  // does not make the row an Apply control.
+  if (isJobCardComponent(el) || isLegacyListCard(el)) return false;
+  const className = typeof el.className === 'string' ? el.className : '';
+  if (className.indexOf('jobs-apply-button') !== -1) return true;
+  if (el.getAttribute && el.getAttribute('data-control-name') === 'apply') return true;
+  const aria = String((el.getAttribute && el.getAttribute('aria-label')) || '').toLowerCase();
+  const tag = String(el.tagName || '').toUpperCase();
+  if (tag === 'BUTTON' || tag === 'A') {
+    const text = String(el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (aria.indexOf('apply') !== -1) return true;
+    if (text === 'easy apply' || text === 'apply' || text === 'apply now') return true;
+  }
+  return false;
+}
+
+function scanClickTarget(card) {
+  if (!card || card.nodeType !== 1) return null;
+  if (card.closest && card.closest('#stj-scan-bar, #ghost-detector-overlay, [data-stj-overlay="1"]')) return null;
+  if (isApplyControl(card)) return null;
+  // New search-results layout: the row is the button.
+  if (card.getAttribute && card.getAttribute('role') === 'button' && isJobCardComponent(card)) return card;
+  if (isJobCardComponent(card)) return card;
+  if (!isLegacyListCard(card)) return null;
+  // Legacy list: activate the row's job link, never Easy Apply or a company link.
+  const links = card.querySelectorAll ? card.querySelectorAll('a[href*="/jobs/view/"]') : [];
+  for (let i = 0; i < links.length; i++) {
+    if (isApplyControl(links[i])) continue;
+    const href = String(links[i].getAttribute('href') || '');
+    if (href.indexOf('/company/') !== -1) continue;
+    return links[i];
+  }
+  return card;
+}
+
+function clickScanRow(card) {
+  const target = scanClickTarget(card);
+  if (!target || typeof target.dispatchEvent !== 'function') return false;
+  _stjRowScanClick = true;
+  try {
+    target.dispatchEvent(new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+    }));
+  } finally {
+    _stjRowScanClick = false;
+  }
+  return target;
+}
+
+function settledDetailScore(jobId) {
+  if (!jobId || String(getCurrentJobId()) !== String(jobId)) return null;
+  if (isProcessing) return null;
+  if (String(lastProcessedJobId) !== String(jobId)) return null;
+  if (!STJ.lookupListBadgeScore) return null;
+  const mem = STJ.lookupListBadgeScore(String(jobId));
+  if (!mem || mem.score == null || mem.source !== 'detail') return null;
+  return mem;
+}
+
+function collectVisibleScanRows() {
+  const cards = findLinkedInJobCards();
+  const rows = [];
+  for (let i = 0; i < cards.length; i++) {
+    const id = jobIdFromCard(cards[i]);
+    if (!id) continue;
+    rows.push({ id: String(id), card: cards[i] });
+  }
+  return capVisibleScanRows(rows, visibleScanConfig().cap);
+}
+
+function clickJobRowById(jobId) {
+  if (!jobId) return false;
+  if (String(getCurrentJobId()) === String(jobId)) return false;
+  const cards = findLinkedInJobCards();
+  for (let i = 0; i < cards.length; i++) {
+    if (String(jobIdFromCard(cards[i])) === String(jobId)) return clickScanRow(cards[i]);
+  }
+  return false;
+}
+
+function waitForOpenedJobScore(jobId, options) {
+  const timeoutMs = (options && options.timeoutMs) || 15000;
+  const started = Date.now();
+  return new Promise(function (resolve) {
+    const tick = function () {
+      if (!tabIsForeground()) return resolve({ aborted: true, reason: 'Stopped: tab is in the background' });
+      const safety = currentScanSafetyReason();
+      if (safety) return resolve({ aborted: true, reason: safety });
+      if (_scanStopRequested) return resolve({ aborted: true, reason: 'Stopped', user: true });
+      const mem = settledDetailScore(jobId);
+      if (mem) return resolve({ ok: true, score: mem });
+      if (Date.now() - started >= timeoutMs) return resolve({ ok: false });
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+function interruptibleScanSleep(ms) {
+  return new Promise(function (resolve) {
+    let left = ms;
+    const tick = function () {
+      if (_scanStopRequested || !tabIsForeground() || currentScanSafetyReason()) {
+        resolve(false);
+        return;
+      }
+      if (left <= 0) {
+        resolve(true);
+        return;
+      }
+      const slice = Math.min(200, left);
+      left -= slice;
+      setTimeout(tick, slice);
+    };
+    tick();
+  });
+}
+
+async function runVisibleListingScan(options) {
+  const opts = options || {};
+  const cfg = visibleScanConfig();
+  const rows = capVisibleScanRows(opts.rows || [], opts.cap == null ? cfg.cap : opts.cap);
+  const total = rows.length;
+  const sleep = opts.sleep || interruptibleScanSleep;
+  const rng = opts.rng || Math.random;
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : function () {};
+  const shouldStop = typeof opts.shouldStop === 'function' ? opts.shouldStop : function () { return false; };
+  const safety = typeof opts.safety === 'function' ? opts.safety : function () { return null; };
+  const isForeground = typeof opts.isForeground === 'function' ? opts.isForeground : function () { return true; };
+  const clickRow = opts.clickRow;
+  const waitForScore = opts.waitForScore;
+  const restore = opts.restore;
+  const originalJobId = opts.originalJobId || null;
+  const clicked = [];
+  let didClick = false;
+
+  function finish(reason, allowRestore) {
+    let restored = false;
+    const blocked = safety();
+    const foreground = isForeground();
+    if (allowRestore && originalJobId && didClick && foreground && !blocked && typeof restore === 'function') {
+      restore(originalJobId);
+      restored = true;
+    }
+    if (reason) onProgress(reason);
+    return {
+      stopped: !!reason,
+      reason: reason || null,
+      clicked: clicked.slice(),
+      restored: restored,
+      scanned: clicked.length,
+      total: total,
+    };
+  }
+
+  if (!isForeground()) return finish('Stopped: tab is in the background', false);
+  const early = safety();
+  if (early) return finish(early, false);
+  if (shouldStop()) return finish('Stopped', false);
+
+  if (!total) {
+    onProgress('No visible listings');
+    return { stopped: false, reason: null, clicked: [], restored: false, scanned: 0, total: 0 };
+  }
+
+  for (let i = 0; i < rows.length; i++) {
+    if (!isForeground()) return finish('Stopped: tab is in the background', false);
+    const block = safety();
+    if (block) return finish(block, false);
+    if (shouldStop()) return finish('Stopped', didClick);
+
+    onProgress('Scanning ' + (i + 1) + '/' + total);
+    if (typeof clickRow === 'function') clickRow(rows[i], i);
+    didClick = true;
+    clicked.push(rows[i].id);
+
+    if (typeof waitForScore === 'function') {
+      const waited = await waitForScore(rows[i], i);
+      if (waited && waited.aborted) {
+        const user = !!(waited.user || waited.reason === 'Stopped');
+        return finish(waited.reason || 'Stopped', user);
+      }
+    }
+
+    if (!isForeground()) return finish('Stopped: tab is in the background', false);
+    const after = safety();
+    if (after) return finish(after, false);
+    if (shouldStop()) return finish('Stopped', true);
+
+    const remaining = rows.length - (i + 1);
+    if (remaining > 0) {
+      const ms = visibleScanDelayMs(i + 1, rng);
+      if (typeof opts.onDelay === 'function') opts.onDelay(ms, i + 1);
+      const slept = await sleep(ms);
+      if (slept === false) {
+        if (!isForeground()) return finish('Stopped: tab is in the background', false);
+        const during = safety();
+        if (during) return finish(during, false);
+        return finish('Stopped', true);
+      }
+      if (!isForeground()) return finish('Stopped: tab is in the background', false);
+      const during = safety();
+      if (during) return finish(during, false);
+      if (shouldStop()) return finish('Stopped', true);
+    }
+  }
+
+  return finish(null, true);
+}
+
+function setScanProgress(text) {
+  const progress = document.getElementById('stj-scan-progress');
+  if (progress) progress.textContent = text || '';
+  const scanning = /^Scanning \d+\/\d+$/.test(String(text || ''));
+  const startBtn = document.getElementById('stj-scan-start');
+  const stopBtn = document.getElementById('stj-scan-stop');
+  if (startBtn) startBtn.hidden = scanning;
+  if (stopBtn) stopBtn.hidden = !scanning;
+}
+
+function ensureScanBar() {
+  if (typeof document === 'undefined' || !document.body) return null;
+  let bar = document.getElementById('stj-scan-bar');
+  if (bar) return bar;
+  bar = document.createElement('div');
+  bar.id = 'stj-scan-bar';
+  bar.className = 'stj-scan-bar';
+  bar.setAttribute('data-stj-scan', '1');
+  bar.innerHTML =
+    '<button type="button" id="stj-scan-start">Scan visible listings</button>' +
+    '<button type="button" id="stj-scan-stop" hidden>Stop</button>' +
+    '<span id="stj-scan-progress" aria-live="polite"></span>';
+  document.body.appendChild(bar);
+  const startBtn = bar.querySelector('#stj-scan-start');
+  const stopBtn = bar.querySelector('#stj-scan-stop');
+  if (startBtn) startBtn.addEventListener('click', onScanStartClick);
+  if (stopBtn) stopBtn.addEventListener('click', onScanStopClick);
+  return bar;
+}
+
+function removeScanBar() {
+  const bar = typeof document !== 'undefined' && document.getElementById && document.getElementById('stj-scan-bar');
+  if (bar && bar.parentNode) bar.parentNode.removeChild(bar);
+}
+
+function syncScanBar() {
+  if (!scanSettingOn) {
+    _scanStopRequested = true;
+    removeScanBar();
+    return;
+  }
+  if (!isOnJobPage()) {
+    _scanStopRequested = true;
+    if (!_scanRunning) removeScanBar();
+    return;
+  }
+  ensureScanBar();
+}
+
+function onScanStopClick(e) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  _scanStopRequested = true;
+}
+
+function buildVisibleScanDeps() {
+  return {
+    rows: collectVisibleScanRows(),
+    originalJobId: getCurrentJobId(),
+    clickRow: function (row) {
+      if (row && settledDetailScore(row.id)) return;
+      if (row) clickScanRow(row.card);
+    },
+    waitForScore: function (row) {
+      return waitForOpenedJobScore(row && row.id);
+    },
+    restore: function (jobId) {
+      clickJobRowById(jobId);
+    },
+    safety: function () { return currentScanSafetyReason(); },
+    isForeground: tabIsForeground,
+    shouldStop: function () { return _scanStopRequested; },
+    onProgress: setScanProgress,
+    sleep: interruptibleScanSleep,
+  };
+}
+
+function onScanStartClick(e) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  if (_scanRunning || !scanSettingOn) return;
+  if (!isOnJobPage()) return;
+  if (!tabIsForeground()) {
+    setScanProgress('Stopped: tab is in the background');
+    return;
+  }
+  const safety = currentScanSafetyReason();
+  if (safety) {
+    setScanProgress(safety);
+    return;
+  }
+  const runner = globalThis.runVisibleListingScan || runVisibleListingScan;
+  let deps;
+  try {
+    deps = buildVisibleScanDeps();
+  } catch (err) {
+    console.warn('[SkipThisJob] Scan visible listings failed', err);
+    return;
+  }
+  _scanStopRequested = false;
+  _scanRunning = true;
+  console.log('[SkipThisJob] Scan visible listings started');
+  let pending;
+  try {
+    pending = runner(deps);
+  } catch (err) {
+    _scanRunning = false;
+    console.warn('[SkipThisJob] Scan visible listings failed', err);
+    return;
+  }
+  Promise.resolve(pending).then(function (result) {
+    _scanRunning = false;
+    const stopBtn = document.getElementById('stj-scan-stop');
+    const startBtn = document.getElementById('stj-scan-start');
+    if (stopBtn) stopBtn.hidden = true;
+    if (startBtn) startBtn.hidden = false;
+    if (result && result.reason) console.log('[SkipThisJob] Scan visible listings ' + result.reason);
+    else console.log('[SkipThisJob] Scan visible listings finished');
+  }, function (err) {
+    _scanRunning = false;
+    console.warn('[SkipThisJob] Scan visible listings failed', err);
+  });
+}
+
+function bindScanSetting() {
+  if (_scanSettingBound) return;
+  _scanSettingBound = true;
+  try {
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local || !chrome.storage.local.get) return;
+    chrome.storage.local.get(SCAN_VISIBLE_KEY, function (res) {
+      let on = false;
+      try {
+        if (!(chrome.runtime && chrome.runtime.lastError) && res) on = res[SCAN_VISIBLE_KEY] === true;
+      } catch (e) { /* ignore */ }
+      scanSettingOn = on === true;
+      syncScanBar();
+    });
+    if (chrome.storage.onChanged && chrome.storage.onChanged.addListener) {
+      chrome.storage.onChanged.addListener(function (changes, area) {
+        if (area !== 'local' || !changes || !changes[SCAN_VISIBLE_KEY]) return;
+        scanSettingOn = changes[SCAN_VISIBLE_KEY].newValue === true;
+        if (!scanSettingOn) _scanStopRequested = true;
+        syncScanBar();
+      });
+    }
+  } catch (e) { /* orphaned extension context */ }
+}
+
+function mutationRecordsAreScanBar(records) {
+  if (!records || !records.length) return false;
+  for (let i = 0; i < records.length; i++) {
+    const target = records[i] && records[i].target;
+    const el = target && target.nodeType === 1 ? target : (target && target.parentElement);
+    if (!el || !el.closest) return false;
+    if (el.id !== 'stj-scan-bar' && !el.closest('#stj-scan-bar')) return false;
+  }
+  return true;
+}
+
 // 0.1.8 - Track Apply clicks on LinkedIn (passive, reliable)
 // Capture-phase observer only — never preventDefault / stopPropagation.
 // LinkedIn Easy Apply must receive the original click.
 document.addEventListener('click', (e) => {
+  // Row scans dispatch clicks on list rows. Those must not count as Apply.
+  if (_stjRowScanClick) return;
+  if (e.target && e.target.closest && e.target.closest('#stj-scan-bar')) return;
   const target = e.target.closest('button, a');
   if (!target) return;
 

@@ -122,6 +122,10 @@
       color: #777;
       line-height: 1.4;
     }
+    #stj-scan-visible {
+      margin-right: 6px;
+      vertical-align: -1px;
+    }
   </style>
 </head>
 <body>
@@ -156,6 +160,14 @@
       <option value="55">Dim 55+</option>
     </select>
     <p class="dim-note">Lowers opacity on matching LinkedIn and Indeed search results. Listings stay on the page.</p>
+  </div>
+
+  <div class="dim-control" id="stj-scan-wrap">
+    <label for="stj-scan-visible">
+      <input type="checkbox" id="stj-scan-visible">
+      Scan visible listings
+    </label>
+    <p class="dim-note">Opens listings for you to fill in scores. Slight risk of triggering bot detection.</p>
   </div>
 
   <div class="links">
