@@ -539,6 +539,116 @@ test('list-row review and Easy Apply text does not score the open job', () => {
   }
 });
 
+function deepPaneMarkup(withChrome) {
+  const sentence = 'You will report to the Vice President of Product Marketing. The team of 8 uses Salesforce, HubSpot, and Tableau. Eight years of experience are required. You own the outbound dialer narrative and the quarterly launch plan with the San Ramon office. ';
+  let desc = '';
+  while (desc.length < 1500) desc += sentence;
+  const chrome = withChrome
+    ? '<div id="ghost-detector-overlay" data-stj-overlay="1"><div class="ghost-detector-card">' +
+      '<span class="ghost-detector-signal">Employer actively reviewing applications</span>' +
+      '<span class="stj-list-badge">Easy Apply</span>' +
+      '<span class="ghost-detector-signal">Salary: $90,000 per year</span>' +
+      '</div></div>'
+    : '';
+  let block = '<div id="hdr"><p><a id="deep-title" href="https://www.linkedin.com/jobs/view/' + LI_JOB + '/">Senior Product Marketing Manager</a></p>' +
+    '<p><a href="https://www.linkedin.com/company/five9/">Five9</a></p>' +
+    '<p>United States · Reposted 3 months ago · Over 100 applicants</p></div>';
+  for (let i = 0; i < 6; i++) block = '<div class="nest">' + block + '</div>';
+  return '<div id="pane-top"><div id="above-uuid">' +
+    '<div id="uuid" componentkey="8f3a1c2e-1111-4222-8333-444455556666">' + block +
+    '<h2>About the job</h2><div id="jd">' + desc + '</div>' + chrome +
+    '</div></div></div>';
+}
+
+function deepSearchShell(withChrome) {
+  const list = '<div componentkey="SearchResultsMainContent">' +
+    realJobCard('4467585708', {
+      title: 'VP Media Operations',
+      company: 'Daniel Brian Advertising',
+      location: 'Rochester, MI (Hybrid)',
+      reviewing: true,
+      easy: true,
+      viewed: true,
+    }) +
+    '</div>';
+  return '<div id="shell" class="jobs-search-results-list">' + list + deepPaneMarkup(withChrome) + '</div>';
+}
+
+test('open-job pane is the highest ancestor without list rows', () => {
+  const search = loadLinkedIn(
+    '<!DOCTYPE html><html><head><title>Jobs | LinkedIn</title></head><body>' +
+      deepSearchShell(true) + '</body></html>',
+    LI_SEARCH
+  );
+  const view = loadLinkedIn(
+    '<!DOCTYPE html><html><head><title>Jobs | LinkedIn</title></head><body>' +
+      deepPaneMarkup(false) + '</body></html>',
+    LI_VIEW
+  );
+  try {
+    const searchDoc = search.window.document;
+    const anchor = searchDoc.getElementById('deep-title');
+    let el = anchor;
+    let uuidDepth = null;
+    let topDepth = null;
+    for (let depth = 0; el && depth < 20; depth++) {
+      if (el.id === 'uuid') uuidDepth = depth;
+      if (el.id === 'pane-top') topDepth = depth;
+      el = el.parentElement;
+    }
+    assert.equal(uuidDepth, 9);
+    assert.ok(topDepth > uuidDepth);
+    const pane = search.window.openJobDetailRoot(LI_JOB);
+    assert.equal(pane && pane.id, 'pane-top');
+    assert.equal(pane.querySelector('[componentkey^="job-card-component-ref-"]'), null);
+    assert.equal(pane.querySelector('h2').textContent, 'About the job');
+    const hdrLen = (searchDoc.getElementById('hdr').textContent || '').replace(/\s+/g, ' ').trim().length;
+    const paneLen = (pane.textContent || '').replace(/\s+/g, ' ').trim().length;
+    assert.ok(paneLen > hdrLen + 1000, 'pane ' + paneLen + ' vs header ' + hdrLen);
+
+    const searchLines = captureLogs(search.window);
+    const viewLines = captureLogs(view.window);
+    const searchListing = search.window.parseLinkedInListing();
+    const viewListing = view.window.parseLinkedInListing();
+    const searchSources = searchLines.find((line) => line.includes('[SkipThisJob] LinkedIn field sources:'));
+    const viewSources = viewLines.find((line) => line.includes('[SkipThisJob] LinkedIn field sources:'));
+    assert.match(searchSources, new RegExp('paneDepth=' + topDepth + '\\b'));
+    const chars = Number((searchSources.match(/paneChars=(\d+)/) || [])[1]);
+    assert.ok(chars > hdrLen + 1000, 'logged paneChars ' + chars);
+    assert.match(viewSources, /paneDepth=/);
+    assert.equal(searchListing.fieldSources.description, 'about-job');
+    assert.equal(viewListing.fieldSources.description, 'about-job');
+    assert.ok(searchListing.description.length >= 1500);
+    assert.equal(/actively reviewing/i.test(searchListing.description), false);
+    assert.equal(/90,000/.test(searchListing.description), false);
+    assert.equal(searchListing.salaryListed, false);
+    assert.equal(viewListing.salaryListed, false);
+    assert.equal(searchListing.easyApply, false);
+    assert.equal(viewListing.easyApply, false);
+    assert.equal(searchListing.activelyReviewing, false);
+    assert.equal(searchListing.engagementParsed, true);
+    assert.equal(searchListing.hiringContactVisible, false);
+    assert.equal(searchListing.applicantCount, 100);
+    assert.equal(searchListing.daysOpen, 90);
+    const searchScore = search.window.scoreLocally(searchListing);
+    const viewScore = view.window.scoreLocally(viewListing);
+    assert.equal(searchScore.score, viewScore.score);
+    assert.equal(hasChip(searchScore, /No salary listed/), true);
+    assert.equal(hasChip(searchScore, /No active review signals/), true);
+    assert.equal(hasChip(searchScore, /No hiring contact/), true);
+    assert.equal(hasChip(searchScore, /Detailed, specific job description/), true);
+    assert.equal(hasChip(searchScore, /actively reviewing/i), false);
+    assert.equal(hasChip(searchScore, /Easy Apply/i), false);
+    assert.deepEqual(
+      Array.from(searchScore.signals).map(String).sort(),
+      Array.from(viewScore.signals).map(String).sort()
+    );
+  } finally {
+    search.window.close();
+    view.window.close();
+  }
+});
+
 test('list badges start once the cky rows exist', () => {
   const dom = loadLinkedIn('<!DOCTYPE html><html><body><div id="shell"></div></body></html>', LI_SEARCH);
   try {
