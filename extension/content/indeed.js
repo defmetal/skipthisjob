@@ -322,29 +322,64 @@ function indeedTitleText(el) {
     .trim();
 }
 
-function readTitleFromPane(pane) {
+function acceptIndeedTitle(text) {
+  if (STJ.sanitizeJobTitle) return STJ.sanitizeJobTitle(text);
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  return t || null;
+}
+
+function readStableIndeedTitle(pane) {
   if (!pane || !pane.querySelectorAll) return null;
+  // Stable title nodes for the open job only. Never the first h1/h2 in the
+  // pane — those are section labels ("Pay", "Job type") on the live layout.
   const selectors = [
     '[data-testid="jobsearch-JobInfoHeader-title"]',
+    'h1[data-testid="jobsearch-JobInfoHeader-title"]',
+    'h2[data-testid="jobsearch-JobInfoHeader-title"]',
+    '[data-testid="simpler-jobTitle"]',
+    '.simpler-jobTitle',
+    '[class*="simpler-jobTitle"]',
     'h1[data-testid="jobTitle"]',
     'h2[data-testid="jobTitle"]',
+    '[data-testid="jobTitle"]',
     'h2.jobsearch-JobInfoHeader-title',
     'h1.jobsearch-JobInfoHeader-title',
     '.jobsearch-JobInfoHeader-title',
     'h2.jobTitle',
-    'h2',
-    'h1',
   ];
   for (let s = 0; s < selectors.length; s++) {
     const nodes = pane.querySelectorAll(selectors[s]);
     for (let i = 0; i < nodes.length; i++) {
-      const text = indeedTitleText(nodes[i]);
-      if (!text) continue;
-      if (STJ.isRejectedJobTitle && STJ.isRejectedJobTitle(text)) continue;
-      return text;
+      const text = acceptIndeedTitle(indeedTitleText(nodes[i]));
+      if (text) return text;
     }
   }
   return null;
+}
+
+function readHeadingNearCompany(pane) {
+  if (!pane || !pane.querySelectorAll) return null;
+  const company =
+    pane.querySelector('[data-testid="inlineHeader-companyName"]') ||
+    pane.querySelector('[data-testid="jobsearch-CompanyInfoContainer"]') ||
+    pane.querySelector('.jobsearch-CompanyInfoContainer') ||
+    pane.querySelector('[data-testid="company-name"]');
+  if (!company || !company.compareDocumentPosition) return null;
+  const headings = pane.querySelectorAll('h1, h2');
+  let best = null;
+  for (let i = 0; i < headings.length; i++) {
+    const h = headings[i];
+    // Title sits above the company in the header. Section headings
+    // ("Job type", "Pay") come after the company block.
+    if ((h.compareDocumentPosition(company) & 4) === 0) continue;
+    const text = acceptIndeedTitle(indeedTitleText(h));
+    if (text) best = text;
+  }
+  return best;
+}
+
+function readTitleFromPane(pane) {
+  return readStableIndeedTitle(pane) || readHeadingNearCompany(pane);
 }
 
 function readCompanyFromPane(pane) {
@@ -559,24 +594,88 @@ async function parseIndeedListing() {
   // A pane stamped with some other jk is not this listing. Leave its
   // title, company, date, and description unread so they cannot be scored.
   const signalRoot = foreignPane ? null : detailRoot;
+  const fieldSources = {
+    title: null,
+    companyName: null,
+    location: null,
+    daysOpen: null,
+    description: null,
+  };
   if (paneTrusted) {
-    data.title = readTitleFromPane(detailRoot);
+    const stableTitle = readStableIndeedTitle(detailRoot);
+    const nearTitle = stableTitle ? null : readHeadingNearCompany(detailRoot);
+    if (stableTitle) {
+      data.title = stableTitle;
+      fieldSources.title = 'job-header';
+    } else if (nearTitle) {
+      data.title = nearTitle;
+      fieldSources.title = 'header-heading';
+    }
     data.companyName = readCompanyFromPane(detailRoot);
+    if (data.companyName) fieldSources.companyName = 'job-header';
     const locationEl =
       detailRoot.querySelector('[data-testid="inlineHeader-companyLocation"]') ||
       detailRoot.querySelector('[data-testid="job-location"]') ||
       detailRoot.querySelector('.jobsearch-JobInfoHeader-subtitle > div:nth-child(2)') ||
       detailRoot.querySelector('.jobsearch-CompanyInfoContainer div:last-child');
-    if (locationEl) data.location = locationEl.textContent.trim();
+    if (locationEl) {
+      data.location = locationEl.textContent.trim();
+      fieldSources.location = 'job-header';
+    }
   }
-  if (data.title) console.log('[SkipThisJob] Title:', data.title);
+  if (data.title) console.log('[SkipThisJob] Title:', data.title, 'source=' + fieldSources.title);
   else console.log('[SkipThisJob] Title not found');
-  if (data.companyName) console.log('[SkipThisJob] Company:', data.companyName);
+  if (data.companyName) console.log('[SkipThisJob] Company:', data.companyName, 'source=' + fieldSources.companyName);
   else console.log('[SkipThisJob] Company not found');
 
-  // Identity fallback (title/company) when detail-pane selectors miss or the
-  // pane lives in another frame: bridged mosaic row by jk, selected [data-jk]
-  // card, then (standalone /viewjob only) JSON-LD / og:title / document.title.
+  // Page title and JSON-LD are for the open job on every Indeed URL, not
+  // only /viewjob. A rejected section heading must not block these.
+  if (!data.title || !data.companyName) {
+    const docParsed = STJ.parseIndeedPageTitle ? STJ.parseIndeedPageTitle(document.title) : null;
+    const ogElEarly = document.querySelector('meta[property="og:title"]');
+    const ogParsed = STJ.parseIndeedPageTitle
+      ? STJ.parseIndeedPageTitle(ogElEarly && ogElEarly.getAttribute('content'))
+      : null;
+    if (!data.title && docParsed && docParsed.title) {
+      data.title = docParsed.title;
+      fieldSources.title = 'document.title';
+    }
+    if (!data.companyName && docParsed && docParsed.companyName) {
+      data.companyName = docParsed.companyName;
+      fieldSources.companyName = 'document.title';
+    }
+    if (!data.title && ogParsed && ogParsed.title) {
+      data.title = ogParsed.title;
+      fieldSources.title = 'og:title';
+    }
+    if (!data.companyName && ogParsed && ogParsed.companyName) {
+      data.companyName = ogParsed.companyName;
+      fieldSources.companyName = 'og:title';
+    }
+  }
+  if (!data.title || !data.companyName) {
+    const ldChunks = [];
+    document.querySelectorAll('script[type="application/ld+json"]').forEach((el) => {
+      if (el.textContent) ldChunks.push(el.textContent);
+    });
+    const ident = STJ.readJobPostingIdentity
+      ? STJ.readJobPostingIdentity(ldChunks, data.platformJobId)
+      : null;
+    if (ident) {
+      const ldTitle = acceptIndeedTitle(ident.title);
+      if (!data.title && ldTitle) {
+        data.title = ldTitle;
+        fieldSources.title = 'json-ld';
+      }
+      if (!data.companyName && ident.companyName) {
+        data.companyName = ident.companyName;
+        fieldSources.companyName = 'json-ld';
+      }
+    }
+  }
+
+  // Mosaic row for this jk, then the selected card. These stay behind the
+  // page title and JSON-LD so a neighbor card cannot outrank the open job.
   if (!data.title || !data.companyName) {
     const k = data.platformJobId;
     const snap = readBridgedMosaic();
@@ -612,8 +711,14 @@ async function parseIndeedListing() {
         })
       : null;
     if (resolved) {
-      if (!data.title && resolved.title) data.title = resolved.title;
-      if (!data.companyName && resolved.companyName) data.companyName = resolved.companyName;
+      if (!data.title && resolved.title) {
+        data.title = resolved.title;
+        fieldSources.title = resolved.sources[0] || 'fallback';
+      }
+      if (!data.companyName && resolved.companyName) {
+        data.companyName = resolved.companyName;
+        if (!fieldSources.companyName) fieldSources.companyName = resolved.sources[0] || 'fallback';
+      }
       if (resolved.sources.length) {
         console.log('[SkipThisJob] Identity fallback via', resolved.sources.join(', '), '→', data.title, '@', data.companyName);
       }
@@ -870,7 +975,17 @@ async function parseIndeedListing() {
     });
   }
 
-  if (data.title && STJ.isRejectedJobTitle && STJ.isRejectedJobTitle(data.title)) data.title = null;
+  if (data.title && STJ.isRejectedJobTitle && STJ.isRejectedJobTitle(data.title)) {
+    data.title = null;
+    fieldSources.title = null;
+  }
+  if (data.daysOpen != null && !fieldSources.daysOpen) fieldSources.daysOpen = 'parsed';
+  fieldSources.description = data.descriptionParsed ? (data.descriptionSource || 'parsed') : null;
+  data.fieldSources = fieldSources;
+  console.log('[SkipThisJob] Indeed field sources: ' +
+    ['title', 'companyName', 'location', 'daysOpen', 'description'].map(function (k) {
+      return k + '=' + (fieldSources[k] || 'none');
+    }).join(', '));
 
   console.log('[SkipThisJob] Parsed:', JSON.stringify({
     title: data.title, company: data.companyName, days: data.daysOpen,

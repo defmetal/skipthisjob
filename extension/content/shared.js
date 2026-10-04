@@ -1101,6 +1101,8 @@
     if (/^jobs?\s+for\s+you\b/i.test(t)) return true;
     if (/^recommended(?:\s+for\s+you|\s+jobs)?$/i.test(t)) return true;
     if (/^(?:sign[\s-]?in|log[\s-]?in|create an account|please (?:sign|log)\s*in)\b/i.test(t)) return true;
+    // Indeed section headings inside the job pane. These are not the job title.
+    if (/^(?:pay(?:\s*(?:&|and)\s*benefits)?|salary|compensation|job\s*type|benefits|qualifications|full\s+job\s+description|location|profile\s+insights|job\s+details|shift\s+and\s+schedule|hiring\s+insights|job\s+activity|overview|requirements|responsibilities)$/i.test(t)) return true;
     return false;
   }
 
@@ -1118,24 +1120,32 @@
   }
 
   /**
-   * "Title - Company - City, ST | Indeed.com" (document.title) or
-   * "Title - Company - City, ST" (og:title). Returns null for SERP titles or
-   * when fewer than three segments make the split ambiguous.
+   * "Title - Company - City, ST | Indeed.com", "Title - Company - Indeed",
+   * or og:title. A trailing "| Indeed" / "- Indeed" / "- job post" is
+   * removed first. Two remaining segments are title and company. Three or
+   * more keep the previous city split. SERP headings and section labels
+   * ("Pay", "Job type") return null.
    */
   function parseIndeedPageTitle(rawTitle) {
     let t = cleanIdentityText(rawTitle).replace(/\s*\|\s*Indeed(?:\.com)?\s*$/i, '').trim();
+    t = t.replace(/\s+-\s+Indeed(?:\.com)?\s*$/i, '').trim();
     if (!t || looksLikeSerpHeading(t)) return null;
     const parts = t.split(/\s+-\s+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (parts.length === 2) {
+      if (isRejectedJobTitle(parts[0]) || isRejectedJobTitle(parts[1])) return null;
+      return { title: parts[0], companyName: parts[1] };
+    }
     if (parts.length < 3) return null;
     const company = parts[parts.length - 2];
     const title = parts.slice(0, parts.length - 2).join(' - ');
-    if (!title || !company) return null;
+    if (!title || !company || isRejectedJobTitle(title)) return null;
     return { title: title, companyName: company };
   }
 
-  function readJobPostingIdentity(jsonLdText) {
+  function readJobPostingIdentity(jsonLdText, jobKey) {
     if (!jsonLdText) return null;
     const chunks = Array.isArray(jsonLdText) ? jsonLdText : [jsonLdText];
+    const found = [];
     for (let c = 0; c < chunks.length; c++) {
       let parsed;
       try {
@@ -1157,12 +1167,26 @@
         let org = n.hiringOrganization;
         if (Array.isArray(org)) org = org[0];
         const orgName = typeof org === 'string' ? org : (org && org.name);
-        const title = cleanIdentityText(n.title || n.name || '');
+        const title = sanitizeJobTitle(n.title || n.name || '');
         const company = cleanIdentityText(orgName || '');
-        if (title || company) return { title: title || null, companyName: company || null };
+        if (title || company) {
+          found.push({
+            title: title || null,
+            companyName: company || null,
+            blob: JSON.stringify(n).toLowerCase(),
+          });
+        }
       }
     }
-    return null;
+    if (!found.length) return null;
+    if (jobKey) {
+      const key = String(jobKey).toLowerCase();
+      const keyed = found.filter(function (row) { return row.blob.indexOf(key) !== -1; });
+      if (keyed.length) return { title: keyed[0].title, companyName: keyed[0].companyName };
+      if (found.length === 1) return { title: found[0].title, companyName: found[0].companyName };
+      return null;
+    }
+    return { title: found[0].title, companyName: found[0].companyName };
   }
 
   /**
