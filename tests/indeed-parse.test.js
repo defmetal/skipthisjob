@@ -60,6 +60,7 @@ test('late render: detail pane selectors present only after a delay are picked u
     const first = await dom.window.parseIndeedListing();
     assert.ok(!first.title || !first.companyName, 'nothing to parse yet');
     const pane = dom.window.document.getElementById('jobsearch-ViewjobPaneWrapper');
+    pane.setAttribute('data-jk', JK);
     pane.innerHTML = '<h2 data-testid="jobsearch-JobInfoHeader-title"><span>Network Admin</span><span> - job post</span></h2>' +
       '<div data-testid="inlineHeader-companyName"><a>Globex</a></div><div id="jobDescriptionText">desc</div>';
     const second = await dom.window.parseIndeedListing();
@@ -71,7 +72,7 @@ test('late render: detail pane selectors present only after a delay are picked u
 });
 
 test('new selectors: h1[data-testid=jobTitle] + data-testid=company-name inside the detail pane', async () => {
-  const html = '<html><body><div id="jobsearch-ViewjobPaneWrapper">' +
+  const html = '<html><body><div id="jobsearch-ViewjobPaneWrapper" data-jk="' + JK + '">' +
     '<h1 data-testid="jobTitle">Field Technician</h1><div data-testid="company-name">Initech</div>' +
     '<div id="jobDescriptionText">d</div></div></body></html>';
   const r = await parse(html, 'https://www.indeed.com/jobs?q=x&vjk=' + JK);

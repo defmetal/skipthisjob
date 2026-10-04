@@ -9,6 +9,24 @@ test('parseIndeedPageTitle splits Title - Company - Location | Indeed.com', () =
     { title: 'Sr Engineer - Foo', companyName: 'Bar Inc' });
   assert.deepEqual(shared.parseIndeedPageTitle('Data Analyst - Hooli - Austin, TX'),
     { title: 'Data Analyst', companyName: 'Hooli' });
+  assert.deepEqual(
+    shared.parseIndeedPageTitle('Marketing Manager- Harley-Davidson of Alamo City - Ed Morse Automotive Group - San Antonio, TX 78233 - Indeed.com'),
+    { title: 'Marketing Manager- Harley-Davidson of Alamo City', companyName: 'Ed Morse Automotive Group' }
+  );
+});
+
+test('parseIndeedPageTitle does not use a city/state/ZIP as the company', () => {
+  assert.deepEqual(
+    shared.parseIndeedPageTitle('Marketing Manager- Harley-Davidson of Alamo City - San Antonio, TX 78233 - Indeed.com'),
+    { title: 'Marketing Manager- Harley-Davidson of Alamo City', companyName: null }
+  );
+  assert.deepEqual(
+    shared.parseIndeedPageTitle('Marketing Manager- Harley-Davidson of Alamo City - San Antonio, TX - Indeed.com'),
+    { title: 'Marketing Manager- Harley-Davidson of Alamo City', companyName: null }
+  );
+  assert.equal(shared.looksLikePlaceName('San Antonio, TX 78233'), true);
+  assert.equal(shared.looksLikePlaceName('Ed Morse Automotive Group'), false);
+  assert.equal(shared.looksLikePlaceName('Remote'), false);
 });
 
 test('parseIndeedPageTitle rejects SERP titles and ambiguous strings', () => {

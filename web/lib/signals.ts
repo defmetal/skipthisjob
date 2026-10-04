@@ -145,13 +145,9 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
         points: [
           { when: 'Marked as reposted, job page or search card', effect: '+24' },
           { when: 'High-turnover title on a job page', effect: '+10 (40% of 24, rounded)' },
-          {
-            when: 'LinkedIn job page, and the repost already has 100 or more applicants',
-            effect: '+16 more',
-          },
         ],
         note:
-          'On Indeed, any repost can also be labeled “High Volume Repost.” That label does not add the extra 16.',
+          'Applicant volume is its own check. A repost that also has many applicants does not take a second add, and the card does not show a separate “High Volume Repost” badge or chip.',
         highlight: { group: 'reposted', order: 2, row: 1 },
       },
     ],
@@ -370,7 +366,8 @@ export const SIGNAL_CATEGORIES: SignalCategory[] = [
         summary:
           'A concrete description lowers the score by a single point. It does not also take the vague-wording adds.',
         points: [{ when: 'Vagueness ratio 0.15 or below', effect: '−1' }],
-        note: 'Between 0.15 and 0.45, wording changes nothing.',
+        note:
+          'Between 0.15 and 0.45, wording changes nothing. A very-short or short length verdict is the only description-length chip on that listing; the specific-description credit is not also shown.',
       },
       {
         id: 'placeholder',

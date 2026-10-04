@@ -295,9 +295,11 @@
     } else if (vagueness >= 0.45) {
       score += options.vagueMid != null ? options.vagueMid : 7;
       out.push('Some generic language in description');
-    } else if (vagueness <= 0.15) {
+    } else if (vagueness <= 0.15 && !options.suppressDetailed) {
       // Helper default is 0. scoreListingSignals passes detailedCredit: 1
       // so a specific JD is −1 on the shipped job-page path (public copy).
+      // A length verdict (very short / short) already occupies the one
+      // description-length chip, so the detailed credit is not also shown.
       const credit = options.detailedCredit != null ? options.detailedCredit : 0;
       score -= credit;
       out.push('Detailed, specific job description');
@@ -418,7 +420,11 @@
     }
 
     const descText = typeof row.description === 'string' ? row.description.trim() : '';
-    if (!preview && !descText) {
+    // descriptionParsed === false means the parser did not read a description
+    // node (a card snippet or an empty pane does not count). Callers that
+    // pass description text without the flag are treated as parsed.
+    const descriptionParsed = row.descriptionParsed !== false && !!descText;
+    if (!preview && !descriptionParsed) {
       signals.push('Job description unknown');
     } else if (!preview && platform === 'linkedin') {
       if (descText.length < 200) {
@@ -428,13 +434,22 @@
         score += 6;
         signals.push('Short or limited job description');
       }
+    } else if (!preview && platform === 'indeed') {
+      if (descText.length < 280) {
+        score += 5;
+        signals.push('Very short job description');
+      }
     }
 
-    if (!preview && descText && options.vagueness != null) {
+    const lengthVerdict = signals.some(function (s) {
+      return s === 'Very short job description' || s === 'Short or limited job description';
+    });
+    if (!preview && descriptionParsed && options.vagueness != null) {
       const desc = applyDescriptionQuality(score, signals, options.vagueness, {
         vagueHigh: platform === 'indeed' ? 11 : 12,
         vagueMid: platform === 'indeed' ? 6 : 7,
         detailedCredit: 1,
+        suppressDetailed: lengthVerdict,
       });
       score = desc.score;
     }
@@ -585,10 +600,106 @@
 
   function parseApplicantCount(text) {
     if (!text) return null;
-    const m = String(text).match(/(?:over\s+)?(\d[\d,]*)\+?\s*(?:applicants?|people\s+clicked\s+apply)/i);
+    const t = String(text);
+    // "Be among the first 25 applicants" — the crowd size is the 25, and
+    // the generic "N applicants" match would see the same number. One value.
+    const first = t.match(/\bbe among the first\s+(\d[\d,]*)/i);
+    if (first) {
+      const n = parseInt(first[1].replace(/,/g, ''), 10);
+      return Number.isNaN(n) ? null : n;
+    }
+    const m = t.match(/(?:over\s+)?(\d[\d,]*)\+?\s*(?:applicants?|people\s+clicked\s+apply)/i);
     if (!m) return null;
     const n = parseInt(m[1].replace(/,/g, ''), 10);
     return Number.isNaN(n) ? null : n;
+  }
+
+  /**
+   * Collapse whitespace, nbsp, and bullet separators, and split words that
+   * LinkedIn concatenates when the dot is only a CSS separator
+   * ("United StatesReposted 2 weeks agoOver 100 people clicked apply").
+   */
+  function normalizeLinkedInMetadataText(text) {
+    let t = String(text || '')
+      .replace(/[\u00a0\u202f\u2007\u2009\u200a\u2060]/g, ' ')
+      .replace(/[·•・∙⋅\u2022\u2219\u2027\u30fb\u00b7|]/g, ' · ')
+      .replace(/([A-Za-z])(?=(?:Reposted|Posted|Over|Be among)\b)/g, '$1 ')
+      .replace(/([A-Za-z])(?=\d+\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\b)/gi, '$1 ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return t;
+  }
+
+  /**
+   * LinkedIn top-card metadata: "City · Reposted 2 weeks ago · Over 100 people clicked apply".
+   * Age, repost, and applicants are each read once from the whole line.
+   * A missing separator still matches "Reposted 2 weeks ago" inside the text.
+   * Location is the place segment, not a second copy of the age.
+   */
+  function parseLinkedInMetadataLine(text) {
+    const raw = normalizeLinkedInMetadataText(text);
+    if (!raw) return null;
+    const daysOpen = parseRelativeDays(raw);
+    const isRepost = /reposted/i.test(raw) ? true : null;
+    const applicantCount = parseApplicantCount(raw);
+    const parts = raw.split(/\s*·\s*/).map(function (s) { return s.trim(); }).filter(Boolean);
+    let location = null;
+    const separated = raw.indexOf(' · ') !== -1;
+    // "On-site" / "Remote" / "Hybrid" sit between the place and the age.
+    // The place is the segment next to the age, not a title or company
+    // that an ancestor walk concatenated in front of the line.
+    const workplaceOnly = /^(?:on-?site|remote|hybrid)$/i;
+    function isSignalPart(part) {
+      if (!part) return true;
+      if (/reposted/i.test(part)) return true;
+      if (/^(?:posted|over|be among)\b/i.test(part)) return true;
+      if (parseRelativeDays(part) != null) return true;
+      if (parseApplicantCount(part) != null) return true;
+      return false;
+    }
+    if (separated) {
+      let signalIdx = -1;
+      for (let i = 0; i < parts.length; i++) {
+        if (isSignalPart(parts[i])) { signalIdx = i; break; }
+      }
+      const from = signalIdx === -1 ? parts.length - 1 : signalIdx - 1;
+      for (let i = from; i >= 0; i--) {
+        const part = parts[i];
+        if (!part || part.length > 80) continue;
+        if (isSignalPart(part)) continue;
+        if (workplaceOnly.test(part) && i > 0) continue;
+        location = part;
+        break;
+      }
+    } else if (daysOpen != null || isRepost || applicantCount != null) {
+      const before = raw.split(/\b(?:reposted|posted)\b/i)[0].replace(/\s+/g, ' ').trim();
+      if (before && before.length <= 80 && parseRelativeDays(before) == null && parseApplicantCount(before) == null) {
+        location = before;
+      }
+    }
+    if (location == null && daysOpen == null && applicantCount == null && isRepost == null) return null;
+    // A bare title has none of the metadata signals. Do not treat it as a place.
+    if (!separated && daysOpen == null && applicantCount == null && !isRepost) return null;
+    return {
+      location: location,
+      daysOpen: daysOpen,
+      isRepost: isRepost,
+      applicantCount: applicantCount,
+    };
+  }
+
+  /**
+   * "Title | Company | LinkedIn" (document.title or og:title).
+   * Returns null when the split is ambiguous.
+   */
+  function parseLinkedInPageTitle(rawTitle) {
+    let t = String(rawTitle || '').replace(/\s+/g, ' ').trim();
+    t = t.replace(/\s*\|\s*LinkedIn\s*$/i, '').trim();
+    if (!t || looksLikeSerpHeading(t)) return null;
+    const parts = t.split(/\s*\|\s*/).map(function (s) { return s.trim(); }).filter(Boolean);
+    if (parts.length < 2) return null;
+    if (!parts[0] || !parts[1]) return null;
+    return { title: parts[0], companyName: parts[1] };
   }
 
   /**
@@ -597,13 +708,21 @@
    * was winning and wiping floors).
    */
   function daysOpenFromCard(card, dateEl, fallbackText) {
+    const dateNode = dateEl && !isExtensionChromeNode(dateEl) ? dateEl : null;
+    const dateText = dateNode ? String(dateNode.textContent || '') : '';
     const blob = [
       fallbackText,
-      dateEl && dateEl.textContent,
-      card && (card.innerText || card.textContent),
+      dateText,
+      extensionChromeText(card),
     ].filter(Boolean).join(' · ');
     const fromText = parseRelativeDays(blob);
     if (fromText != null) return fromText;
+    // "Today" on a short date node is a posting age. A longer age anywhere
+    // on the card already won above, so this cannot zero out "5 months ago".
+    if (dateText && dateText.length < 80) {
+      const fromDate = parseRelativeDays(dateText);
+      if (fromDate != null) return fromDate;
+    }
 
     if (dateEl && dateEl.getAttribute) {
       const iso = daysOpenFromIso(dateEl.getAttribute('datetime'));
@@ -972,6 +1091,27 @@
       /\bjobs?\s*,?\s*employment\b/i.test(t);
   }
 
+  // Page chrome, not a job title. "Welcome, Austin" is the logged-in
+  // Indeed home heading. It must never become a stored title.
+  function isRejectedJobTitle(text) {
+    const t = cleanIdentityText(text);
+    if (!t) return true;
+    if (looksLikeSerpHeading(t)) return true;
+    if (/^(?:welcome|hi|hello|hey|good\s+(?:morning|afternoon|evening))\b/i.test(t)) return true;
+    if (/^jobs?\s+for\s+you\b/i.test(t)) return true;
+    if (/^recommended(?:\s+for\s+you|\s+jobs)?$/i.test(t)) return true;
+    if (/^(?:sign[\s-]?in|log[\s-]?in|create an account|please (?:sign|log)\s*in)\b/i.test(t)) return true;
+    // Indeed section headings inside the job pane. These are not the job title.
+    if (/^(?:pay(?:\s*(?:&|and)\s*benefits)?|salary|compensation|job\s*type|benefits|qualifications|full\s+job\s+description|location|profile\s+insights|job\s+details|shift\s+and\s+schedule|hiring\s+insights|job\s+activity|overview|requirements|responsibilities)$/i.test(t)) return true;
+    return false;
+  }
+
+  function sanitizeJobTitle(text) {
+    const t = cleanIdentityText(text);
+    if (!t || isRejectedJobTitle(t)) return null;
+    return t;
+  }
+
   function cleanIdentityText(text) {
     return String(text || '')
       .replace(/\s*-\s*job post$/i, '')
@@ -979,25 +1119,48 @@
       .trim();
   }
 
+  // "San Antonio, TX", "San Antonio, TX 78233", or a bare ZIP. "Remote"
+  // and "Ed Morse Automotive Group" are not places.
+  function looksLikePlaceName(text) {
+    const t = cleanIdentityText(text);
+    if (!t) return false;
+    if (/^\d{5}(?:-\d{4})?$/.test(t)) return true;
+    return /^[A-Za-z][A-Za-z .'-]*?,\s*[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?$/.test(t);
+  }
+
   /**
-   * "Title - Company - City, ST | Indeed.com" (document.title) or
-   * "Title - Company - City, ST" (og:title). Returns null for SERP titles or
-   * when fewer than three segments make the split ambiguous.
+   * "Title - Company - City, ST | Indeed.com", "Title - Company - Indeed",
+   * or og:title. A trailing "| Indeed" / "- Indeed" / "- job post" is
+   * removed first. Two remaining segments are title and company. Three or
+   * more keep the previous city split. A city/state/ZIP is never the
+   * company — companyName stays null so mosaic or JSON-LD can fill it.
+   * SERP headings and section labels ("Pay", "Job type") return null.
    */
   function parseIndeedPageTitle(rawTitle) {
     let t = cleanIdentityText(rawTitle).replace(/\s*\|\s*Indeed(?:\.com)?\s*$/i, '').trim();
+    t = t.replace(/\s+-\s+Indeed(?:\.com)?\s*$/i, '').trim();
     if (!t || looksLikeSerpHeading(t)) return null;
     const parts = t.split(/\s+-\s+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (parts.length === 2) {
+      if (isRejectedJobTitle(parts[0])) return null;
+      if (looksLikePlaceName(parts[1])) return { title: parts[0], companyName: null };
+      if (isRejectedJobTitle(parts[1])) return null;
+      return { title: parts[0], companyName: parts[1] };
+    }
     if (parts.length < 3) return null;
     const company = parts[parts.length - 2];
     const title = parts.slice(0, parts.length - 2).join(' - ');
-    if (!title || !company) return null;
+    if (!title || isRejectedJobTitle(title)) return null;
+    if (!company || looksLikePlaceName(company) || isRejectedJobTitle(company)) {
+      return { title: title, companyName: null };
+    }
     return { title: title, companyName: company };
   }
 
-  function readJobPostingIdentity(jsonLdText) {
+  function readJobPostingIdentity(jsonLdText, jobKey) {
     if (!jsonLdText) return null;
     const chunks = Array.isArray(jsonLdText) ? jsonLdText : [jsonLdText];
+    const found = [];
     for (let c = 0; c < chunks.length; c++) {
       let parsed;
       try {
@@ -1019,12 +1182,26 @@
         let org = n.hiringOrganization;
         if (Array.isArray(org)) org = org[0];
         const orgName = typeof org === 'string' ? org : (org && org.name);
-        const title = cleanIdentityText(n.title || n.name || '');
+        const title = sanitizeJobTitle(n.title || n.name || '');
         const company = cleanIdentityText(orgName || '');
-        if (title || company) return { title: title || null, companyName: company || null };
+        if (title || company) {
+          found.push({
+            title: title || null,
+            companyName: company || null,
+            blob: JSON.stringify(n).toLowerCase(),
+          });
+        }
       }
     }
-    return null;
+    if (!found.length) return null;
+    if (jobKey) {
+      const key = String(jobKey).toLowerCase();
+      const keyed = found.filter(function (row) { return row.blob.indexOf(key) !== -1; });
+      if (keyed.length) return { title: keyed[0].title, companyName: keyed[0].companyName };
+      if (found.length === 1) return { title: found[0].title, companyName: found[0].companyName };
+      return null;
+    }
+    return { title: found[0].title, companyName: found[0].companyName };
   }
 
   /**
@@ -1038,15 +1215,18 @@
   function resolveIndeedIdentity(src) {
     const s = src || {};
     const cur = s.current || {};
-    const out = { title: cur.title || null, companyName: cur.companyName || null, sources: [] };
+    const out = { title: sanitizeJobTitle(cur.title), companyName: cur.companyName || null, sources: [] };
     const fill = function (cand, label) {
       if (!cand) return;
       let used = false;
-      if (!out.title && cand.title && !looksLikeSerpHeading(cand.title)) { out.title = cand.title; used = true; }
-      if (!out.companyName && cand.companyName) { out.companyName = cand.companyName; used = true; }
+      const nextTitle = sanitizeJobTitle(cand.title);
+      if (!out.title && nextTitle) { out.title = nextTitle; used = true; }
+      if (!out.companyName && cand.companyName && !looksLikePlaceName(cand.companyName)) {
+        out.companyName = cand.companyName;
+        used = true;
+      }
       if (used) out.sources.push(label);
     };
-    if (out.title && looksLikeSerpHeading(out.title)) out.title = null;
 
     const key = s.jobKey ? String(s.jobKey).toLowerCase() : null;
     if (key && Array.isArray(s.mosaicJobs)) {
@@ -1109,7 +1289,7 @@
     const rawUrl = listing.listingUrl || extra.listingUrl || extra.url || null;
     return {
       companyName: listing.companyName || extra.companyName || null,
-      jobTitle: listing.title || extra.jobTitle || null,
+      jobTitle: sanitizeJobTitle(listing.title || extra.jobTitle),
       platform: platform,
       platformJobId: platformJobId,
       listingUrl: canonicalListingUrl(rawUrl, platform, platformJobId),
@@ -1142,7 +1322,7 @@
     }
     return {
       companyName: message.companyName || last.companyName || null,
-      jobTitle: message.jobTitle || last.jobTitle || last.title || null,
+      jobTitle: sanitizeJobTitle(message.jobTitle || last.jobTitle || last.title),
       platform: platform,
       platformJobId: platformJobId,
       listingUrl: canonicalListingUrl(listingUrl, platform, platformJobId),
@@ -1189,6 +1369,73 @@
       }).join('') +
       '</div>'
     );
+  }
+
+  // Informational only. Not a ghost-risk signal, not a score input, and
+  // not stored on track payloads or the leaderboard.
+  const JUST_POSTED_LABEL = 'Just posted — apply early';
+
+  function justPostedEligible(listing) {
+    if (!listing || listing.isRepost === true) return false;
+    if (listing.daysOpen == null || listing.daysOpen === '') return false;
+    const days = Number(listing.daysOpen);
+    if (!Number.isFinite(days) || days < 0 || days > 2) return false;
+    return true;
+  }
+
+  function isExtensionChromeNode(el) {
+    if (!el || !el.closest) return false;
+    return !!el.closest('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]');
+  }
+
+  function extensionChromeText(el) {
+    if (!el) return '';
+    if (isExtensionChromeNode(el)) return '';
+    const read = function (node) {
+      return String((node && node.textContent) || '');
+    };
+    if (!el.querySelector || !el.querySelector('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]')) {
+      return read(el);
+    }
+    const copy = el.cloneNode(true);
+    const junk = copy.querySelectorAll('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]');
+    for (let i = 0; i < junk.length; i++) {
+      if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
+    }
+    return read(copy);
+  }
+
+  function freshBadgeMarkup(listing) {
+    if (!justPostedEligible(listing)) return '';
+    return (
+      '<div class="stj-fresh-row">' +
+      '<span class="stj-fresh-badge" data-stj-fresh="1">' +
+      escapeOverlayText(JUST_POSTED_LABEL) +
+      '</span></div>'
+    );
+  }
+
+  function injectFreshBadge(card, listing, anchor) {
+    if (!card || !card.querySelectorAll) return;
+    const existing = card.querySelectorAll('.stj-fresh-badge');
+    if (!justPostedEligible(listing)) {
+      for (let i = 0; i < existing.length; i++) existing[i].remove();
+      return;
+    }
+    if (existing.length === 1 &&
+        existing[0].getAttribute('data-stj-fresh') === '1' &&
+        String(existing[0].textContent || '').trim() === JUST_POSTED_LABEL) {
+      return;
+    }
+    for (let i = 0; i < existing.length; i++) existing[i].remove();
+    const wrap = document.createElement('span');
+    wrap.innerHTML = '<span class="stj-fresh-badge" data-stj-fresh="1">' +
+      escapeOverlayText(JUST_POSTED_LABEL) + '</span>';
+    const node = wrap.firstElementChild;
+    if (!node) return;
+    const target = anchor && card.contains && card.contains(anchor) && anchor !== card ? anchor : null;
+    if (target && target.insertAdjacentElement) target.insertAdjacentElement('afterend', node);
+    else card.appendChild(node);
   }
 
   function glassdoorBlockHtml(glassdoor) {
@@ -1280,8 +1527,16 @@
   function publishActiveListing(listing, blended, platform) {
     if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return;
     if (!listing || !blended) return;
+    const safeTitle = sanitizeJobTitle(listing.title);
+    if (!safeTitle) {
+      try {
+        if (chrome.storage.local.remove) chrome.storage.local.remove('stjActiveListing');
+        else chrome.storage.local.set({ stjActiveListing: null });
+      } catch (e) { /* orphaned extension context */ }
+      return null;
+    }
     const payload = {
-      title: listing.title || null,
+      title: safeTitle,
       companyName: listing.companyName || null,
       platform: platform || listing.platform || null,
       platformJobId: listing.platformJobId || null,
@@ -1397,8 +1652,15 @@
     const nextAttr = on ? String(limit) : null;
     const curAttr = card.getAttribute ? card.getAttribute('data-stj-dim') : null;
     if (nextAttr && curAttr !== nextAttr && card.setAttribute) card.setAttribute('data-stj-dim', nextAttr);
-    else if (!nextAttr && curAttr != null && card.removeAttribute) card.removeAttribute('data-stj-dim');
+    else     if (!nextAttr && curAttr != null && card.removeAttribute) card.removeAttribute('data-stj-dim');
     return card;
+  }
+
+  // List refreshes outside watchListBadges (detail stamp, mutation rescan)
+  // must use the threshold the popup last stored. A missing argument to
+  // applyListDim stays "off" so callers that pass undefined do not dim.
+  function applyCurrentListDim(card, score) {
+    return applyListDim(card, score, dimThreshold);
   }
 
   function loadDimThreshold(done) {
@@ -1482,6 +1744,14 @@
         return host.getAttribute('data-job-id') ||
           host.getAttribute('data-occludable-job-id') ||
           host.getAttribute('data-jk');
+      }
+      const ownKey = card.getAttribute('componentkey') || '';
+      const ownId = ownKey.match(/^job-card-component-ref-(\d{5,})$/);
+      if (ownId) return ownId[1];
+      const keyed = card.closest ? card.closest('[componentkey^="job-card-component-ref-"]') : null;
+      if (keyed) {
+        const nested = String(keyed.getAttribute('componentkey') || '').match(/^job-card-component-ref-(\d{5,})$/);
+        if (nested) return nested[1];
       }
     }
     if (parsed && parsed.title) {
@@ -1656,6 +1926,7 @@
             anchor = card;
           }
           injectListBadge(card, resolved.result, anchor);
+          injectFreshBadge(card, parsed, anchor);
           applyListDim(card, resolved.result.score, dimThreshold);
         }
       } finally {
@@ -1704,7 +1975,10 @@
   api.recallIndeedJobSignals = recallIndeedJobSignals;
   api.storageCall = storageCall;
   api.resolveIndeedIdentity = resolveIndeedIdentity;
+  api.looksLikePlaceName = looksLikePlaceName;
   api.parseIndeedPageTitle = parseIndeedPageTitle;
+  api.isRejectedJobTitle = isRejectedJobTitle;
+  api.sanitizeJobTitle = sanitizeJobTitle;
   api.readJobPostingIdentity = readJobPostingIdentity;
   api.INDEED_SIGNAL_CACHE_TTL_MS = INDEED_SIGNAL_CACHE_TTL_MS;
   api.extractLinkedInJobId = extractLinkedInJobId;
@@ -1720,6 +1994,12 @@
   api.escapeOverlayText = escapeOverlayText;
   api.safeGlassdoorUrl = safeGlassdoorUrl;
   api.overlaySignalsHtml = overlaySignalsHtml;
+  api.JUST_POSTED_LABEL = JUST_POSTED_LABEL;
+  api.justPostedEligible = justPostedEligible;
+  api.freshBadgeMarkup = freshBadgeMarkup;
+  api.injectFreshBadge = injectFreshBadge;
+  api.isExtensionChromeNode = isExtensionChromeNode;
+  api.extensionChromeText = extensionChromeText;
   api.glassdoorBlockHtml = glassdoorBlockHtml;
   api.hashDescription = hashDescription;
   api.normalizeTitle = normalizeTitle;
@@ -1743,11 +2023,14 @@
   api.DIM_STORAGE_KEY = DIM_STORAGE_KEY;
   api.dimThresholdFromSetting = dimThresholdFromSetting;
   api.applyListDim = applyListDim;
+  api.applyCurrentListDim = applyCurrentListDim;
   api.parseRelativeDays = parseRelativeDays;
   api.parseLinkedInPostedAge = parseLinkedInPostedAge;
   api.normalizeAgeText = normalizeAgeText;
   api.daysOpenFromIso = daysOpenFromIso;
   api.parseApplicantCount = parseApplicantCount;
+  api.parseLinkedInMetadataLine = parseLinkedInMetadataLine;
+  api.parseLinkedInPageTitle = parseLinkedInPageTitle;
   api.daysOpenFromCard = daysOpenFromCard;
   api.buildTrackPayload = buildTrackPayload;
   api.mergeApplyPayload = mergeApplyPayload;
