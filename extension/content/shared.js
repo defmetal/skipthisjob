@@ -708,13 +708,21 @@
    * was winning and wiping floors).
    */
   function daysOpenFromCard(card, dateEl, fallbackText) {
+    const dateNode = dateEl && !isExtensionChromeNode(dateEl) ? dateEl : null;
+    const dateText = dateNode ? String(dateNode.textContent || '') : '';
     const blob = [
       fallbackText,
-      dateEl && dateEl.textContent,
-      card && (card.innerText || card.textContent),
+      dateText,
+      extensionChromeText(card),
     ].filter(Boolean).join(' · ');
     const fromText = parseRelativeDays(blob);
     if (fromText != null) return fromText;
+    // "Today" on a short date node is a posting age. A longer age anywhere
+    // on the card already won above, so this cannot zero out "5 months ago".
+    if (dateText && dateText.length < 80) {
+      const fromDate = parseRelativeDays(dateText);
+      if (fromDate != null) return fromDate;
+    }
 
     if (dateEl && dateEl.getAttribute) {
       const iso = daysOpenFromIso(dateEl.getAttribute('datetime'));
@@ -1321,6 +1329,73 @@
     );
   }
 
+  // Informational only. Not a ghost-risk signal, not a score input, and
+  // not stored on track payloads or the leaderboard.
+  const JUST_POSTED_LABEL = 'Just posted — apply early';
+
+  function justPostedEligible(listing) {
+    if (!listing || listing.isRepost === true) return false;
+    if (listing.daysOpen == null || listing.daysOpen === '') return false;
+    const days = Number(listing.daysOpen);
+    if (!Number.isFinite(days) || days < 0 || days > 2) return false;
+    return true;
+  }
+
+  function isExtensionChromeNode(el) {
+    if (!el || !el.closest) return false;
+    return !!el.closest('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]');
+  }
+
+  function extensionChromeText(el) {
+    if (!el) return '';
+    if (isExtensionChromeNode(el)) return '';
+    const read = function (node) {
+      return String((node && node.textContent) || '');
+    };
+    if (!el.querySelector || !el.querySelector('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]')) {
+      return read(el);
+    }
+    const copy = el.cloneNode(true);
+    const junk = copy.querySelectorAll('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]');
+    for (let i = 0; i < junk.length; i++) {
+      if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
+    }
+    return read(copy);
+  }
+
+  function freshBadgeMarkup(listing) {
+    if (!justPostedEligible(listing)) return '';
+    return (
+      '<div class="stj-fresh-row">' +
+      '<span class="stj-fresh-badge" data-stj-fresh="1">' +
+      escapeOverlayText(JUST_POSTED_LABEL) +
+      '</span></div>'
+    );
+  }
+
+  function injectFreshBadge(card, listing, anchor) {
+    if (!card || !card.querySelectorAll) return;
+    const existing = card.querySelectorAll('.stj-fresh-badge');
+    if (!justPostedEligible(listing)) {
+      for (let i = 0; i < existing.length; i++) existing[i].remove();
+      return;
+    }
+    if (existing.length === 1 &&
+        existing[0].getAttribute('data-stj-fresh') === '1' &&
+        String(existing[0].textContent || '').trim() === JUST_POSTED_LABEL) {
+      return;
+    }
+    for (let i = 0; i < existing.length; i++) existing[i].remove();
+    const wrap = document.createElement('span');
+    wrap.innerHTML = '<span class="stj-fresh-badge" data-stj-fresh="1">' +
+      escapeOverlayText(JUST_POSTED_LABEL) + '</span>';
+    const node = wrap.firstElementChild;
+    if (!node) return;
+    const target = anchor && card.contains && card.contains(anchor) && anchor !== card ? anchor : null;
+    if (target && target.insertAdjacentElement) target.insertAdjacentElement('afterend', node);
+    else card.appendChild(node);
+  }
+
   function glassdoorBlockHtml(glassdoor) {
     if (!glassdoor) return '';
     const rating = Number(glassdoor.rating);
@@ -1801,6 +1876,7 @@
             anchor = card;
           }
           injectListBadge(card, resolved.result, anchor);
+          injectFreshBadge(card, parsed, anchor);
           applyListDim(card, resolved.result.score, dimThreshold);
         }
       } finally {
@@ -1867,6 +1943,12 @@
   api.escapeOverlayText = escapeOverlayText;
   api.safeGlassdoorUrl = safeGlassdoorUrl;
   api.overlaySignalsHtml = overlaySignalsHtml;
+  api.JUST_POSTED_LABEL = JUST_POSTED_LABEL;
+  api.justPostedEligible = justPostedEligible;
+  api.freshBadgeMarkup = freshBadgeMarkup;
+  api.injectFreshBadge = injectFreshBadge;
+  api.isExtensionChromeNode = isExtensionChromeNode;
+  api.extensionChromeText = extensionChromeText;
   api.glassdoorBlockHtml = glassdoorBlockHtml;
   api.hashDescription = hashDescription;
   api.normalizeTitle = normalizeTitle;

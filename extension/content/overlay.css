@@ -230,6 +230,33 @@
 .stj-list-badge--high { background: #fce4ec; color: #c62828; }
 .stj-list-badge--very_high { background: #f3e5f5; color: #6a1b9a; }
 
+/* Freshness is not a risk color. Teal, separate from the warning chips. */
+.stj-fresh-row {
+  margin: 6px 0 8px;
+}
+
+.stj-fresh-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.3;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: #ecfeff;
+  color: #0f766e;
+  border: 1px solid #5eead4;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  white-space: nowrap;
+  vertical-align: middle;
+  pointer-events: none;
+}
+
+.stj-list-badge + .stj-fresh-badge,
+a + .stj-fresh-badge {
+  margin-left: 6px;
+}
+
 /* Dim a risky result in place. Do not remove or collapse the node —
    LinkedIn's list is React-managed. */
 .stj-dimmed {

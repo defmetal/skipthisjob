@@ -308,14 +308,15 @@ function indeedTitleText(el) {
   const spans = el.querySelectorAll('span');
   for (let i = 0; i < spans.length; i++) {
     const span = spans[i];
-    if (span.classList && span.classList.contains('stj-list-badge')) continue;
-    if (span.closest && span.closest('.stj-list-badge')) continue;
+    if (span.classList && (span.classList.contains('stj-list-badge') || span.classList.contains('stj-fresh-badge'))) continue;
+    if (span.closest && span.closest('.stj-list-badge, .stj-fresh-badge')) continue;
     return String(span.textContent || '')
       .replace(/\s*-\s*job post$/i, '')
       .replace(/\s+/g, ' ')
       .trim();
   }
-  return String(el.textContent || '')
+  const raw = STJ.extensionChromeText ? STJ.extensionChromeText(el) : (el.textContent || '');
+  return String(raw)
     .replace(/\s*-\s*job post$/i, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -394,7 +395,8 @@ function readSelectedIndeedCardText(jobKey) {
     document.querySelector('a[data-jk="' + key + '"]');
   if (!card) return '';
   const root = card.closest('.job_seen_beacon, .resultContent, li, [data-jk]') || card;
-  return ((root.innerText || root.textContent) || '').trim();
+  const text = STJ.extensionChromeText ? STJ.extensionChromeText(root) : ((root.innerText || root.textContent) || '');
+  return String(text || '').trim();
 }
 
 function readIndeedJsonLdDatePosted() {
@@ -411,6 +413,9 @@ function readIndeedJsonLdDatePosted() {
 // whose text looks like a posting date. This beats Indeed's constantly changing classes.
 function findIndeedDateText(container) {
   if (!container) return '';
+  const skipChrome = function (el) {
+    return !!(el && el.closest && el.closest('.stj-fresh-badge, .stj-list-badge, #ghost-detector-overlay, [data-stj-overlay="1"]'));
+  };
 
   // First try the known good selectors
   const knownSelectors = [
@@ -426,6 +431,7 @@ function findIndeedDateText(container) {
 
   for (const sel of knownSelectors) {
     const el = container.querySelector(sel);
+    if (skipChrome(el)) continue;
     const txt = el && el.textContent.trim();
     // A subtitle with no date must not block the regex fallback.
     if (txt && parseIndeedRelativeDate(txt) != null) return txt;
@@ -436,12 +442,14 @@ function findIndeedDateText(container) {
   // The actual value is usually in a sibling or nearby element in the same flex row.
   const allEls = container.querySelectorAll('*');
   for (const el of allEls) {
+    if (skipChrome(el)) continue;
     const txt = el.textContent.trim();
     if (/date posted/i.test(txt) && txt.length < 40) {
       const parent = el.parentElement;
       if (parent) {
         // Check all children of the parent row for a short date value
         for (const child of parent.children) {
+          if (skipChrome(child)) continue;
           const childTxt = child.textContent.trim();
           // Matches things like "5d ago", "12 days ago", "Posted today", "3w", "just posted", etc.
           if (childTxt.length > 1 && childTxt.length < 35 &&
@@ -470,6 +478,7 @@ function findIndeedDateText(container) {
   ];
   for (const sel of insightsSelectors) {
     const el = container.querySelector(sel);
+    if (skipChrome(el)) continue;
     if (el) {
       const txt = el.textContent.trim();
       if (txt.length > 5 && txt.length < 80 && /(\d+.*(d|days?|w|weeks?|ago)|just posted|today|active)/i.test(txt)) {
@@ -483,6 +492,7 @@ function findIndeedDateText(container) {
   const datePattern = /(\d+\s*(?:d|days?|w|weeks?|h|hours?)\s*ago|posted\s+\d|active\s+\d|just posted|\d+[dw]\s*ago)/i;
   const allContainerEls = container.querySelectorAll('*');
   for (const el of allContainerEls) {
+    if (skipChrome(el)) continue;
     const txt = el.textContent.trim();
     if (txt.length > 2 && txt.length < 60 && datePattern.test(txt)) {
       return txt;
@@ -492,6 +502,7 @@ function findIndeedDateText(container) {
   // Strategy 3: Look for elements with data-testid containing "date" and grab their text or parent's
   const dateTestIdEls = container.querySelectorAll('[data-testid*="date"], [data-testid*="posted"]');
   for (const el of dateTestIdEls) {
+    if (skipChrome(el)) continue;
     const txt = el.textContent.trim();
     if (txt.length > 3 && txt.length < 60) return txt;
     const parentTxt = el.parentElement?.textContent.trim();
@@ -613,7 +624,9 @@ async function parseIndeedListing() {
   // left-rail cards on search SPA ("Often replies in", other jobs' ages).
   // innerText is empty in non-visual environments and on some hidden panes.
   // Fall back to textContent so a date buried in the description is still read.
-  const detailText = ((signalRoot && (signalRoot.innerText || signalRoot.textContent)) || '').toLowerCase();
+  const detailText = ((signalRoot && (STJ.extensionChromeText
+    ? STJ.extensionChromeText(signalRoot)
+    : (signalRoot.innerText || signalRoot.textContent))) || '').toLowerCase();
   const selectedCardText = readSelectedIndeedCardText(data.platformJobId);
 
   let dateText = signalRoot ? findIndeedDateText(signalRoot) : '';
@@ -1227,6 +1240,7 @@ function injectOverlay(localScore, backendData, listing) {
       ${localScore.isHighTurnover ? 
         `<div style="font-size:9px; background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fde68a;">High Turnover Role – Scoring Adjusted</div>` : ''}
 
+      ${STJ.freshBadgeMarkup ? STJ.freshBadgeMarkup(listing) : ''}
       ${STJ.overlaySignalsHtml ? STJ.overlaySignalsHtml(finalSignals) : ''}
       ${STJ.glassdoorBlockHtml ? STJ.glassdoorBlockHtml(backendData && backendData.glassdoor) : ''}
       ${STJ.communityBlockHtml ? STJ.communityBlockHtml(backendData) : (backendData && backendData.totalReports > 0 ? `
@@ -1566,7 +1580,9 @@ function parseIndeedCard(card) {
   const dateEl = card.querySelector(
     '[data-testid="myJobsStateDate"], .date, span.date'
   );
-  const text = ((card.innerText || card.textContent) || '').toLowerCase();
+  const text = (STJ.extensionChromeText
+    ? STJ.extensionChromeText(card)
+    : ((card.innerText || card.textContent) || '')).toLowerCase();
   return {
     title,
     companyName: companyEl ? companyEl.textContent.trim() : null,

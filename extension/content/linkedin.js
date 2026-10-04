@@ -117,6 +117,7 @@ function stampListBadgeForCurrentJob(listing, result) {
     'a.job-card-list__title, a.job-card-container__link, a[href*="/jobs/view/"], .job-card-list__title--link'
   ) || card;
   STJ.injectListBadge(card, stamped, anchor);
+  if (STJ.injectFreshBadge) STJ.injectFreshBadge(card, listing, anchor);
   if (STJ.applyCurrentListDim) STJ.applyCurrentListDim(card, stamped.score);
 }
 
@@ -1503,6 +1504,7 @@ function injectOverlay(localScore, backendData, listing) {
         <button type="button" id="ghost-close-btn" aria-label="Close" style="margin-left:auto; cursor:pointer; font-size:16px; line-height:1; opacity:0.65; padding:2px 6px; background:transparent; border:0; color:inherit;">✕</button>
       </div>
 
+      ${STJ.freshBadgeMarkup ? STJ.freshBadgeMarkup(listing) : ''}
       ${localScore.isHighTurnover ? 
         `<div style="font-size:9px; background:#fef3c7; color:#92400e; padding:1px 5px; border-radius:3px; margin-top:3px; display:inline-block; border:1px solid #fde68a;">High Turnover Role – Scoring Adjusted</div>` : ''}
 
@@ -2012,7 +2014,8 @@ function cardTitleText(card) {
   const links = card.querySelectorAll('a[href*="/jobs/view/"]');
   let best = '';
   for (let i = 0; i < links.length; i++) {
-    const t = String(links[i].textContent || '').replace(/\s+/g, ' ').trim();
+    const raw = STJ.extensionChromeText ? STJ.extensionChromeText(links[i]) : (links[i].textContent || '');
+    const t = String(raw).replace(/\s+/g, ' ').trim();
     if (t.length > best.length && t.length < 180) best = t;
   }
   if (best.length >= 3) return best;
@@ -2029,9 +2032,10 @@ function cardRowMetadata(card) {
   let any = false;
   for (let i = 0; i < nodes.length; i++) {
     const el = nodes[i];
+    if (STJ.isExtensionChromeNode && STJ.isExtensionChromeNode(el)) continue;
     // A node that also holds the title link glues the title onto the place.
     if (el.querySelector && el.querySelector('a[href*="/jobs/view/"]')) continue;
-    const own = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+    const own = String(STJ.extensionChromeText ? STJ.extensionChromeText(el) : (el.textContent || '')).replace(/\s+/g, ' ').trim();
     if (!own || own.length > 220) continue;
     const parsed = STJ.parseLinkedInMetadataLine(own);
     if (!parsed) continue;
@@ -2066,7 +2070,9 @@ function parseLinkedInCard(card) {
   const dateEl = card.querySelector(
     'time, .job-card-container__listed-time, .job-card-list__footer-wrapper, .tvm__text'
   );
-  const text = (card.innerText || card.textContent || '').toLowerCase();
+  const text = (STJ.extensionChromeText
+    ? STJ.extensionChromeText(card)
+    : (card.innerText || card.textContent || '')).toLowerCase();
   const meta = cardRowMetadata(card);
   const parseAge = STJ.parseLinkedInPostedAge || STJ.parseRelativeDays;
   const daysOpen = meta && meta.daysOpen != null
@@ -2135,6 +2141,7 @@ function refreshLinkedInListBadges() {
           : parsed.daysOpen,
       });
       STJ.injectListBadge(card, stamped, anchor);
+      if (STJ.injectFreshBadge) STJ.injectFreshBadge(card, parsed, anchor);
       if (STJ.applyCurrentListDim) STJ.applyCurrentListDim(card, stamped.score);
     }
   } finally {
